@@ -85,6 +85,34 @@ scripts/bulk-read --question "What license is this project under?" --paths LICEN
 | `SHUNT_TIMEOUT_SECONDS` | `120` | Timeout for a single delegated `opencode run` call. |
 | `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation. |
 
+## Evals
+
+```bash
+evals/run.sh              # hook routing decisions — no network needed
+evals/transport-evals.sh  # one live scripts/bulk-read call — needs OpenCode + a provider
+evals/benchmark.sh        # token-savings + latency benchmark — needs OpenCode + a provider
+```
+
+`evals/benchmark.sh` measures, per scenario in `evals/benchmarks.json`:
+
+- **Token savings**: a `chars/4` estimate (the same conservative heuristic
+  shunt uses) of the raw file content Claude would otherwise read, versus
+  the delegated model's answer that lands in Claude's context instead.
+- **Latency**: wall-clock time for the delegated `opencode run` round trip.
+  Delegation trades Claude context tokens for this added latency; the
+  script reports both so you can judge the trade-off for your own workflow
+  rather than assuming delegation is free.
+- **Custom-model usage**: the real input/output token counts OpenCode
+  reports for the delegated call, shown for transparency. This is a
+  separate cost paid by the custom model, not folded into the savings %.
+
+The three scenarios (`single-large-file`, `source-plus-test`,
+`multi-file-cross-read`) mirror the case shapes from shunt's own
+benchmarks, run against synthetic fixture files under `evals/fixtures/`
+(`api-client.ts`, `task-queue.ts` + `task-queue.test.ts`, `event-bus.ts`;
+regenerate with `evals/fixtures/generate.sh` if you change the word lists
+in that script). Fixture content is original, not copied from shunt.
+
 ## Scope
 
 MVP scope is `bulk-read` only (large-file reads). `code-write` (delegated
