@@ -1,0 +1,27 @@
+[
+  {
+    "name": "small file, full read, allowed",
+    "tool_input": { "file_path": "evals/fixtures/small.txt" },
+    "expected_decision": "allow"
+  },
+  {
+    "name": "big file, full read, blocked",
+    "tool_input": { "file_path": "evals/fixtures/big.txt" },
+    "expected_decision": "block"
+  },
+  {
+    "name": "big file, read with limit, allowed",
+    "tool_input": { "file_path": "evals/fixtures/big.txt", "limit": 50 },
+    "expected_decision": "allow"
+  },
+  {
+    "name": "big file, read with offset, allowed",
+    "tool_input": { "file_path": "evals/fixtures/big.txt", "offset": 100 },
+    "expected_decision": "allow"
+  },
+  {
+    "name": "nonexistent file, allowed (hook does not invent errors)",
+    "tool_input": { "file_path": "evals/fixtures/does-not-exist.txt" },
+    "expected_decision": "allow"
+  }
+]

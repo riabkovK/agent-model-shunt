@@ -1,0 +1,37 @@
+[
+  {
+    "name": "cat small file, allowed",
+    "tool_input": { "command": "cat evals/fixtures/small.txt" },
+    "expected_decision": "allow"
+  },
+  {
+    "name": "cat big file, blocked",
+    "tool_input": { "command": "cat evals/fixtures/big.txt" },
+    "expected_decision": "block"
+  },
+  {
+    "name": "head big file, blocked",
+    "tool_input": { "command": "head evals/fixtures/big.txt" },
+    "expected_decision": "block"
+  },
+  {
+    "name": "tail -n 20 big file, blocked (flag before path, still no pipe/redirect)",
+    "tool_input": { "command": "tail -n 20 evals/fixtures/big.txt" },
+    "expected_decision": "block"
+  },
+  {
+    "name": "cat big file piped to grep, allowed",
+    "tool_input": { "command": "cat evals/fixtures/big.txt | grep foo" },
+    "expected_decision": "allow"
+  },
+  {
+    "name": "cat big file redirected to a new file, allowed",
+    "tool_input": { "command": "cat evals/fixtures/big.txt > /tmp/copy.txt" },
+    "expected_decision": "allow"
+  },
+  {
+    "name": "unrelated command, allowed",
+    "tool_input": { "command": "ls -la evals/fixtures" },
+    "expected_decision": "allow"
+  }
+]
