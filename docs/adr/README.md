@@ -7,7 +7,6 @@ of Spotify's Portal CLI and AiKA models.
 
 | ADR | Title | Status |
 |---|---|---|
-| [0001](0001-openconnect-means-opencode.md) | "openconnect" means OpenCode | Accepted |
 | [0002](0002-wrap-opencode-cli-not-http-client.md) | Wrap the OpenCode CLI, not a custom HTTP client, for MVP | Accepted |
 | [0003](0003-claude-code-only-scope.md) | Claude Code only scope for MVP | Accepted |
 | [0004](0004-bash-jq-implementation.md) | Bash + jq implementation | Accepted |
