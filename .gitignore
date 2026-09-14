@@ -8,3 +8,6 @@
 # Temp / scratch
 *.tmp
 *.log
+
+# Local per-user Claude Code settings (e.g. SHUNT_HOOKS_DISABLED toggle)
+.claude/settings.local.json

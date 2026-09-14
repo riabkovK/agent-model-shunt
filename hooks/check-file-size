@@ -2,6 +2,10 @@
 # Block full-file reads on large files, redirect to the bulk-reader skill.
 # Self-contained: all routing logic lives here, no AGENTS.md/CLAUDE.md needed.
 
+case "${SHUNT_HOOKS_DISABLED:-}" in
+  1|true|TRUE|yes|YES) echo '{"decision": "allow"}'; exit 0 ;;
+esac
+
 MIN_LINES="${SHUNT_MIN_LINES:-350}"
 case "$MIN_LINES" in ''|*[!0-9]*) MIN_LINES=350 ;; esac
 

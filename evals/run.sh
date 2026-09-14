@@ -50,6 +50,32 @@ echo "== check-bash-read =="
 run_suite "$EVALS_DIR/bash-hook-evals.json" "$REPO_ROOT/hooks/check-bash-read" "tool_input"
 
 echo
+echo "== SHUNT_HOOKS_DISABLED override =="
+
+check_disabled_override() {
+  local name="$1" hook_path="$2" payload="$3"
+  local actual
+  actual=$(cd "$REPO_ROOT" && echo "$payload" | SHUNT_HOOKS_DISABLED=1 "$hook_path" | jq -r '.decision')
+  if [ "$actual" = "allow" ]; then
+    echo "PASS: $name"
+    pass=$((pass + 1))
+  else
+    echo "FAIL: $name (expected=allow actual=$actual)"
+    fail=$((fail + 1))
+  fi
+}
+
+check_disabled_override \
+  "check-file-size allows big file when SHUNT_HOOKS_DISABLED=1" \
+  "$REPO_ROOT/hooks/check-file-size" \
+  '{"tool_input": {"file_path": "evals/fixtures/big.txt"}}'
+
+check_disabled_override \
+  "check-bash-read allows cat on big file when SHUNT_HOOKS_DISABLED=1" \
+  "$REPO_ROOT/hooks/check-bash-read" \
+  '{"tool_input": {"command": "cat evals/fixtures/big.txt"}}'
+
+echo
 echo "== Summary: $pass passed, $fail failed =="
 
 [ "$fail" -eq 0 ]

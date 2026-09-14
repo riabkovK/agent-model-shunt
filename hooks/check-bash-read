@@ -2,6 +2,10 @@
 # Block Bash commands that read large files, redirect to the bulk-reader skill.
 # Catches cat/head/tail/less/more that bypass the Read hook.
 
+case "${SHUNT_HOOKS_DISABLED:-}" in
+  1|true|TRUE|yes|YES) echo '{"decision": "allow"}'; exit 0 ;;
+esac
+
 MIN_LINES="${SHUNT_MIN_LINES:-350}"
 case "$MIN_LINES" in ''|*[!0-9]*) MIN_LINES=350 ;; esac
 
