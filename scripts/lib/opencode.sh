@@ -8,6 +8,8 @@
 SHUNT_OPENCODE_BIN="${SHUNT_OPENCODE_BIN:-opencode}"
 SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-120}"
 SHUNT_BULK_READER_AGENT="${SHUNT_BULK_READER_AGENT:-bulk-reader}"
+SHUNT_OPENCODE_CONFIG_HOME="${SHUNT_OPENCODE_CONFIG_HOME:-$HOME/.config/opencode}"
+SHUNT_ISOLATED_CONFIG_DIR="${SHUNT_ISOLATED_CONFIG_DIR:-$HOME/.cache/cc-model-shunt/opencode-config}"
 
 shunt_report_error() {
   echo "shunt: $1" >&2
@@ -27,9 +29,45 @@ shunt_tmpfile() {
   mktemp "${TMPDIR:-/tmp}/shunt-opencode.XXXXXX"
 }
 
+# shunt_prepare_isolated_config <agent>
+# Builds a minimal, isolated OpenCode config directory (XDG_CONFIG_HOME-style)
+# containing only the named agent and the single provider its `model:`
+# frontmatter references. `opencode run` otherwise always loads the user's
+# *entire* global ~/.config/opencode config for every call: all installed
+# skills, commands, and MCP servers get attached regardless of the agent's
+# own `tools:` restrictions, which can inflate a single small-file read from
+# a few thousand prompt tokens to tens of thousands. Isolating the config
+# fixes that without ever touching the user's real config. Prints the
+# isolated config root to stdout.
+shunt_prepare_isolated_config() {
+  local agent="$1"
+  local agent_file="$SHUNT_OPENCODE_CONFIG_HOME/agents/$agent.md"
+  local iso_opencode="$SHUNT_ISOLATED_CONFIG_DIR/opencode"
+
+  [ -f "$agent_file" ] \
+    || shunt_report_error "OpenCode agent '$agent' not found at $agent_file. See README's Setup section."
+
+  mkdir -p "$iso_opencode/agents"
+  cp "$agent_file" "$iso_opencode/agents/$agent.md"
+
+  local provider
+  provider=$(awk -F'[/: ]+' '/^model:/{print $2; exit}' "$agent_file")
+
+  if [ -n "$provider" ] && [ -f "$SHUNT_OPENCODE_CONFIG_HOME/opencode.json" ]; then
+    jq --arg p "$provider" '{provider: {($p): .provider[$p]}}' \
+      "$SHUNT_OPENCODE_CONFIG_HOME/opencode.json" >"$iso_opencode/opencode.json" \
+      || shunt_report_error "failed to build isolated OpenCode config from $SHUNT_OPENCODE_CONFIG_HOME/opencode.json."
+  else
+    echo '{}' >"$iso_opencode/opencode.json"
+  fi
+
+  echo "$SHUNT_ISOLATED_CONFIG_DIR"
+}
+
 # shunt_invoke <agent> <question> [file...]
-# Runs `opencode run --agent <agent> -f <file> ... "<question>" --format json`
-# and prints the path to a temp file holding the raw JSONL stdout.
+# Runs `opencode run --agent <agent> "<question>" -f <file> ... --format json`
+# against an isolated OpenCode config (see shunt_prepare_isolated_config) and
+# prints the path to a temp file holding the raw JSONL stdout.
 shunt_invoke() {
   local agent="$1"
   local question="$2"
@@ -42,11 +80,14 @@ shunt_invoke() {
     file_args+=(-f "$f")
   done
 
+  local iso_config
+  iso_config=$(shunt_prepare_isolated_config "$agent")
+
   local out status
   out=$(shunt_tmpfile)
   status=0
-  timeout "${SHUNT_TIMEOUT_SECONDS}" \
-    "$SHUNT_OPENCODE_BIN" run --agent "$agent" "${file_args[@]}" "$question" --format json \
+  XDG_CONFIG_HOME="$iso_config" timeout "${SHUNT_TIMEOUT_SECONDS}" \
+    "$SHUNT_OPENCODE_BIN" run --agent "$agent" "$question" "${file_args[@]}" --format json \
     >"$out" 2>/dev/null || status=$?
 
   if [ "$status" -ne 0 ]; then

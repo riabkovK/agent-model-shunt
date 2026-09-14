@@ -56,8 +56,21 @@ automatically; you create the agent once yourself. Create
 ```markdown
 ---
 description: Precise, read-only code analyst for delegated bulk-read questions.
-mode: subagent
+mode: primary
 model: your-provider/your-model
+tools:
+  read: true
+  bash: false
+  write: false
+  edit: false
+  glob: false
+  grep: false
+  task: false
+  webfetch: false
+  todowrite: false
+  skill: false
+  changed-files: false
+  dependency-analyzer: false
 ---
 
 You are a precise code analyst. Answer the question about the attached
@@ -67,7 +80,27 @@ next steps unless asked.
 ```
 
 Replace `your-provider/your-model` with a model from your own
-`opencode.json` provider config (for example `bootsman/qwen3.8`).
+`opencode.json` provider config (for example
+`bootsman/Spark/deepseek-ai/DeepSeek-V4-Flash-0731`).
+
+`mode: primary` is required: `opencode run --agent <name>` only invokes
+primary agents directly; a `subagent`-mode agent is silently ignored and
+`opencode` falls back to the CLI's own default agent instead (which loads
+your entire normal working setup, defeating the point of delegating). The
+explicit `tools: false` entries turn off every OpenCode built-in tool this
+agent doesn't need for a read-only bulk-read task.
+
+Every non-`read` tool listed above is on by default unless turned off
+explicitly, and `scripts/lib/opencode.sh` isolates each delegated call into
+its own minimal `XDG_CONFIG_HOME` (see [Configuration](#configuration))
+containing only this agent and the one provider its `model:` references, so
+your regular OpenCode skills/commands/MCP servers never get attached to a
+delegated call. Without that isolation, `opencode run` otherwise loads your
+*entire* global `~/.config/opencode` config for every call; on a setup with
+several MCP servers configured this was observed inflating a single
+small-file read from a few thousand prompt tokens to 70,000+, which you'd
+be paying for on the delegated model regardless of Claude's own savings.
+This isolation is automatic; no extra setup step is required.
 
 ### 3. Verify
 
@@ -84,6 +117,9 @@ scripts/bulk-read --question "What license is this project under?" --paths LICEN
 | `SHUNT_OPENCODE_BIN` | `opencode` | Path or name of the OpenCode binary to invoke. |
 | `SHUNT_TIMEOUT_SECONDS` | `120` | Timeout for a single delegated `opencode run` call. |
 | `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation. |
+| `SHUNT_HOOKS_DISABLED` | unset | When `1`/`true`/`yes`, both PreToolUse hooks allow every read through unchecked. See the `/toggle-hooks` skill for A/B testing hooks-on vs hooks-off. |
+| `SHUNT_OPENCODE_CONFIG_HOME` | `~/.config/opencode` | Where to read your real OpenCode agent/provider config from, when building the isolated per-call config below. |
+| `SHUNT_ISOLATED_CONFIG_DIR` | `~/.cache/cc-model-shunt/opencode-config` | Where the isolated, minimal OpenCode config (one agent, one provider) is written and reused for every delegated call. Safe to delete; it's regenerated on each `opencode run`. |
 
 ## Evals
 
