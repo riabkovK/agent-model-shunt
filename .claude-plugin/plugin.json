@@ -7,10 +7,7 @@
     "name": "cc-model-shunt contributors"
   },
   "homepage": "https://github.com/riabkovK/cc-model-shunt",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/riabkovK/cc-model-shunt.git"
-  },
+  "repository": "https://github.com/riabkovK/cc-model-shunt.git",
   "license": "Apache-2.0",
   "keywords": [
     "claude-code",
@@ -18,7 +15,5 @@
     "opencode",
     "token-savings",
     "hooks"
-  ],
-  "hooks": "./hooks/hooks.json",
-  "skills": "./skills"
+  ]
 }

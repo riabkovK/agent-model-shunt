@@ -43,9 +43,20 @@ custom model of your choosing.
 
 ### 1. Install the plugin
 
-Install this repository as a Claude Code plugin (see Claude Code's plugin
-installation docs for your preferred method: local path, git URL, or a
-marketplace).
+This repo ships its own local marketplace (`.claude-plugin/marketplace.json`,
+one entry pointing back at `.claude-plugin/plugin.json`), so a clone can be
+installed straight from its path, no published marketplace required yet:
+
+```bash
+claude plugin marketplace add /path/to/this/repo
+claude plugin install cc-model-shunt@cc-model-shunt-marketplace
+```
+
+(`/plugin marketplace add` / `/plugin install` are the equivalent slash
+commands if you're doing this interactively rather than from a script.)
+Restart the session for the newly installed hooks to take effect. A
+published marketplace for a one-command install from a fresh clone is
+tracked in `docs/TODO.md`.
 
 ### 2. Create the `bulk-reader` OpenCode agent
 

@@ -1,0 +1,14 @@
+{
+  "name": "cc-model-shunt-marketplace",
+  "description": "Local marketplace for the cc-model-shunt plugin.",
+  "owner": {
+    "name": "Konstantin Riabkov"
+  },
+  "plugins": [
+    {
+      "name": "cc-model-shunt",
+      "source": ".",
+      "description": "Shunts token-heavy, low-intelligence work (large file reads) from Claude onto your own custom models, routed through OpenCode."
+    }
+  ]
+}
