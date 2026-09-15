@@ -15,7 +15,7 @@ REPO_ROOT="$(cd "$EVALS_DIR/.." && pwd)"
 echo "== transport eval: scripts/bulk-read against a live OpenCode agent =="
 echo "This requires: opencode on PATH, a configured provider, and the"
 echo "'bulk-reader' agent (see README.md setup). It will time out after"
-echo "\${SHUNT_TIMEOUT_SECONDS:-120}s if the provider is unreachable."
+echo "\${SHUNT_TIMEOUT_SECONDS:-300}s if the provider is unreachable."
 echo
 
 question="What is the topic of line 1 in this file? Answer in one short sentence."

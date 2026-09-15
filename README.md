@@ -115,7 +115,7 @@ scripts/bulk-read --question "What license is this project under?" --paths LICEN
 |---|---|---|
 | `SHUNT_MIN_LINES` | `350` | Line-count threshold above which reads are blocked and delegated. |
 | `SHUNT_OPENCODE_BIN` | `opencode` | Path or name of the OpenCode binary to invoke. |
-| `SHUNT_TIMEOUT_SECONDS` | `120` | Timeout for a single delegated `opencode run` call. |
+| `SHUNT_TIMEOUT_SECONDS` | `300` | Timeout for a single delegated `opencode run` call. |
 | `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation. |
 | `SHUNT_HOOKS_DISABLED` | unset | When `1`/`true`/`yes`, both PreToolUse hooks allow every read through unchecked. See the `/toggle-hooks` skill for A/B testing hooks-on vs hooks-off. |
 | `SHUNT_OPENCODE_CONFIG_HOME` | `~/.config/opencode` | Where to read your real OpenCode agent/provider config from, when building the isolated per-call config below. |
@@ -124,9 +124,10 @@ scripts/bulk-read --question "What license is this project under?" --paths LICEN
 ## Evals
 
 ```bash
-evals/run.sh              # hook routing decisions — no network needed
-evals/transport-evals.sh  # one live scripts/bulk-read call — needs OpenCode + a provider
-evals/benchmark.sh        # token-savings + latency benchmark — needs OpenCode + a provider
+evals/run.sh                # hook routing decisions — no network needed
+evals/transport-evals.sh    # one live scripts/bulk-read call — needs OpenCode + a provider
+evals/benchmark.sh          # token-savings + latency of the delegated OpenCode call, in isolation
+evals/baseline-benchmark.sh # shunt vs Claude reading the files directly — needs OpenCode + a provider + `claude` CLI
 ```
 
 `evals/benchmark.sh` measures, per scenario in `evals/benchmarks.json`:
@@ -144,10 +145,80 @@ evals/benchmark.sh        # token-savings + latency benchmark — needs OpenCode
 
 The three scenarios (`single-large-file`, `source-plus-test`,
 `multi-file-cross-read`) mirror the case shapes from shunt's own
-benchmarks, run against synthetic fixture files under `evals/fixtures/`
-(`api-client.ts`, `task-queue.ts` + `task-queue.test.ts`, `event-bus.ts`;
-regenerate with `evals/fixtures/generate.sh` if you change the word lists
-in that script). Fixture content is original, not copied from shunt.
+benchmarks, run against real production Go source under
+`evals/fixtures/echo/` (`echo.go`; `cors.go` + `cors_test.go`;
+`context.go` + `router.go` + `group.go`), pinned copies of
+[labstack/echo](https://github.com/labstack/echo) `v5.3.1` (MIT license,
+kept alongside in that directory; see
+[`evals/fixtures/echo/NOTICE.md`](evals/fixtures/echo/NOTICE.md) for
+provenance and how to re-fetch them). Real, unmodified library code makes
+these scenarios representative of what you'd actually ask a coding agent
+to read, rather than synthetic filler.
+
+`evals/baseline-benchmark.sh` runs the same scenarios a second way, to
+answer the actual "is this worth it" question: for each scenario, in each
+iteration, it sends the question plus the raw file content to a real
+`claude -p --output-format json` call twice — once as a brand-new session
+(`no-resume`) and once chained into the same session as the prior scenario
+(`resume`, so the one-time cost of priming this project's system prompt is
+only paid once, matching how a real interactive session amortizes it) —
+then runs the same scenario through `scripts/bulk-read` (`shunt`) and
+writes all three as JSON rows to `evals/results/baseline-benchmark.jsonl`.
+`evals/aggregate-baseline-results.py` (run automatically at the end) turns
+those rows into `evals/results/baseline-benchmark-summary.json` and a
+printed comparison table: real wall-clock time and real token/cost usage
+for all three variants, not estimates. This script spends real money on
+your Claude account (it prints the total cost at the end) and its
+`ITERATIONS` calls have no built-in retry, so pick a count you're willing
+to pay for and run it deliberately, not in a loop.
+
+For `no-resume`/`resume`, `context_tokens` is the real
+`input + cache_read + cache_creation` usage the `claude -p` call reports:
+what Claude actually paid to have the raw file content in context. For
+`shunt`, `context_tokens` is a chars/4 estimate of only the delegate's
+answer text (the thing that would land in Claude's context if a live
+session relayed it) — it does not include the tokens a real session would
+spend emitting the `Bash` call to `scripts/bulk-read` or reading the
+`/bulk-reader` skill instructions that route it there, so it's a
+best-case, not a full accounting of shunt's Claude-side cost. The
+delegate model's own input/output tokens are tracked separately
+(`delegate_input_tokens`/`delegate_output_tokens`) and are not folded into
+this comparison at all.
+
+`context_tokens` for `no-resume`/`resume` is dominated by this project's
+own Claude Code system prompt and tool/skill/hook definitions, not by the
+fixture file: a 25-40KB Go file is only ~6,000-10,000 tokens by the
+chars/4 estimate, tens of thousands of tokens short of the totals this
+script reports. Every `no-resume` call is a genuinely fresh `claude -p`
+process, so it pays that bootstrap cost in full, every time - that's real
+if your workflow spins up a fresh headless call per question, but it's not
+representative of one already-open interactive session reading several
+files, where the bootstrap is paid once and then served from prompt cache.
+`resume` approximates that real session better, but `context_tokens` still
+sums cached and fresh tokens together at equal weight, so it doesn't fall
+much even though the *dollar* cost does (`cost_usd` in each row and in
+`baseline-benchmark-summary.json` prices cache reads far below fresh
+tokens). Read `cost_usd`, not `context_tokens`, if you want the closest
+proxy to "what would this actually cost me in a live session."
+
+**[`docs/shunt-ledger.html`](docs/shunt-ledger.html)** is the full write-up
+of the latest `evals/baseline-benchmark.sh` run: per-scenario token, cost,
+and time comparisons for `no-resume` / `resume` / `shunt`. It's a static
+file checked into this repo; open it directly in a browser (GitHub's own
+file viewer renders `.html` as source, not as a page, so save/clone the
+repo to view it rendered).
+
+> The fixtures moved to real `labstack/echo` source (see above); the
+> ledger and the results file it's built from need a fresh
+> `evals/baseline-benchmark.sh` run against them before the numbers are
+> trustworthy again — that run spends real money on your Claude account,
+> so it isn't run automatically as part of an edit.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SHUNT_BASELINE_MODEL` | `sonnet` | Model alias passed to `claude -p --model` for the baseline side of `evals/baseline-benchmark.sh`. |
+| `SHUNT_BASELINE_TIMEOUT` | `120` | Timeout (seconds) for each baseline `claude -p` call. |
+| `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 2` (no-resume + resume). |
 
 ## Scope
 
