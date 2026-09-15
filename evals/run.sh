@@ -30,7 +30,7 @@ run_suite() {
     local payload
     payload=$(echo "$case_json" | jq -c "{$input_key: .tool_input}")
 
-    actual=$(cd "$REPO_ROOT" && echo "$payload" | "$hook_path" | jq -r '.decision')
+    actual=$(cd "$REPO_ROOT" && echo "$payload" | "$hook_path" | jq -r '.hookSpecificOutput.permissionDecision | if . == "deny" then "block" else . end')
 
     if [ "$actual" = "$expected" ]; then
       echo "PASS: $name"
@@ -55,7 +55,7 @@ echo "== SHUNT_HOOKS_DISABLED override =="
 check_disabled_override() {
   local name="$1" hook_path="$2" payload="$3"
   local actual
-  actual=$(cd "$REPO_ROOT" && echo "$payload" | SHUNT_HOOKS_DISABLED=1 "$hook_path" | jq -r '.decision')
+  actual=$(cd "$REPO_ROOT" && echo "$payload" | SHUNT_HOOKS_DISABLED=1 "$hook_path" | jq -r '.hookSpecificOutput.permissionDecision')
   if [ "$actual" = "allow" ]; then
     echo "PASS: $name"
     pass=$((pass + 1))

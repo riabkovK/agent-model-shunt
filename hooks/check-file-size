@@ -2,8 +2,11 @@
 # Block full-file reads on large files, redirect to the bulk-reader skill.
 # Self-contained: all routing logic lives here, no AGENTS.md/CLAUDE.md needed.
 
+allow() { echo '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}'; }
+deny() { echo "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"$1\"}}"; }
+
 case "${SHUNT_HOOKS_DISABLED:-}" in
-  1|true|TRUE|yes|YES) echo '{"decision": "allow"}'; exit 0 ;;
+  1|true|TRUE|yes|YES) allow; exit 0 ;;
 esac
 
 MIN_LINES="${SHUNT_MIN_LINES:-350}"
@@ -16,19 +19,19 @@ offset=$(echo "$input" | jq -r '.tool_input.offset // empty')
 limit=$(echo "$input" | jq -r '.tool_input.limit // empty')
 
 if [ -n "$offset" ] || [ -n "$limit" ]; then
-  echo '{"decision": "allow"}'
+  allow
   exit 0
 fi
 
 if [ -z "$file_path" ] || [ ! -f "$file_path" ]; then
-  echo '{"decision": "allow"}'
+  allow
   exit 0
 fi
 
 lines=$(wc -l < "$file_path" 2>/dev/null | tr -d ' ' || echo "0")
 if [ "$lines" -le "$MIN_LINES" ]; then
-  echo '{"decision": "allow"}'
+  allow
   exit 0
 fi
 
-echo "{\"decision\": \"block\", \"reason\": \"File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to a custom model instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need.\"}"
+deny "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to a custom model instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need."

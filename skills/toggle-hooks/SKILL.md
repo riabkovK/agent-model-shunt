@@ -16,7 +16,8 @@ files and real tasks.
 
 Both hooks check `SHUNT_HOOKS_DISABLED` first, before any size logic: if it
 is `1`, `true`, `TRUE`, `yes`, or `YES`, the hook immediately returns
-`{"decision": "allow"}` without inspecting the file at all.
+`{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}`
+without inspecting the file at all.
 
 There are two ways to set it, with different guarantees:
 

@@ -2,8 +2,11 @@
 # Block Bash commands that read large files, redirect to the bulk-reader skill.
 # Catches cat/head/tail/less/more that bypass the Read hook.
 
+allow() { echo '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}'; }
+deny() { echo "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"$1\"}}"; }
+
 case "${SHUNT_HOOKS_DISABLED:-}" in
-  1|true|TRUE|yes|YES) echo '{"decision": "allow"}'; exit 0 ;;
+  1|true|TRUE|yes|YES) allow; exit 0 ;;
 esac
 
 MIN_LINES="${SHUNT_MIN_LINES:-350}"
@@ -12,10 +15,10 @@ case "$MIN_LINES" in ''|*[!0-9]*) MIN_LINES=350 ;; esac
 input=$(cat)
 
 command=$(echo "$input" | jq -r '.tool_input.command // empty')
-[ -z "$command" ] && { echo '{"decision": "allow"}'; exit 0; }
+[ -z "$command" ] && { allow; exit 0; }
 
-echo "$command" | grep -qE '\|' && { echo '{"decision": "allow"}'; exit 0; }
-echo "$command" | grep -qE '>' && { echo '{"decision": "allow"}'; exit 0; }
+echo "$command" | grep -qE '\|' && { allow; exit 0; }
+echo "$command" | grep -qE '>' && { allow; exit 0; }
 
 file_path=""
 if echo "$command" | grep -qE '^(cat|head|tail|less|more) '; then
@@ -34,12 +37,12 @@ if echo "$command" | grep -qE '^(cat|head|tail|less|more) '; then
   done
 fi
 
-[ -z "$file_path" ] && { echo '{"decision": "allow"}'; exit 0; }
-[ ! -f "$file_path" ] && { echo '{"decision": "allow"}'; exit 0; }
+[ -z "$file_path" ] && { allow; exit 0; }
+[ ! -f "$file_path" ] && { allow; exit 0; }
 
 lines=$(wc -l < "$file_path" 2>/dev/null | tr -d ' ' || echo "0")
 if [ "$lines" -gt "$MIN_LINES" ]; then
-  echo "{\"decision\": \"block\", \"reason\": \"File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to a custom model instead of cat/head/tail.\"}"
+  deny "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to a custom model instead of cat/head/tail."
 else
-  echo '{"decision": "allow"}'
+  allow
 fi
