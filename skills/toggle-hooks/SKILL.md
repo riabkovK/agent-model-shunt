@@ -1,6 +1,6 @@
 ---
 name: toggle-hooks
-description: Turn this plugin's PreToolUse hooks (check-file-size, check-bash-read) on or off via the SHUNT_HOOKS_DISABLED environment variable, for A/B testing Claude reading large files directly versus delegating through bulk-read. Use when the user wants to compare behavior, token cost, or latency with and without the shunt hooks active.
+description: Report whether this plugin's PreToolUse hooks (check-file-size, check-bash-read) are currently on or off, then ask the user whether to flip them, for A/B testing Claude reading large files directly versus delegating through bulk-read. Use when the user wants to compare behavior, token cost, or latency with and without the shunt hooks active.
 ---
 
 # Toggle Hooks
@@ -29,18 +29,30 @@ There are two ways to set it, with different guarantees:
    This is the most reliable way to run a true A/B comparison: one session
    started with the variable set, one without.
 
-2. **This skill, for the current session.** When invoked, do the
-   following:
+2. **This skill, for the current session.** When invoked, always do this in
+   order — report state first, then ask, regardless of how the user phrased
+   the request:
    - Read `.claude/settings.local.json` in the project root if it exists
      (create it with `{}` if not — this file is per-user and gitignored,
      never `.claude/settings.json`, which is shared).
-   - To disable: merge in `{"env": {"SHUNT_HOOKS_DISABLED": "1"}}`,
-     preserving any other keys already in the file.
-   - To re-enable: remove the `SHUNT_HOOKS_DISABLED` key from `env` (delete
-     the `env` object too if it becomes empty), preserving everything else.
-   - If the user's request doesn't say which direction, ask or infer from
-     context (e.g. "turn hooks off for testing" = disable, "turn them back
-     on" = re-enable).
+   - Determine current state from `env.SHUNT_HOOKS_DISABLED`: treat `1`,
+     `true`, `TRUE`, `yes`, `YES` as **disabled**; anything else (unset,
+     empty, `0`, `false`) as **enabled**.
+   - Tell the user the current state plainly (e.g. "Hooks are currently
+     **enabled**" / "Hooks are currently **disabled**").
+   - Ask the user what to do next with `AskUserQuestion`, offering only the
+     action(s) that make sense for that state:
+     - If enabled: offer "Disable hooks" (and, if useful, "Leave as is").
+     - If disabled: offer "Enable hooks" (and, if useful, "Leave as is").
+     Do not infer the desired direction from the original wording and skip
+     the question — always let the user pick, even if their request sounded
+     like it already implied a direction.
+   - Apply the choice:
+     - Disable: merge in `{"env": {"SHUNT_HOOKS_DISABLED": "1"}}`,
+       preserving any other keys already in the file.
+     - Enable: remove the `SHUNT_HOOKS_DISABLED` key from `env` (delete the
+       `env` object too if it becomes empty), preserving everything else.
+     - Leave as is: make no changes.
    - Tell the user plainly: this file is read by Claude Code at session
      start. If the hook's behavior doesn't change on the very next matching
      tool call, restart the session so the new environment is picked up —

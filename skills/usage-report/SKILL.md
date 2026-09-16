@@ -1,6 +1,6 @@
 ---
 name: usage-report
-description: Turn on the plugin's debug usage log (SHUNT_DEBUG_LOG) so every real scripts/bulk-read delegation is recorded, and summarize it with scripts/usage-report - delegate tokens/cost actually spent, and a chars/4 estimate of Claude-context tokens avoided by delegating instead of reading the file directly. Use when the user asks how much shunt is saving, wants to track delegate spend over a work session, or wants to turn this tracking on/off.
+description: Summarize the plugin's debug usage log (SHUNT_DEBUG_LOG) with scripts/usage-report - delegate tokens/cost actually spent, and a chars/4 estimate of Claude-context tokens avoided by delegating instead of reading the file directly. Use when the user asks how much shunt is saving or wants to track delegate spend over a work session. To turn the underlying logging on or off, use /toggle-debug-log instead.
 ---
 
 # Usage Report
@@ -26,21 +26,10 @@ side by side rather than expecting this log to include Claude's spend.
 
 ## Turning logging on
 
-Off by default (`SHUNT_DEBUG_LOG` unset). To enable for the current project:
-
-- Read `.claude/settings.local.json` in the project root if it exists
-  (create it with `{}` if not - this file is per-user and gitignored, never
-  `.claude/settings.json`, which is shared).
-- Merge in `{"env": {"SHUNT_DEBUG_LOG": "1"}}`, preserving any other keys
-  already in the file (same mechanism the `/toggle-hooks` skill uses for
-  `SHUNT_HOOKS_DISABLED`).
-- Tell the user: this file is read by Claude Code at session start, so if
-  logging doesn't start on the very next delegated `bulk-read` call, restart
-  the session.
-- To disable again, remove the `SHUNT_DEBUG_LOG` key from `env` (delete the
-  `env` object too if it becomes empty), preserving everything else.
-
-Alternatively, for a one-off session: `SHUNT_DEBUG_LOG=1 claude`.
+Off by default (`SHUNT_DEBUG_LOG` unset). Use the `/toggle-debug-log` skill
+to enable or disable it — it handles editing `.claude/settings.local.json`
+and reminds the user to restart the session, since that file is only read
+by Claude Code at session start.
 
 Each enabled call appends one line to `SHUNT_DEBUG_LOG_PATH` (default
 `~/.cache/cc-model-shunt/usage.jsonl`): `timestamp`, `agent`, `files`
