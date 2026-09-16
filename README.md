@@ -112,7 +112,7 @@ next steps unless asked.
 
 Replace `your-provider/your-model` with a model from your own
 `opencode.json` provider config (for example
-`bootsman/Spark/deepseek-ai/DeepSeek-V4-Flash-0731`).
+`your-provider/Spark/deepseek-ai/DeepSeek-V4-Flash-0731`).
 
 `mode: primary` is required: `opencode run --agent <name>` only invokes
 primary agents directly; a `subagent`-mode agent is silently ignored and
@@ -161,6 +161,7 @@ evals/run.sh                # hook routing decisions — no network needed
 evals/transport-evals.sh    # one live scripts/bulk-read call — needs OpenCode + a provider
 evals/benchmark.sh          # token-savings + latency of the delegated OpenCode call, in isolation
 evals/baseline-benchmark.sh # shunt vs Claude reading the files directly — needs OpenCode + a provider + `claude` CLI
+evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? — needs OpenCode + a provider + `claude` CLI
 ```
 
 `evals/benchmark.sh` measures, per scenario in `evals/benchmarks.json`:
@@ -241,6 +242,14 @@ file checked into this repo; open it directly in a browser (GitHub's own
 file viewer renders `.html` as source, not as a page, so save/clone the
 repo to view it rendered).
 
+> **On speed:** the timing numbers in that ledger (and in
+> `docs/fidelity-ledger.html`) depend heavily on which OpenCode provider and
+> model you point `scripts/bulk-read` at — different providers/models can be
+> dramatically faster or slower for the same call. These numbers are one
+> personal observation from one provider/model at one point in time, not a
+> guarantee; re-run the benchmarks against your own setup before drawing
+> conclusions about your own flow.
+
 > The fixtures moved to real `labstack/echo` source (see above); the
 > ledger and the results file it's built from need a fresh
 > `evals/baseline-benchmark.sh` run against them before the numbers are
@@ -252,6 +261,45 @@ repo to view it rendered).
 | `SHUNT_BASELINE_MODEL` | `sonnet` | Model alias passed to `claude -p --model` for the baseline side of `evals/baseline-benchmark.sh`. |
 | `SHUNT_BASELINE_TIMEOUT` | `120` | Timeout (seconds) for each baseline `claude -p` call. |
 | `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 2` (no-resume + resume). |
+
+### Fidelity: does delegating lose information or hallucinate?
+
+`evals/baseline-benchmark.sh` answers "is delegation worth it" (cost/time).
+`evals/fidelity-benchmark.sh` answers a different question: "does delegation
+actually degrade the answer?" It runs against a separate ground-truth set,
+[`evals/fidelity-questions.json`](evals/fidelity-questions.json) — a list of
+questions over the same `evals/fixtures/echo/` files, each with a
+`ground_truth.must_mention` list of exact identifiers extracted mechanically
+(`grep`) from the real source, not written from memory. Some questions are
+marked `adversarial: true`: picked because a summarizing delegate is likely
+to drop or flatten at least one item (inconsistent naming, less-common
+identifiers, entries defined far from a file's main cluster).
+
+For each question it captures three answers: `direct` (Claude reads the file
+content inlined in the prompt), `delegate` (`scripts/bulk-read`'s raw
+answer, which Claude never sees the source for), and `final` (Claude
+answering the same question using *only* the delegate's raw answer — this
+is what a real user actually sees once the `PreToolUse` hook blocks a direct
+read and Claude falls back to bulk-read). Scoring is exact/structured, not
+LLM-judged: recall is the fraction of `must_mention` items found as a
+case-insensitive substring of the answer. An item counts as an
+**unsupported claim** (a hallucination signal) if it shows up in `final` but
+not in `delegate`'s own raw text — the only source `final` had. This is a
+heuristic, not proof of fabrication: Claude can paraphrase a delegate claim
+in different wording and trip a false positive, so treat unsupported claims
+as something to inspect, not a final verdict.
+
+Results go to `evals/results/fidelity-benchmark.jsonl`;
+`evals/aggregate-fidelity-results.py` (run automatically at the end) prints
+a per-question table of direct vs. delegate recall, which ground-truth
+items each path dropped, and any unsupported claims. Like
+`baseline-benchmark.sh`, this spends real money on your Claude account and
+needs a reachable OpenCode provider — run it deliberately, not in a loop.
+
+**[`docs/fidelity-ledger.html`](docs/fidelity-ledger.html)** is the write-up
+of the latest `evals/fidelity-benchmark.sh` run: on the current question
+set (n=1), delegation showed 100% recall on every question, including the
+adversarial ones, and zero unsupported claims.
 
 ## Scope
 

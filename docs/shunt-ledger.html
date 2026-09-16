@@ -255,6 +255,10 @@ footer a { color: var(--muted); }
     <span class="k">Shunt is much slower on real code than the token savings alone suggest.</span>
     <p>All three scenarios here use real, unmodified files from a production Go codebase (150-960+ lines each) rather than short synthetic snippets. Against files that size, the delegate model routinely took 40-160+ seconds per call - roughly 3-4x longer, in absolute terms, than the entire <code>no-resume</code> Claude call it's replacing. This is why <code>SHUNT_TIMEOUT_SECONDS</code> now defaults to 300s: at the old 120s default, 5 of the first 9 shunt calls in this run timed out outright, and every scenario needed a re-run before reaching n=3. Even at 300s, expect the latency trade-off on files this size to be measured in tens of seconds to minutes, not the single-digit seconds a short-file demo might suggest.</p>
   </div>
+  <div class="callout" style="margin-top:14px;">
+    <span class="k">Speed depends on your provider, not on shunt itself.</span>
+    <p>The <code>shunt</code> timings above were measured against one specific OpenCode provider and model. Different providers/models can be dramatically faster or slower for the same call, and gateway load varies over time. These numbers are a personal observation from one setup at one point in time, not a guaranteed baseline - run <code>evals/baseline-benchmark.sh</code> against your own provider before trusting these figures to describe your own flow.</p>
+  </div>
 </section>
 
 <footer>

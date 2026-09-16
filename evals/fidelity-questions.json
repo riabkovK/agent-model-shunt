@@ -1,0 +1,60 @@
+{
+  "description": "Ground-truth question set for evals/fidelity-benchmark.sh. Reuses the same fixture files/groupings as evals/benchmarks.json (evals/fixtures/echo, real Go source from labstack/echo v5.3.1, MIT). Each ground_truth.must_mention list was extracted mechanically (grep) from the fixture files, not written from memory, so it can be re-derived and checked instead of trusted blindly. `adversarial: true` marks questions picked because a summarizing delegate is likely to drop or flatten at least one item (mixed naming conventions, less-common identifiers, entries defined far from the file's main cluster).",
+  "scoring": "For each answer text, compute recall = (must_mention items found as a case-insensitive substring) / (total must_mention items). This is exact/structured matching, not LLM-judged.",
+  "hallucination_check": "An item counts as an unsupported claim if it appears in the final answer (the one produced after Claude is given only the delegate's bulk-read answer, not the file) but does not appear anywhere in the delegate's own raw bulk-read answer. This is a heuristic, not proof of fabrication: Claude could paraphrase a delegate claim using different wording and trip a false positive. Treat unsupported_claims as a signal to inspect manually, not a final verdict.",
+  "questions": [
+    {
+      "id": 1,
+      "name": "echo-http-methods",
+      "paths": ["fixtures/echo/echo.go"],
+      "question": "List every HTTP method name for which the Echo type has a dedicated routing method (e.g. the method exists as `func (e *Echo) <NAME>(...)`), using the exact method name as it appears in the Go source.",
+      "adversarial": true,
+      "adversarial_reason": "10 methods exist, not just the common 4 (GET/POST/PUT/DELETE). CONNECT, HEAD, OPTIONS, PATCH, QUERY, and TRACE are easy to drop in a summary.",
+      "ground_truth": {
+        "must_mention": ["CONNECT", "DELETE", "GET", "HEAD", "OPTIONS", "PATCH", "POST", "PUT", "QUERY", "TRACE"]
+      }
+    },
+    {
+      "id": 2,
+      "name": "echo-wrap-functions",
+      "paths": ["fixtures/echo/echo.go"],
+      "question": "What are the names of the two package-level functions used to wrap an existing net/http Handler or middleware function into Echo's own handler/middleware types?",
+      "adversarial": false,
+      "ground_truth": {
+        "must_mention": ["WrapHandler", "WrapMiddleware"]
+      }
+    },
+    {
+      "id": 3,
+      "name": "cors-config-fields",
+      "paths": ["fixtures/echo/cors.go", "fixtures/echo/cors_test.go"],
+      "question": "What configuration options (struct field names) does the CORS middleware in the first file support, and which of them are exercised by the tests in the second file?",
+      "adversarial": false,
+      "ground_truth": {
+        "must_mention": ["Skipper", "AllowOrigins", "UnsafeAllowOriginFunc", "AllowMethods", "AllowHeaders", "AllowCredentials", "ExposeHeaders", "MaxAge"]
+      }
+    },
+    {
+      "id": 4,
+      "name": "cors-test-function-names",
+      "paths": ["fixtures/echo/cors.go", "fixtures/echo/cors_test.go"],
+      "question": "List the exact names of every Go test function defined in the second file.",
+      "adversarial": true,
+      "adversarial_reason": "Naming is inconsistent (TestCORS, TestCORSConfig, TestCORSWithConfig_AllowMethods, TestCorsHeaders vs Test_allowOriginScheme, Test_allowOriginFunc); the underscore-prefixed ones are easy to normalize away or drop in a summary.",
+      "ground_truth": {
+        "must_mention": ["TestCORS", "TestCORSConfig", "Test_allowOriginScheme", "TestCORSWithConfig_AllowMethods", "TestCorsHeaders", "Test_allowOriginFunc"]
+      }
+    },
+    {
+      "id": 5,
+      "name": "cross-file-exported-types",
+      "paths": ["fixtures/echo/context.go", "fixtures/echo/router.go", "fixtures/echo/group.go"],
+      "question": "Which exported (capitalized) top-level types are defined in each of these three files?",
+      "adversarial": true,
+      "adversarial_reason": "router.go alone defines 7 exported types, three of which (AddRouteError, PathValues, PathValue) are defined far below the file's main cluster (Router/Routes/DefaultRouter/RouterConfig) and are easy to miss when skimming/summarizing a long file.",
+      "ground_truth": {
+        "must_mention": ["Context", "Router", "Routes", "DefaultRouter", "RouterConfig", "AddRouteError", "PathValues", "PathValue", "Group"]
+      }
+    }
+  ]
+}
