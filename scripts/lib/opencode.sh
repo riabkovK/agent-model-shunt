@@ -10,6 +10,8 @@ SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-300}"
 SHUNT_BULK_READER_AGENT="${SHUNT_BULK_READER_AGENT:-bulk-reader}"
 SHUNT_OPENCODE_CONFIG_HOME="${SHUNT_OPENCODE_CONFIG_HOME:-$HOME/.config/opencode}"
 SHUNT_ISOLATED_CONFIG_DIR="${SHUNT_ISOLATED_CONFIG_DIR:-$HOME/.cache/cc-model-shunt/opencode-config}"
+SHUNT_DEBUG_LOG="${SHUNT_DEBUG_LOG:-}"
+SHUNT_DEBUG_LOG_PATH="${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/cc-model-shunt/usage.jsonl}"
 
 shunt_report_error() {
   echo "shunt: $1" >&2
@@ -132,4 +134,63 @@ shunt_extract_usage() {
       " cost=" + (.cost // 0 | tostring)
     end
   ' "$jsonl" 2>/dev/null || true
+}
+
+# shunt_debug_log_enabled
+# Returns success (0) if SHUNT_DEBUG_LOG is truthy, matching the same
+# accepted values as SHUNT_HOOKS_DISABLED.
+shunt_debug_log_enabled() {
+  case "${SHUNT_DEBUG_LOG:-}" in
+    1|true|TRUE|yes|YES) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+# shunt_log_usage <agent> <jsonl-file> <question> <file...>
+# Appends one JSON line to SHUNT_DEBUG_LOG_PATH recording: which delegate
+# call this was, its real usage (from <jsonl-file>, the same
+# `opencode run --format json` transcript shunt_extract_usage reads), and a
+# chars/4 estimate (evals/benchmark.sh's own documented heuristic) of the
+# tokens Claude's context avoided by not reading <file...> directly. Never
+# fails the caller: logging errors are swallowed since this is a debug aid,
+# not part of the delegation path.
+shunt_log_usage() {
+  local agent="$1" jsonl="$2" question="$3"
+  shift 3
+  local files=("$@")
+
+  mkdir -p "$(dirname "$SHUNT_DEBUG_LOG_PATH")" 2>/dev/null || return 0
+
+  local files_json avoided_tokens=0
+  files_json="[]"
+  local f bytes lines
+  for f in "${files[@]}"; do
+    bytes=$(wc -c <"$f" 2>/dev/null | tr -d ' ' || echo 0)
+    lines=$(wc -l <"$f" 2>/dev/null | tr -d ' ' || echo 0)
+    avoided_tokens=$((avoided_tokens + (bytes + 3) / 4))
+    files_json=$(echo "$files_json" | jq -c --arg p "$f" --argjson b "$bytes" --argjson l "$lines" \
+      '. + [{path: $p, lines: $l, bytes: $b}]')
+  done
+
+  jq -n -c \
+    --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
+    --arg agent "$agent" \
+    --argjson files "$files_json" \
+    --argjson qchars "${#question}" \
+    --argjson avoided "$avoided_tokens" \
+    --slurpfile usage <(jq -s -r '
+      [.[] | select(.type=="step_finish")] | last | .part |
+      if . == null then {input:0,output:0,cost:0}
+      else {input: (.tokens.input // 0), output: (.tokens.output // 0), cost: (.cost // 0)} end
+    ' "$jsonl" 2>/dev/null || echo '{"input":0,"output":0,"cost":0}') \
+    '{
+      timestamp: $ts,
+      agent: $agent,
+      files: $files,
+      question_chars: $qchars,
+      delegate_input_tokens: ($usage[0].input // 0),
+      delegate_output_tokens: ($usage[0].output // 0),
+      delegate_cost_usd: ($usage[0].cost // 0),
+      avoided_tokens_estimate: $avoided
+    }' >>"$SHUNT_DEBUG_LOG_PATH" 2>/dev/null || true
 }

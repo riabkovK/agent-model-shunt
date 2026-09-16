@@ -1,0 +1,42 @@
+#!/bin/bash
+# Summarizes scripts/lib/opencode.sh's debug usage log (SHUNT_DEBUG_LOG_PATH,
+# default ~/.cache/cc-model-shunt/usage.jsonl): every real (non-benchmark)
+# scripts/bulk-read call made while SHUNT_DEBUG_LOG was enabled.
+#
+# This only covers the delegate side (real tokens/cost OpenCode reports) and
+# a chars/4 estimate of the Claude-context tokens each call avoided (same
+# heuristic evals/benchmark.sh uses) - it cannot see Claude's own actual
+# spend, which Claude Code tracks itself (see `/cost` in-session).
+#
+# Usage: scripts/usage-report [path-to-jsonl]
+
+set -euo pipefail
+
+log_path="${1:-${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/cc-model-shunt/usage.jsonl}}"
+
+if [ ! -s "$log_path" ]; then
+  echo "shunt: no usage log at $log_path (enable with SHUNT_DEBUG_LOG=1, see /usage-report skill)." >&2
+  exit 1
+fi
+
+jq -s '
+  {
+    calls: length,
+    delegate_input_tokens: (map(.delegate_input_tokens) | add),
+    delegate_output_tokens: (map(.delegate_output_tokens) | add),
+    delegate_cost_usd: (map(.delegate_cost_usd) | add),
+    avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add),
+    by_agent: (
+      group_by(.agent) | map({
+        agent: .[0].agent,
+        calls: length,
+        delegate_cost_usd: (map(.delegate_cost_usd) | add),
+        avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add)
+      })
+    )
+  }
+' "$log_path"
+
+echo "" >&2
+echo "shunt: avoided_tokens_estimate is a chars/4 estimate of context Claude did not spend reading these files directly." >&2
+echo "shunt: this does not include Claude's own actual token/dollar spend for the session - check that with Claude Code's own /cost." >&2

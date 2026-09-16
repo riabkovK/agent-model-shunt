@@ -56,4 +56,8 @@ if [ -n "$usage" ]; then
   echo "shunt: bulk-read usage: $usage" >&2
 fi
 
+if shunt_debug_log_enabled; then
+  shunt_log_usage "$SHUNT_BULK_READER_AGENT" "$out_file" "$question" "${paths[@]}"
+fi
+
 rm -f "$out_file"

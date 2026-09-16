@@ -131,6 +131,8 @@ scripts/bulk-read --question "What license is this project under?" --paths LICEN
 | `SHUNT_HOOKS_DISABLED` | unset | When `1`/`true`/`yes`, both PreToolUse hooks allow every read through unchecked. See the `/toggle-hooks` skill for A/B testing hooks-on vs hooks-off. |
 | `SHUNT_OPENCODE_CONFIG_HOME` | `~/.config/opencode` | Where to read your real OpenCode agent/provider config from, when building the isolated per-call config below. |
 | `SHUNT_ISOLATED_CONFIG_DIR` | `~/.cache/cc-model-shunt/opencode-config` | Where the isolated, minimal OpenCode config (one agent, one provider) is written and reused for every delegated call. Safe to delete; it's regenerated on each `opencode run`. |
+| `SHUNT_DEBUG_LOG` | unset | When `1`/`true`/`yes`, every real `scripts/bulk-read` call appends its usage to `SHUNT_DEBUG_LOG_PATH`. See the `/usage-report` skill and `scripts/usage-report`. |
+| `SHUNT_DEBUG_LOG_PATH` | `~/.cache/cc-model-shunt/usage.jsonl` | Where `SHUNT_DEBUG_LOG` writes its JSONL usage records. |
 
 ## Evals
 
