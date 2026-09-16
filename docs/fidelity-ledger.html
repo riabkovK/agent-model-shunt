@@ -1,0 +1,147 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Fidelity Ledger</title>
+<style>
+:root{
+  color-scheme: light dark;
+  --bg: #f5f6f7;
+  --surface: #ffffff;
+  --text: #1a1d21;
+  --muted: #5b6470;
+  --border: #dde1e6;
+  --accent-save: #0f7a72;
+  --accent-save-bg: #e6f3f1;
+  --accent-cost: #b3541e;
+  --accent-cost-bg: #f7ead9;
+  --track: #eceff2;
+  padding-top: env(safe-area-inset-top, 0px);
+  padding-bottom: env(safe-area-inset-bottom, 0px);
+}
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #14171a;
+    --surface: #1c2024;
+    --text: #eef0f2;
+    --muted: #93a0ab;
+    --border: #2c3136;
+    --accent-save: #4fd6c6;
+    --accent-save-bg: #113330;
+    --accent-cost: #f0a366;
+    --accent-cost-bg: #3a2a18;
+    --track: #262b30;
+  }
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font: 15px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  padding: 48px 16px 64px;
+}
+.wrap { max-width: 820px; margin: 0 auto; }
+code, .mono, .num { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-variant-numeric: tabular-nums; }
+h1 { font-size: 28px; margin: 0 0 6px; letter-spacing: -0.01em; }
+h2 { font-size: 18px; margin: 0 0 12px; }
+h3 { font-size: 15px; margin: 0; }
+p { margin: 0 0 12px; color: var(--text); }
+a { color: var(--accent-save); }
+.lede { color: var(--muted); font-size: 15px; max-width: 62ch; }
+
+header { margin-bottom: 36px; }
+.chips { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+.chip {
+  border: 1px solid var(--border); border-radius: 999px;
+  padding: 5px 12px; font-size: 12.5px; color: var(--muted);
+  background: var(--surface);
+}
+.chip b { color: var(--text); }
+.chip.pending { border-color: var(--accent-cost); color: var(--accent-cost); }
+
+section { margin-bottom: 40px; }
+.card {
+  background: var(--surface); border: 1px solid var(--border);
+  border-radius: 12px; padding: 24px;
+}
+
+.method p { color: var(--muted); font-size: 14px; }
+.method dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margin: 16px 0 0; font-size: 13.5px; }
+.method dt { font-weight: 600; white-space: nowrap; }
+.method dd { margin: 0; color: var(--muted); }
+
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 7px 8px; border-bottom: 1px solid var(--border); }
+th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .02em; }
+tr.adversarial td:first-child::after { content: " *"; color: var(--accent-cost); }
+
+.callout {
+  border: 1px solid var(--border); border-left: 3px solid var(--accent-cost);
+  border-radius: 0 8px 8px 0; padding: 14px 16px; background: var(--surface);
+  font-size: 13.5px; color: var(--text);
+}
+.callout p:last-child { margin-bottom: 0; }
+.callout .k { font-weight: 600; display: block; margin-bottom: 4px; }
+
+footer { color: var(--muted); font-size: 12.5px; border-top: 1px solid var(--border); padding-top: 20px; }
+footer a { color: var(--muted); }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <h1>Fidelity Ledger</h1>
+  <p class="lede">Does delegating a read to <code>scripts/bulk-read</code> lose information or introduce hallucination, compared to Claude reading the same file directly?</p>
+  <div class="chips">
+    <span class="chip"><b>n = 1</b> iteration per question</span>
+    <span class="chip">fixtures: real Go source, <a href="https://github.com/labstack/echo" target="_blank" rel="noopener">labstack/echo</a> v5.3.1</span>
+    <span class="chip">baseline model: <b>claude -p --model sonnet</b></span>
+    <span class="chip">delegate model: <b>bootsman/Spark/deepseek-ai/DeepSeek-V4-Flash-0731</b></span>
+    <span class="chip">real spend this run: <b>$1.82</b></span>
+  </div>
+</header>
+
+<section class="method card">
+  <h2>How this is measured</h2>
+  <p>Five questions in <a href="../evals/fidelity-questions.json">evals/fidelity-questions.json</a>, each with a <code>ground_truth.must_mention</code> list of exact identifiers extracted mechanically (<code>grep</code>) from the real fixture source, not written from memory. Three of the five are marked adversarial: picked because a summarizing delegate is likely to drop or flatten at least one item.</p>
+  <dl>
+    <dt>direct</dt><dd>Claude reads the file content inlined in the prompt and answers. The no-delegation baseline.</dd>
+    <dt>delegate</dt><dd><code>scripts/bulk-read</code>'s own raw answer — the delegate model's output, never seen by Claude.</dd>
+    <dt>final</dt><dd>Claude answers the same question using <em>only</em> the delegate's raw answer above (not the file). This is what a real user actually sees once the <code>PreToolUse</code> hook blocks a direct read and Claude falls back to <code>bulk-read</code>.</dd>
+  </dl>
+  <p style="margin-top:14px;">Scoring is exact/structured, not LLM-judged: <b>recall</b> is the fraction of <code>must_mention</code> items found as a case-insensitive substring of the answer. An item counts as an <b>unsupported claim</b> (a hallucination signal) if it appears in <code>final</code> but not in <code>delegate</code>'s own raw text — the only source <code>final</code> had. This is a heuristic, not proof of fabrication: Claude can paraphrase a delegate claim in different wording and trip a false positive, so unsupported claims are a signal to inspect, not a final verdict — see the <code>hallucination_check</code> note in <code>fidelity-questions.json</code>.</p>
+</section>
+
+<section>
+  <h2>Results</h2>
+  <table>
+    <thead><tr><th>question</th><th>fixture(s)</th><th>items</th><th>direct recall</th><th>delegate recall</th><th>unsupported claims</th></tr></thead>
+    <tbody>
+      <tr class="adversarial"><td>echo-http-methods</td><td><code>echo.go</code></td><td class="num">10</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
+      <tr><td>echo-wrap-functions</td><td><code>echo.go</code></td><td class="num">2</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
+      <tr><td>cors-config-fields</td><td><code>cors.go</code> + <code>cors_test.go</code></td><td class="num">8</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
+      <tr class="adversarial"><td>cors-test-function-names</td><td><code>cors.go</code> + <code>cors_test.go</code></td><td class="num">6</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
+      <tr class="adversarial"><td>cross-file-exported-types</td><td><code>context.go</code> + <code>router.go</code> + <code>group.go</code></td><td class="num">9</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
+    </tbody>
+  </table>
+  <p style="margin-top:10px;color:var(--muted);font-size:12.5px;">* adversarial: at least one ground-truth item is chosen because a summarizing delegate is likely to drop or flatten it. See <code>evals/fidelity-questions.json</code> for exact <code>adversarial</code> flags and reasons.</p>
+</section>
+
+<section>
+  <div class="callout">
+    <span class="k">On this run: no measurable fidelity loss, no hallucination.</span>
+    <p>All 5 questions (including all 3 adversarial ones, picked specifically because a summarizer is likely to drop an item) scored 100% recall on both the direct-read and delegated-read paths, and zero unsupported claims turned up in any final answer. The delegated (<code>final</code>) answers were also consistently cheaper on the Claude side: mean $0.138 vs. $0.227 for direct reads, because the delegate's already-condensed answer is far shorter than the raw file content Claude would otherwise have inlined.</p>
+    <p style="margin-top:10px;"><b>Caveat: this is n = 1.</b> A single pass per question is not enough to rule out an occasional dropped item or hallucination on a differently-phrased question, a larger file, or a different delegate model - it shows the mechanism works cleanly on these 5 specific questions, not that it's guaranteed to. Re-run with <code>ITERATIONS&gt;1</code> for statistical confidence before treating "delegation is lossless" as a settled conclusion; each iteration costs real money (~$1.8 for this 5-question set) so it wasn't run in a loop by default.</p>
+  </div>
+</section>
+
+<footer>
+  Reproduce: <code>ITERATIONS=1 evals/fidelity-benchmark.sh</code> from the repo root (needs a reachable OpenCode provider and a logged-in <code>claude</code> CLI; spends real money on your Claude account). Fixture provenance: <a href="../evals/fixtures/echo/NOTICE.md">evals/fixtures/echo/NOTICE.md</a>. Ground truth: <a href="../evals/fidelity-questions.json">evals/fidelity-questions.json</a>. Raw data: <a href="../evals/results/fidelity-benchmark-summary.json">evals/results/fidelity-benchmark-summary.json</a>.
+</footer>
+
+</div>
+</body>
+</html>

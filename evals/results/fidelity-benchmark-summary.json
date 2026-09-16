@@ -1,0 +1,49 @@
+{
+  "questions": {
+    "cors-config-fields": {
+      "adversarial": false,
+      "n": 1,
+      "direct_recall_mean": 1.0,
+      "final_recall_mean": 1.0,
+      "direct_dropped_items": [],
+      "delegate_dropped_items": [],
+      "unsupported_claims": []
+    },
+    "cors-test-function-names": {
+      "adversarial": true,
+      "n": 1,
+      "direct_recall_mean": 1.0,
+      "final_recall_mean": 1.0,
+      "direct_dropped_items": [],
+      "delegate_dropped_items": [],
+      "unsupported_claims": []
+    },
+    "cross-file-exported-types": {
+      "adversarial": true,
+      "n": 1,
+      "direct_recall_mean": 1.0,
+      "final_recall_mean": 1.0,
+      "direct_dropped_items": [],
+      "delegate_dropped_items": [],
+      "unsupported_claims": []
+    },
+    "echo-http-methods": {
+      "adversarial": true,
+      "n": 1,
+      "direct_recall_mean": 1.0,
+      "final_recall_mean": 1.0,
+      "direct_dropped_items": [],
+      "delegate_dropped_items": [],
+      "unsupported_claims": []
+    },
+    "echo-wrap-functions": {
+      "adversarial": false,
+      "n": 1,
+      "direct_recall_mean": 1.0,
+      "final_recall_mean": 1.0,
+      "direct_dropped_items": [],
+      "delegate_dropped_items": [],
+      "unsupported_claims": []
+    }
+  }
+}
