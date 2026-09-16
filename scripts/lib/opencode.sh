@@ -10,6 +10,7 @@ SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-300}"
 SHUNT_BULK_READER_AGENT="${SHUNT_BULK_READER_AGENT:-bulk-reader}"
 SHUNT_OPENCODE_CONFIG_HOME="${SHUNT_OPENCODE_CONFIG_HOME:-$HOME/.config/opencode}"
 SHUNT_ISOLATED_CONFIG_DIR="${SHUNT_ISOLATED_CONFIG_DIR:-$HOME/.cache/agent-model-shunt/opencode-config}"
+SHUNT_AGENTS_DIR="${SHUNT_AGENTS_DIR:-$HOME/.config/agent-model-shunt/agents}"
 SHUNT_DEBUG_LOG="${SHUNT_DEBUG_LOG:-}"
 SHUNT_DEBUG_LOG_PATH="${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/agent-model-shunt/usage.jsonl}"
 
@@ -41,13 +42,28 @@ shunt_tmpfile() {
 # a few thousand prompt tokens to tens of thousands. Isolating the config
 # fixes that without ever touching the user's real config. Prints the
 # isolated config root to stdout.
+#
+# The agent file is looked up first in SHUNT_AGENTS_DIR (shunt-owned agents
+# materialized by scripts/shunt-models), then falls back to
+# $SHUNT_OPENCODE_CONFIG_HOME/agents (the legacy hand-written single-agent
+# path, e.g. ~/.config/opencode/agents/bulk-reader.md).
+#
+# Each agent gets its own subdirectory under SHUNT_ISOLATED_CONFIG_DIR so
+# that isolated configs for two different agents (e.g. two delegate models
+# tried back to back) never share or clobber the same opencode.json.
 shunt_prepare_isolated_config() {
   local agent="$1"
-  local agent_file="$SHUNT_OPENCODE_CONFIG_HOME/agents/$agent.md"
-  local iso_opencode="$SHUNT_ISOLATED_CONFIG_DIR/opencode"
+
+  local agent_file="$SHUNT_AGENTS_DIR/$agent.md"
+  if [ ! -f "$agent_file" ]; then
+    agent_file="$SHUNT_OPENCODE_CONFIG_HOME/agents/$agent.md"
+  fi
+
+  local iso_root="$SHUNT_ISOLATED_CONFIG_DIR/$agent"
+  local iso_opencode="$iso_root/opencode"
 
   [ -f "$agent_file" ] \
-    || shunt_report_error "OpenCode agent '$agent' not found at $agent_file. See README's Setup section."
+    || shunt_report_error "OpenCode agent '$agent' not found in $SHUNT_AGENTS_DIR or $SHUNT_OPENCODE_CONFIG_HOME/agents. See README's Setup section."
 
   mkdir -p "$iso_opencode/agents"
   cp "$agent_file" "$iso_opencode/agents/$agent.md"
@@ -63,7 +79,7 @@ shunt_prepare_isolated_config() {
     echo '{}' >"$iso_opencode/opencode.json"
   fi
 
-  echo "$SHUNT_ISOLATED_CONFIG_DIR"
+  echo "$iso_root"
 }
 
 # shunt_invoke <agent> <question> [file...]

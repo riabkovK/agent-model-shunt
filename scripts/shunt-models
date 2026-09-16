@@ -1,0 +1,195 @@
+#!/bin/bash
+# Write side of the shunt-owned delegate model registry
+# (~/.config/agent-model-shunt/models.json). Adds/removes/reorders models,
+# picks the active one, and materializes each model's OpenCode agent file
+# once at edit time. Driven by the /model-config skill; never hand-edit
+# models.json directly.
+#
+# Usage:
+#   shunt-models list
+#   shunt-models status
+#   shunt-models add <provider/model>
+#   shunt-models remove <provider/model>
+#   shunt-models reorder <provider/model> <1-based position>
+#   shunt-models activate <provider/model>
+#   shunt-models sync
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/opencode.sh
+source "$SCRIPT_DIR/lib/opencode.sh"
+# shellcheck source=lib/models.sh
+source "$SCRIPT_DIR/lib/models.sh"
+
+# shunt_models_read_or_empty
+# Prints the current registry JSON, or an empty-but-valid-shaped registry
+# if the file doesn't exist yet.
+shunt_models_read_or_empty() {
+  if [ -f "$SHUNT_MODELS_FILE" ]; then
+    cat "$SHUNT_MODELS_FILE"
+  else
+    echo '{"version":1,"active":null,"models":[]}'
+  fi
+}
+
+# shunt_models_write <json>
+# Validates <json> and atomically replaces the registry file with it.
+# Never leaves a corrupt file behind: writes to a temp file in the same
+# directory, validates that, then moves it into place.
+shunt_models_write() {
+  local json="$1"
+  mkdir -p "$(dirname "$SHUNT_MODELS_FILE")"
+
+  local tmp_file
+  tmp_file=$(mktemp "$(dirname "$SHUNT_MODELS_FILE")/.models.json.XXXXXX")
+  echo "$json" | jq -e . >"$tmp_file" 2>/dev/null \
+    || { rm -f "$tmp_file"; shunt_report_error "refusing to write an invalid models registry."; }
+
+  local count
+  count=$(jq '(.models // []) | length' "$tmp_file")
+  if [ "$count" -eq 0 ]; then
+    rm -f "$tmp_file"
+    shunt_report_error "refusing to write a models registry with no models."
+  fi
+
+  mv "$tmp_file" "$SHUNT_MODELS_FILE"
+}
+
+cmd_add() {
+  local id="${1:-}"
+  [ -n "$id" ] || shunt_report_error "usage: shunt-models add <provider/model>"
+
+  local provider="${id%%/*}"
+  local opencode_json="$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+  if [ ! -f "$opencode_json" ] || ! jq -e --arg p "$provider" '.provider[$p]' "$opencode_json" >/dev/null 2>&1; then
+    shunt_report_error "provider '$provider' not found in $opencode_json. Add it to your OpenCode config first."
+  fi
+
+  local current
+  current=$(shunt_models_read_or_empty)
+
+  if echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
+    shunt_report_error "model '$id' is already in the registry."
+  fi
+
+  local slug
+  slug=$(shunt_models_slug "$id")
+
+  local updated
+  updated=$(echo "$current" | jq --arg id "$id" --arg agent "$slug" \
+    '.models += [{id: $id, agent: $agent, thinking: false, thinking_options: null}]')
+
+  shunt_models_write "$updated"
+  shunt_models_materialize_agent "$id"
+  echo "shunt: added '$id' (agent: $slug)."
+}
+
+cmd_remove() {
+  local id="${1:-}"
+  [ -n "$id" ] || shunt_report_error "usage: shunt-models remove <provider/model>"
+  shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
+
+  local current
+  current=$(cat "$SHUNT_MODELS_FILE")
+
+  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
+    shunt_report_error "model '$id' is not in the registry."
+  fi
+
+  local updated
+  updated=$(echo "$current" | jq --arg id "$id" '
+    .models |= map(select(.id != $id))
+    | if .active == $id then .active = null else . end
+  ')
+
+  shunt_models_write "$updated"
+  echo "shunt: removed '$id'."
+}
+
+cmd_reorder() {
+  local id="${1:-}" position="${2:-}"
+  [ -n "$id" ] && [ -n "$position" ] || shunt_report_error "usage: shunt-models reorder <provider/model> <1-based position>"
+  case "$position" in ''|*[!0-9]*) shunt_report_error "position must be a positive integer." ;; esac
+  shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
+
+  local current
+  current=$(cat "$SHUNT_MODELS_FILE")
+
+  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
+    shunt_report_error "model '$id' is not in the registry."
+  fi
+
+  local updated
+  updated=$(echo "$current" | jq --arg id "$id" --argjson pos "$((position - 1))" '
+    (.models | map(select(.id == $id))) as $target
+    | (.models | map(select(.id != $id))) as $rest
+    | .models = ($rest[0:$pos] + $target + $rest[$pos:])
+  ')
+
+  shunt_models_write "$updated"
+  echo "shunt: moved '$id' to position $position."
+}
+
+cmd_activate() {
+  local id="${1:-}"
+  [ -n "$id" ] || shunt_report_error "usage: shunt-models activate <provider/model>"
+  shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
+
+  local current
+  current=$(cat "$SHUNT_MODELS_FILE")
+
+  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
+    shunt_report_error "model '$id' is not in the registry."
+  fi
+
+  local updated
+  updated=$(echo "$current" | jq --arg id "$id" '.active = $id')
+  shunt_models_write "$updated"
+  echo "shunt: activated '$id'."
+}
+
+cmd_list() {
+  shunt_models_available || { echo "shunt: no models registry at $SHUNT_MODELS_FILE (legacy single-agent mode)."; return 0; }
+  local active
+  active=$(jq -r '.active // empty' "$SHUNT_MODELS_FILE")
+  jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+    if [ "$id" = "$active" ]; then
+      echo "$id (active)"
+    else
+      echo "$id"
+    fi
+  done
+}
+
+cmd_status() {
+  shunt_models_available || { echo "shunt: no models registry at $SHUNT_MODELS_FILE (legacy single-agent mode)."; return 0; }
+  jq -r '
+    .active as $active
+    | .models[]
+    | "\(.id)\t\(.agent)\tthinking=\(.thinking)\t" + (if .id == $active then "active" else "" end)
+  ' "$SHUNT_MODELS_FILE"
+}
+
+cmd_sync() {
+  shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
+  jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+    shunt_models_materialize_agent "$id"
+    echo "shunt: re-materialized '$id'."
+  done
+}
+
+subcommand="${1:-}"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|sync> [args...]"
+shift
+
+case "$subcommand" in
+  add) cmd_add "$@" ;;
+  remove) cmd_remove "$@" ;;
+  reorder) cmd_reorder "$@" ;;
+  activate) cmd_activate "$@" ;;
+  list) cmd_list "$@" ;;
+  status) cmd_status "$@" ;;
+  sync) cmd_sync "$@" ;;
+  *) shunt_report_error "unknown subcommand: $subcommand" ;;
+esac
