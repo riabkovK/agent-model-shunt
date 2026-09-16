@@ -5,13 +5,19 @@ This directory records the key decisions made while designing
 that routes delegated work to user-owned custom models via OpenCode instead
 of Spotify's Portal CLI and AiKA models.
 
-| ADR | Title | Status |
-|---|---|---|
-| [0002](0002-wrap-opencode-cli-not-http-client.md) | Wrap the OpenCode CLI, not a custom HTTP client, for MVP | Accepted |
-| [0003](0003-claude-code-only-scope.md) | Claude Code only scope for MVP | Accepted |
-| [0004](0004-bash-jq-implementation.md) | Bash + jq implementation | Accepted |
-| [0005](0005-no-custom-mode-registry.md) | No custom mode registry, use OpenCode agents directly | Accepted |
-| [0006](0006-mvp-scope-bulk-read-only.md) | MVP scope is bulk-read only | Accepted |
-| [0007](0007-hard-pretooluse-gate-from-day-one.md) | Hard PreToolUse gate from day one | Accepted |
-| [0008](0008-native-file-attachment-over-manual-wrapping.md) | Native `-f/--file` attachment over manual XML wrapping | Accepted |
-| [0009](0009-multi-host-scope-shift.md) | Scope shift from Claude Code only to Claude Code first, other hosts planned | Accepted |
+`Implemented` tracks whether the current code reflects the decision, separately from
+`Status` (the decision's own standing: Accepted/Superseded). A `Partial` ADR names
+exactly what's still missing in its own Consequences section; see that ADR for detail
+rather than duplicating it here.
+
+| ADR | Title | Status | Implemented |
+|---|---|---|---|
+| [0002](0002-wrap-opencode-cli-not-http-client.md) | Wrap the OpenCode CLI, not a custom HTTP client, for MVP | Accepted | Yes (`scripts/lib/opencode.sh` shells out to `opencode run`) |
+| [0003](0003-claude-code-only-scope.md) | Claude Code only scope for MVP | Accepted | Yes (`.claude-plugin/`, `hooks/hooks.json` remain Claude-Code-specific; no other host adapter exists) |
+| [0004](0004-bash-jq-implementation.md) | Bash + jq implementation | Accepted | Yes (all of `hooks/`, `scripts/` are Bash + jq) |
+| [0005](0005-no-custom-mode-registry.md) | No custom mode registry, use OpenCode agents directly | Accepted | Yes (no registry code; agents addressed by name) |
+| [0006](0006-mvp-scope-bulk-read-only.md) | MVP scope is bulk-read only | Accepted | Yes (`scripts/bulk-read` only; no `code-write` script/skill) |
+| [0007](0007-hard-pretooluse-gate-from-day-one.md) | Hard PreToolUse gate from day one | Accepted | Yes (`hooks/check-file-size`, `hooks/check-bash-read`) |
+| [0008](0008-native-file-attachment-over-manual-wrapping.md) | Native `-f/--file` attachment over manual XML wrapping | Accepted | Yes (`scripts/lib/opencode.sh` uses `-f`, no XML wrapping) |
+| [0009](0009-multi-host-scope-shift.md) | Scope shift from Claude Code only to Claude Code first, other hosts planned | Accepted | Partial: naming/framing done (repo, docs, cache paths); the adapter layer for an actual second host is explicitly not built yet, per its own Consequences |
+| [0010](0010-defer-host-adapter-module-extraction.md) | Defer host-adapter module extraction until a second host is built | Accepted | Yes (decision is to do nothing structurally yet) |
