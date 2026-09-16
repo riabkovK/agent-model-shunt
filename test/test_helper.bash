@@ -2,8 +2,9 @@
 # into its own temp HOME/config/cache dir so nothing touches the real
 # ~/.config or ~/.cache.
 
-load '/usr/lib/bats/bats-support/load.bash'
-load '/usr/lib/bats/bats-assert/load.bash'
+HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+load "$HELPER_DIR/test_helper/bats-support/load.bash"
+load "$HELPER_DIR/test_helper/bats-assert/load.bash"
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
