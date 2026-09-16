@@ -45,9 +45,16 @@ custom model of your choosing.
 
 ### 1. Install the plugin
 
-This repo ships its own local marketplace (`.claude-plugin/marketplace.json`,
-one entry pointing back at `.claude-plugin/plugin.json`), so a clone can be
-installed straight from its path, no published marketplace required yet:
+This repo ships its own marketplace (`.claude-plugin/marketplace.json`, one
+entry pointing back at `.claude-plugin/plugin.json`). Install directly from
+GitHub, no local clone required:
+
+```bash
+claude plugin marketplace add riabkovK/agent-model-shunt
+claude plugin install agent-model-shunt@agent-model-shunt-marketplace
+```
+
+Or, working from a local clone:
 
 ```bash
 claude plugin marketplace add /path/to/this/repo
@@ -56,9 +63,20 @@ claude plugin install agent-model-shunt@agent-model-shunt-marketplace
 
 (`/plugin marketplace add` / `/plugin install` are the equivalent slash
 commands if you're doing this interactively rather than from a script.)
-Restart the session for the newly installed hooks to take effect. A
-published marketplace for a one-command install from a fresh clone is
-tracked in `docs/TODO.md`.
+Restart the session for the newly installed hooks to take effect.
+
+**Updating:** third-party marketplaces don't auto-update by default. Run
+`claude plugin marketplace update agent-model-shunt-marketplace` (or
+`/plugin marketplace update agent-model-shunt-marketplace`) to pick up new
+commits, or toggle auto-update on for this marketplace under `/plugin` →
+Marketplaces.
+
+**Disabling vs. uninstalling:** `claude plugin disable
+agent-model-shunt@agent-model-shunt-marketplace` turns the plugin off while
+keeping its config, `claude plugin enable ...` turns it back on. `claude
+plugin uninstall agent-model-shunt@agent-model-shunt-marketplace` removes it
+entirely. Slash-command equivalents (`/plugin disable`, `/plugin enable`,
+`/plugin uninstall`) work the same way.
 
 ### 2. Create the `bulk-reader` OpenCode agent
 
