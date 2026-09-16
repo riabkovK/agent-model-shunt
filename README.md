@@ -112,7 +112,7 @@ next steps unless asked.
 
 Replace `your-provider/your-model` with a model from your own
 `opencode.json` provider config (for example
-`bootsman/Spark/deepseek-ai/DeepSeek-V4-Flash-0731`).
+`your-provider/Spark/deepseek-ai/DeepSeek-V4-Flash-0731`).
 
 `mode: primary` is required: `opencode run --agent <name>` only invokes
 primary agents directly; a `subagent`-mode agent is silently ignored and

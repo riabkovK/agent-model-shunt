@@ -8,7 +8,7 @@ Accepted
 
 `shunt` talks to Portal CLI as a subprocess. We could either shell out to
 the already-installed `opencode` CLI the same way, or write a direct HTTP
-client against the user's OpenAI-compatible `bootsman` provider endpoint,
+client against the user's OpenAI-compatible custom provider endpoint,
 skipping OpenCode entirely.
 
 A direct HTTP client would remove one layer of indirection and one
