@@ -1,7 +1,7 @@
 # Architecture Decision Records
 
 This directory records the key decisions made while designing
-`cc-model-shunt`, an analog of `spotify/portal-ai-plugins`' `shunt` plugin
+`agent-model-shunt`, an analog of `spotify/portal-ai-plugins`' `shunt` plugin
 that routes delegated work to user-owned custom models via OpenCode instead
 of Spotify's Portal CLI and AiKA models.
 
@@ -14,3 +14,4 @@ of Spotify's Portal CLI and AiKA models.
 | [0006](0006-mvp-scope-bulk-read-only.md) | MVP scope is bulk-read only | Accepted |
 | [0007](0007-hard-pretooluse-gate-from-day-one.md) | Hard PreToolUse gate from day one | Accepted |
 | [0008](0008-native-file-attachment-over-manual-wrapping.md) | Native `-f/--file` attachment over manual XML wrapping | Accepted |
+| [0009](0009-multi-host-scope-shift.md) | Scope shift from Claude Code only to Claude Code first, other hosts planned | Accepted |

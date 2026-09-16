@@ -1,4 +1,4 @@
-# Project Rules: cc-model-shunt
+# Project Rules: agent-model-shunt
 
 Project-specific rules. These extend the global ECC rules in `~/.claude/rules/`
 and take precedence over them where more specific.
