@@ -19,6 +19,11 @@ and take precedence over them where more specific.
 - Still only commit on explicit user request (see global `git-workflow.md`) — these
   rules govern how to shape commits once asked for, not when to make them.
 
+## Pull Requests
+
+- Always write the PR title and description in English, regardless of the
+  language the conversation is in.
+
 ## Context Management
 
 - Do not let the main session's context fill past roughly 25%. When continuing the
