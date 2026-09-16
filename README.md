@@ -242,6 +242,14 @@ file checked into this repo; open it directly in a browser (GitHub's own
 file viewer renders `.html` as source, not as a page, so save/clone the
 repo to view it rendered).
 
+> **On speed:** the timing numbers in that ledger (and in
+> `docs/fidelity-ledger.html`) depend heavily on which OpenCode provider and
+> model you point `scripts/bulk-read` at — different providers/models can be
+> dramatically faster or slower for the same call. These numbers are one
+> personal observation from one provider/model at one point in time, not a
+> guarantee; re-run the benchmarks against your own setup before drawing
+> conclusions about your own flow.
+
 > The fixtures moved to real `labstack/echo` source (see above); the
 > ledger and the results file it's built from need a fresh
 > `evals/baseline-benchmark.sh` run against them before the numbers are
