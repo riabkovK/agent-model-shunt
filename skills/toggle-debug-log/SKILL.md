@@ -1,6 +1,6 @@
 ---
 name: toggle-debug-log
-description: Report whether the plugin's SHUNT_DEBUG_LOG usage-tracking env var is currently on or off, then ask the user whether to flip it via .claude/settings.local.json, and tell the user to restart the Claude Code session so the change takes effect. Use when the user wants to start or stop recording delegate usage (tokens/cost) to ~/.cache/cc-model-shunt/usage.jsonl, typically before reading it with /usage-report.
+description: Report whether the plugin's SHUNT_DEBUG_LOG usage-tracking env var is currently on or off, then ask the user whether to flip it via .claude/settings.local.json, and tell the user to restart the Claude Code session so the change takes effect. Use when the user wants to start or stop recording delegate usage (tokens/cost) to ~/.cache/agent-model-shunt/usage.jsonl, typically before reading it with /usage-report.
 ---
 
 # Toggle Debug Log
@@ -8,7 +8,7 @@ description: Report whether the plugin's SHUNT_DEBUG_LOG usage-tracking env var 
 Turns `scripts/lib/opencode.sh`'s `shunt_log_usage()` recording on or off by
 setting `SHUNT_DEBUG_LOG` for the current project. Off by default; when on,
 every real `scripts/bulk-read` delegation appends one line to
-`SHUNT_DEBUG_LOG_PATH` (default `~/.cache/cc-model-shunt/usage.jsonl`).
+`SHUNT_DEBUG_LOG_PATH` (default `~/.cache/agent-model-shunt/usage.jsonl`).
 `/usage-report` reads that log; this skill only controls whether it's being
 written.
 

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Summarizes scripts/lib/opencode.sh's debug usage log (SHUNT_DEBUG_LOG_PATH,
-# default ~/.cache/cc-model-shunt/usage.jsonl): every real (non-benchmark)
+# default ~/.cache/agent-model-shunt/usage.jsonl): every real (non-benchmark)
 # scripts/bulk-read call made while SHUNT_DEBUG_LOG was enabled.
 #
 # This only covers the delegate side (real tokens/cost OpenCode reports) and
@@ -12,7 +12,7 @@
 
 set -euo pipefail
 
-log_path="${1:-${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/cc-model-shunt/usage.jsonl}}"
+log_path="${1:-${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/agent-model-shunt/usage.jsonl}}"
 
 if [ ! -s "$log_path" ]; then
   echo "shunt: no usage log at $log_path (enable with SHUNT_DEBUG_LOG=1, see /usage-report skill)." >&2

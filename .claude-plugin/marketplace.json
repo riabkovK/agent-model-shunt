@@ -1,14 +1,15 @@
 {
-  "name": "cc-model-shunt-marketplace",
-  "description": "Local marketplace for the cc-model-shunt plugin.",
+  "name": "agent-model-shunt-marketplace",
+  "description": "Local marketplace for the agent-model-shunt plugin.",
   "owner": {
     "name": "Konstantin Riabkov"
   },
   "plugins": [
     {
-      "name": "cc-model-shunt",
+      "name": "agent-model-shunt",
       "source": ".",
-      "description": "Shunts token-heavy, low-intelligence work (large file reads) from Claude onto your own custom models, routed through OpenCode."
+      "version": "0.1.0",
+      "description": "Shunts token-heavy, low-intelligence work (large file reads) away from your coding agent and onto your own custom models, routed through OpenCode. Currently implemented for Claude Code; built to extend to other agent hosts (Codex, etc.) as they're added."
     }
   ]
 }

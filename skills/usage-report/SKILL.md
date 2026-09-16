@@ -32,7 +32,7 @@ and reminds the user to restart the session, since that file is only read
 by Claude Code at session start.
 
 Each enabled call appends one line to `SHUNT_DEBUG_LOG_PATH` (default
-`~/.cache/cc-model-shunt/usage.jsonl`): `timestamp`, `agent`, `files`
+`~/.cache/agent-model-shunt/usage.jsonl`): `timestamp`, `agent`, `files`
 (`path`/`lines`/`bytes` per delegated file), `question_chars`,
 `delegate_input_tokens`, `delegate_output_tokens`, `delegate_cost_usd`,
 `avoided_tokens_estimate`.

@@ -1,8 +1,10 @@
-# cc-model-shunt
+# agent-model-shunt
 
-A Claude Code plugin that shunts token-heavy, low-intelligence work (large
-file reads) away from Claude and onto your own custom models, routed
-through [OpenCode](https://opencode.ai).
+Shunts token-heavy, low-intelligence work (large file reads) away from
+your coding agent and onto your own custom models, routed through
+[OpenCode](https://opencode.ai). Currently implemented for Claude Code
+(see [`.claude-plugin/`](.claude-plugin/)); built to extend to other agent
+hosts (Codex, etc.) as they're added.
 
 It is an analog of Spotify's
 [`portal-ai-plugins`](https://github.com/spotify/portal-ai-plugins) `shunt`
@@ -49,7 +51,7 @@ installed straight from its path, no published marketplace required yet:
 
 ```bash
 claude plugin marketplace add /path/to/this/repo
-claude plugin install cc-model-shunt@cc-model-shunt-marketplace
+claude plugin install agent-model-shunt@agent-model-shunt-marketplace
 ```
 
 (`/plugin marketplace add` / `/plugin install` are the equivalent slash
@@ -130,9 +132,9 @@ scripts/bulk-read --question "What license is this project under?" --paths LICEN
 | `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation. |
 | `SHUNT_HOOKS_DISABLED` | unset | When `1`/`true`/`yes`, both PreToolUse hooks allow every read through unchecked. See the `/toggle-hooks` skill for A/B testing hooks-on vs hooks-off. |
 | `SHUNT_OPENCODE_CONFIG_HOME` | `~/.config/opencode` | Where to read your real OpenCode agent/provider config from, when building the isolated per-call config below. |
-| `SHUNT_ISOLATED_CONFIG_DIR` | `~/.cache/cc-model-shunt/opencode-config` | Where the isolated, minimal OpenCode config (one agent, one provider) is written and reused for every delegated call. Safe to delete; it's regenerated on each `opencode run`. |
+| `SHUNT_ISOLATED_CONFIG_DIR` | `~/.cache/agent-model-shunt/opencode-config` | Where the isolated, minimal OpenCode config (one agent, one provider) is written and reused for every delegated call. Safe to delete; it's regenerated on each `opencode run`. |
 | `SHUNT_DEBUG_LOG` | unset | When `1`/`true`/`yes`, every real `scripts/bulk-read` call appends its usage to `SHUNT_DEBUG_LOG_PATH`. See the `/usage-report` skill and `scripts/usage-report`. |
-| `SHUNT_DEBUG_LOG_PATH` | `~/.cache/cc-model-shunt/usage.jsonl` | Where `SHUNT_DEBUG_LOG` writes its JSONL usage records. |
+| `SHUNT_DEBUG_LOG_PATH` | `~/.cache/agent-model-shunt/usage.jsonl` | Where `SHUNT_DEBUG_LOG` writes its JSONL usage records. |
 
 ## Evals
 
