@@ -11,3 +11,6 @@
 
 # Local per-user Claude Code settings (e.g. SHUNT_HOOKS_DISABLED toggle)
 .claude/settings.local.json
+
+# Local planning/scratch doc, not shared via VCS
+docs/TODO.md
