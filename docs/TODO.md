@@ -84,27 +84,27 @@ deny) so Claude reads the file itself unrestricted — same as if
 consult breaker/registry state before denying, which pulls hook changes
 into Phase 3 (failover wiring) rather than leaving them out of scope.
 
-- [ ] Add a shunt-owned `models.json` (e.g.
+- [x] Add a shunt-owned `models.json` (e.g.
       `~/.config/agent-model-shunt/models.json`): a priority-ordered list of
       `provider/model` strings, the source of truth for which delegate
       models exist and in what order they're tried.
-- [ ] Build a config skill that edits `models.json` (add/remove/reorder) and,
+- [x] Build a config skill that edits `models.json` (add/remove/reorder) and,
       for each model added, materializes a lightweight OpenCode agent file
       for it (same shape as today's `bulk-reader.md`) once at edit time, not
       regenerated on every `scripts/bulk-read` call. The skill is also how a
       user manually picks which model in the list is currently active.
-- [ ] Add a circuit breaker, separate from model selection, scoped only to
+- [x] Add a circuit breaker, separate from model selection, scoped only to
       failures (errors/timeouts), not latency: N consecutive failures on the
       active model opens the breaker and excludes it for a cooldown period,
       after which it's retried automatically. No response-time measurement
       and no racing multiple models concurrently — both considered and
       explicitly ruled out as unnecessary complexity for v1.
-- [ ] Persist circuit breaker state (failure counts, cooldown timestamps per
+- [x] Persist circuit breaker state (failure counts, cooldown timestamps per
       model) in a state file next to the isolated per-call OpenCode config
       (see `SHUNT_ISOLATED_CONFIG_DIR`), since every delegated call is its
       own short-lived `opencode run` process with no shared memory between
       calls.
-- [ ] Wire automatic failover: when the active model's breaker is open and
+- [x] Wire automatic failover: when the active model's breaker is open and
       another model in `models.json` is available, shunt uses the next
       one in priority order instead of failing the call outright.
 - [ ] For delegate models that support a "thinking"/extended-reasoning mode,
