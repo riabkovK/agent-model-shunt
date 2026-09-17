@@ -14,6 +14,13 @@ SHUNT_AGENTS_DIR="${SHUNT_AGENTS_DIR:-$HOME/.config/agent-model-shunt/agents}"
 SHUNT_DEBUG_LOG="${SHUNT_DEBUG_LOG:-}"
 SHUNT_DEBUG_LOG_PATH="${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/agent-model-shunt/usage.jsonl}"
 
+_SHUNT_OPENCODE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=models.sh
+source "$_SHUNT_OPENCODE_LIB_DIR/models.sh"
+# shellcheck source=breaker.sh
+source "$_SHUNT_OPENCODE_LIB_DIR/breaker.sh"
+unset _SHUNT_OPENCODE_LIB_DIR
+
 shunt_report_error() {
   echo "shunt: $1" >&2
   exit 1
@@ -82,11 +89,15 @@ shunt_prepare_isolated_config() {
   echo "$iso_root"
 }
 
-# shunt_invoke <agent> <question> [file...]
+# shunt_try_invoke <agent> <question> [file...]
 # Runs `opencode run --agent <agent> "<question>" -f <file> ... --format json`
 # against an isolated OpenCode config (see shunt_prepare_isolated_config) and
-# prints the path to a temp file holding the raw JSONL stdout.
-shunt_invoke() {
+# prints the path to a temp file holding the raw JSONL stdout. Unlike
+# shunt_invoke, never exits the process on failure (agent not found,
+# opencode error, timeout, empty output): returns non-zero and cleans up
+# after itself, so shunt_invoke_with_failover can try the next candidate
+# model instead of the whole delegated call dying on one bad model.
+shunt_try_invoke() {
   local agent="$1"
   local question="$2"
   shift 2
@@ -99,7 +110,7 @@ shunt_invoke() {
   done
 
   local iso_config
-  iso_config=$(shunt_prepare_isolated_config "$agent")
+  iso_config=$(shunt_prepare_isolated_config "$agent") || return 1
 
   local out status
   out=$(shunt_tmpfile)
@@ -108,20 +119,73 @@ shunt_invoke() {
     "$SHUNT_OPENCODE_BIN" run --agent "$agent" "$question" "${file_args[@]}" --format json \
     >"$out" 2>/dev/null || status=$?
 
-  if [ "$status" -ne 0 ]; then
+  if [ "$status" -ne 0 ] || [ ! -s "$out" ]; then
     rm -f "$out"
-    if [ "$status" -eq 124 ]; then
-      shunt_report_error "opencode run timed out after ${SHUNT_TIMEOUT_SECONDS}s (agent: $agent). Increase SHUNT_TIMEOUT_SECONDS or reduce the input."
-    fi
-    shunt_report_error "opencode run failed (exit $status, agent: $agent)."
-  fi
-
-  if [ ! -s "$out" ]; then
-    rm -f "$out"
-    shunt_report_error "opencode run produced no output (agent: $agent)."
+    return 1
   fi
 
   echo "$out"
+}
+
+# shunt_invoke <agent> <question> [file...]
+# Legacy single-agent path: same call as shunt_try_invoke, but fatal (via
+# shunt_report_error) on any failure. Used directly when no models.json
+# registry exists yet (no breaker/failover to fall back on), and internally
+# by shunt_invoke_with_failover for that same legacy case.
+shunt_invoke() {
+  local agent="$1" question="$2"
+  shift 2
+  local out
+  if ! out=$(shunt_try_invoke "$agent" "$question" "$@"); then
+    shunt_report_error "opencode run failed for agent '$agent' (not found, timed out after ${SHUNT_TIMEOUT_SECONDS}s, exited non-zero, or produced no output)."
+  fi
+  echo "$out"
+}
+
+# shunt_invoke_with_failover <question> [file...]
+# Delegates a call, trying candidate models in the shunt-owned models.json
+# registry (priority order, skipping any whose circuit breaker is open) and
+# recording each attempt's outcome via shunt_breaker_record_success/
+# _failure. Falls back to the single legacy SHUNT_BULK_READER_AGENT
+# unchanged (no breaker involved) when no registry exists yet. Prints the
+# successful call's output file path and sets SHUNT_INVOKE_AGENT_USED to
+# the model id (or legacy agent name) that produced it. Fatal only once
+# every candidate has been tried and failed, or every registered
+# candidate's breaker is currently open.
+shunt_invoke_with_failover() {
+  local question="$1"
+  shift
+  local files=("$@")
+
+  if ! shunt_models_available; then
+    SHUNT_INVOKE_AGENT_USED="$SHUNT_BULK_READER_AGENT"
+    shunt_invoke "$SHUNT_BULK_READER_AGENT" "$question" "${files[@]}"
+    return
+  fi
+
+  local candidates
+  candidates=$(shunt_models_candidates)
+  [ -n "$candidates" ] || shunt_report_error "models registry at $(shunt_models_file) lists no candidate models."
+
+  local id agent out tried_any=""
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    shunt_breaker_is_open "$id" && continue
+    tried_any=1
+    agent=$(shunt_models_agent_for "$id")
+    if out=$(shunt_try_invoke "$agent" "$question" "${files[@]}"); then
+      shunt_breaker_record_success "$id"
+      SHUNT_INVOKE_AGENT_USED="$id"
+      echo "$out"
+      return 0
+    fi
+    shunt_breaker_record_failure "$id"
+  done <<<"$candidates"
+
+  if [ -z "$tried_any" ]; then
+    shunt_report_error "every delegate model in the registry is currently paused (circuit breaker open); no candidates available."
+  fi
+  shunt_report_error "all delegate models in the registry failed for this call."
 }
 
 # shunt_extract_text <jsonl-file>

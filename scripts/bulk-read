@@ -45,7 +45,8 @@ done
 
 shunt_preflight
 
-out_file=$(shunt_invoke "$SHUNT_BULK_READER_AGENT" "$question" "${paths[@]}")
+out_file=$(shunt_invoke_with_failover "$question" "${paths[@]}")
+used_agent="$SHUNT_INVOKE_AGENT_USED"
 
 answer=$(shunt_extract_text "$out_file")
 usage=$(shunt_extract_usage "$out_file")
@@ -57,7 +58,7 @@ if [ -n "$usage" ]; then
 fi
 
 if shunt_debug_log_enabled; then
-  shunt_log_usage "$SHUNT_BULK_READER_AGENT" "$out_file" "$question" "${paths[@]}"
+  shunt_log_usage "$used_agent" "$out_file" "$question" "${paths[@]}"
 fi
 
 rm -f "$out_file"
