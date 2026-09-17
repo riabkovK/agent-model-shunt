@@ -119,6 +119,31 @@ shunt_breaker_record_success() {
   shunt_breaker_write_state "$id" 0 0
 }
 
+# shunt_breaker_any_closed <id...>
+# Success (0) if at least one of the given ids is currently closed
+# (usable); failure (1) if every given id is open, or if no ids were given.
+# Reads the state file once via a single jq call, rather than looping
+# shunt_breaker_is_open per id, since this is meant for
+# hooks/check-file-size, which runs on every large-file Read and must stay
+# cheap even with several candidate models.
+shunt_breaker_any_closed() {
+  [ "$#" -gt 0 ] || return 1
+
+  local ids_json now state_json
+  ids_json=$(printf '%s\n' "$@" | jq -R . | jq -s .)
+  now=$(shunt_breaker_now)
+  state_json='{"models":{}}'
+  [ -f "$SHUNT_BREAKER_STATE_FILE" ] && state_json=$(cat "$SHUNT_BREAKER_STATE_FILE")
+
+  echo "$state_json" | jq -e \
+    --argjson ids "$ids_json" --argjson threshold "$SHUNT_BREAKER_THRESHOLD" --argjson now "$now" '
+    . as $root
+    | $ids | any(. as $id
+        | ($root.models[$id] // {failures: 0, cooldown_until: 0}) as $s
+        | (($s.failures // 0) < $threshold) or ($now >= ($s.cooldown_until // 0)))
+  ' >/dev/null 2>&1
+}
+
 # shunt_breaker_status <id>
 # Prints a one-line "failures=N open=true|false" summary for <id>.
 shunt_breaker_status() {

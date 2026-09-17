@@ -155,3 +155,41 @@ teardown() {
   [ "$SHUNT_BREAKER_THRESHOLD" = "7" ]
   [ "$SHUNT_BREAKER_COOLDOWN_SECONDS" = "300" ]
 }
+
+@test "shunt_breaker_any_closed is false when given no ids" {
+  run shunt_breaker_any_closed
+  assert_failure
+}
+
+@test "shunt_breaker_any_closed is true when all given ids have no recorded state" {
+  run shunt_breaker_any_closed "p/one" "p/two"
+  assert_success
+}
+
+@test "shunt_breaker_any_closed is true when at least one of several ids is closed" {
+  export SHUNT_BREAKER_THRESHOLD=1
+  shunt_breaker_record_failure "p/open"
+  run shunt_breaker_any_closed "p/open" "p/closed"
+  assert_success
+}
+
+@test "shunt_breaker_any_closed is false when every given id is open" {
+  export SHUNT_BREAKER_THRESHOLD=1
+  shunt_breaker_record_failure "p/one"
+  shunt_breaker_record_failure "p/two"
+  run shunt_breaker_any_closed "p/one" "p/two"
+  assert_failure
+}
+
+@test "shunt_breaker_any_closed is true again for an id once its cooldown elapses" {
+  export SHUNT_BREAKER_THRESHOLD=1
+  export SHUNT_BREAKER_COOLDOWN_SECONDS=300
+  export SHUNT_NOW_EPOCH=1000
+  shunt_breaker_record_failure "p/m"
+  run shunt_breaker_any_closed "p/m"
+  assert_failure
+
+  export SHUNT_NOW_EPOCH=1301
+  run shunt_breaker_any_closed "p/m"
+  assert_success
+}
