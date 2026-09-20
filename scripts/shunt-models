@@ -8,11 +8,12 @@
 # Usage:
 #   shunt-models list
 #   shunt-models status
-#   shunt-models add <provider/model>
+#   shunt-models add <provider/model> [<role>[,<role>...]]
 #   shunt-models remove <provider/model>
 #   shunt-models reorder <provider/model> <1-based position>
 #   shunt-models activate <provider/model>
 #   shunt-models thinking <provider/model> <on|off> [options-json]
+#   shunt-models roles <provider/model> <role>[,<role>...]
 #   shunt-models sync
 
 set -euo pipefail
@@ -34,6 +35,18 @@ shunt_models_read_or_empty() {
   fi
 }
 
+# shunt_models_unavailable_notice
+# Explains why the registry is not in use: absent (legacy single-agent mode)
+# or present but invalid, in which case the validation reason is shown so a
+# typo in a hand-edit is not mistaken for legacy mode.
+shunt_models_unavailable_notice() {
+  if [ -f "$SHUNT_MODELS_FILE" ]; then
+    echo "$(shunt_models_validate) Delegate calls use the legacy single agent until it is fixed."
+  else
+    echo "shunt: no models registry at $SHUNT_MODELS_FILE (legacy single-agent mode)."
+  fi
+}
+
 # shunt_models_write <json>
 # Validates <json> and atomically replaces the registry file with it.
 # Never leaves a corrupt file behind: writes to a temp file in the same
@@ -50,9 +63,40 @@ shunt_models_write() {
   mv "$tmp_file" "$SHUNT_MODELS_FILE"
 }
 
+# shunt_models_parse_roles <role>[,<role>...]
+# Prints the roles as a compact JSON array, order kept and duplicates dropped.
+# Exits with an error on an empty, unknown or multi-line list.
+shunt_models_parse_roles() {
+  local roles_arg="$1"
+
+  case "$roles_arg" in
+    *$'\n'*) shunt_report_error "roles must be a single comma-separated line." ;;
+  esac
+
+  local role roles_json="[]"
+  local -a parsed
+  # read drops one trailing empty field, so append a comma to make a stray
+  # trailing comma show up as an empty role and get refused.
+  IFS=',' read -r -a parsed <<<"$roles_arg,"
+  for role in "${parsed[@]}"; do
+    [ -n "$role" ] || shunt_report_error "empty role in '$roles_arg'. Roles: ${SHUNT_MODELS_ROLES[*]}"
+    shunt_models_role_known "$role" || shunt_report_error "unknown role '$role'. Known roles: ${SHUNT_MODELS_ROLES[*]}"
+    roles_json=$(echo "$roles_json" | jq -c --arg r "$role" 'if index($r) then . else . + [$r] end')
+  done
+  echo "$roles_json"
+}
+
+# cmd_add <id> [<role>[,<role>...]]
+# Roles default to all of them, written explicitly so the registry shows what
+# the model may do. Roles are validated before anything is written.
 cmd_add() {
-  local id="${1:-}"
-  [ -n "$id" ] || shunt_report_error "usage: shunt-models add <provider/model>"
+  local id="${1:-}" roles_arg="${2:-}"
+  [ -n "$id" ] || shunt_report_error "usage: shunt-models add <provider/model> [<role>[,<role>...]] (roles: ${SHUNT_MODELS_ROLES[*]})"
+
+  local roles_json="$SHUNT_MODELS_ROLES_JSON"
+  if [ -n "$roles_arg" ]; then
+    roles_json=$(shunt_models_parse_roles "$roles_arg")
+  fi
 
   local provider="${id%%/*}"
   local opencode_json="$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
@@ -71,12 +115,12 @@ cmd_add() {
   slug=$(shunt_models_slug "$id")
 
   local updated
-  updated=$(echo "$current" | jq --arg id "$id" --arg agent "$slug" \
-    '.models += [{id: $id, agent: $agent, enabled: true, thinking: false, thinking_options: null}]')
+  updated=$(echo "$current" | jq --arg id "$id" --arg agent "$slug" --argjson roles "$roles_json" \
+    '.models += [{id: $id, agent: $agent, enabled: true, thinking: false, thinking_options: null, roles: $roles}]')
 
   shunt_models_write "$updated"
   shunt_models_materialize_agent "$id"
-  echo "shunt: added '$id' (agent: $slug)."
+  echo "shunt: added '$id' (agent: $slug, roles: $(echo "$roles_json" | jq -r 'join(",")'))."
 }
 
 cmd_remove() {
@@ -216,8 +260,41 @@ cmd_thinking() {
   echo "shunt: thinking for '$id' set to $state."
 }
 
+# cmd_roles <id> <role>[,<role>...]
+# Sets the model's `roles` (bulk-read, code-write). Order is kept and
+# duplicates dropped. Only writes the registry: agent files are unaffected.
+cmd_roles() {
+  local id="${1:-}" roles_arg="${2:-}"
+  [ -n "$id" ] && [ -n "$roles_arg" ] || shunt_report_error "usage: shunt-models roles <provider/model> <role>[,<role>...] (roles: ${SHUNT_MODELS_ROLES[*]})"
+
+  local roles_json
+  roles_json=$(shunt_models_parse_roles "$roles_arg")
+
+  # Deliberately not shunt_models_available: this command is the way to fix a
+  # registry that is invalid only because of a bad `roles` value.
+  [ -f "$SHUNT_MODELS_FILE" ] || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
+  jq -e '.models | type == "array"' "$SHUNT_MODELS_FILE" >/dev/null 2>&1 \
+    || shunt_report_error "$SHUNT_MODELS_FILE is not a valid models registry."
+
+  local current
+  current=$(cat "$SHUNT_MODELS_FILE")
+
+  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
+    shunt_report_error "model '$id' is not in the registry."
+  fi
+
+  local updated
+  updated=$(echo "$current" | jq --arg id "$id" --argjson roles "$roles_json" \
+    '.models |= map(if .id == $id then .roles = $roles else . end)')
+  shunt_models_write "$updated"
+  echo "shunt: roles for '$id' set to $(echo "$roles_json" | jq -r 'join(",")')."
+
+  local problem
+  problem=$(shunt_models_validate) || echo "shunt: warning, the registry is still invalid: $problem" >&2
+}
+
 cmd_list() {
-  shunt_models_available || { echo "shunt: no models registry at $SHUNT_MODELS_FILE (legacy single-agent mode)."; return 0; }
+  shunt_models_available || { shunt_models_unavailable_notice; return 0; }
   local active
   active=$(jq -r '.active // empty' "$SHUNT_MODELS_FILE")
   jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
@@ -230,28 +307,30 @@ cmd_list() {
 }
 
 cmd_status() {
-  shunt_models_available || { echo "shunt: no models registry at $SHUNT_MODELS_FILE (legacy single-agent mode)."; return 0; }
+  shunt_models_available || { shunt_models_unavailable_notice; return 0; }
   if [ "$(jq '.models | length' "$SHUNT_MODELS_FILE")" -eq 0 ]; then
     echo "shunt: no delegate models configured (large reads are not redirected)."
     return 0
   fi
-  jq -r '
+  jq -r --argjson all_roles "$SHUNT_MODELS_ROLES_JSON" '
     .active as $active
     | .models[]
     | "\(.id)\t\(.agent)\t" + (if .enabled == false then "disabled" else "enabled" end)
-      + "\tthinking=\(.thinking)\t"
+      + "\tthinking=\(.thinking)\troles=\((.roles // $all_roles) | join(","))\t"
       + (if .id != $active then ""
          elif .enabled == false then "active (skipped, disabled)"
          else "active" end)
   ' "$SHUNT_MODELS_FILE"
 
-  # Which model the next call tries first: the active one if it is enabled,
-  # otherwise the first enabled model in registry order.
+  # Which model the next bulk-read call tries first: the active one if it is
+  # enabled and has the role, otherwise the first such model in registry order.
   local candidates first
-  candidates=$(shunt_models_candidates)
+  candidates=$(shunt_models_candidates bulk-read)
   first="${candidates%%$'\n'*}"
   if [ -n "$first" ]; then
     echo "shunt: first choice: $first"
+  elif jq -e '.models | any(.enabled != false)' "$SHUNT_MODELS_FILE" >/dev/null; then
+    echo "shunt: no enabled model has the bulk-read role (large reads are not redirected)."
   else
     echo "shunt: no enabled models (large reads are not redirected)."
   fi
@@ -266,7 +345,7 @@ cmd_sync() {
 }
 
 subcommand="${1:-}"
-[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|sync> [args...]"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|roles|sync> [args...]"
 shift
 
 case "$subcommand" in
@@ -277,6 +356,7 @@ case "$subcommand" in
   enable) cmd_set_enabled true "$@" ;;
   disable) cmd_set_enabled false "$@" ;;
   thinking) cmd_thinking "$@" ;;
+  roles) cmd_roles "$@" ;;
   list) cmd_list "$@" ;;
   status) cmd_status "$@" ;;
   sync) cmd_sync "$@" ;;

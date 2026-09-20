@@ -14,6 +14,13 @@
 SHUNT_MODELS_FILE="${SHUNT_MODELS_FILE:-$HOME/.config/agent-model-shunt/models.json}"
 SHUNT_AGENTS_DIR="${SHUNT_AGENTS_DIR:-$HOME/.config/agent-model-shunt/agents}"
 
+# Roles a model can be assigned in the registry's optional `roles` array. A
+# model without `roles` has all of them. The JSON form is kept literal next to
+# the bash array so sourcing this file (the Read hook does, on every Read)
+# never has to spawn a process to build it. Keep the two in sync.
+SHUNT_MODELS_ROLES=(bulk-read code-write)
+SHUNT_MODELS_ROLES_JSON='["bulk-read","code-write"]'
+
 # shunt_models_file
 # Prints the path to the registry file.
 shunt_models_file() {
@@ -50,38 +57,77 @@ shunt_models_validate() {
     return 1
   fi
 
+  # `roles` is optional. When present it must be a non-empty array of known
+  # role names. Reports the first offending model only.
+  local roles_error
+  roles_error=$(jq -r --argjson known "$SHUNT_MODELS_ROLES_JSON" '
+    [.models[] | select(has("roles")) | . as $m | .roles as $r
+      | if ($r | type) != "array" then "model \"\($m.id)\" has invalid roles: must be an array of role names."
+        elif ($r | length) == 0 then "model \"\($m.id)\" has an empty roles array."
+        else ([$r[] | select(. as $x | ($x | type) != "string" or ($known | index($x) | not))] | map(tojson)) as $bad
+          | if ($bad | length) > 0
+            then "model \"\($m.id)\" has unknown role(s): \($bad | join(", ")). Known roles: \($known | join(", "))."
+            else empty end
+        end
+    ] | first // empty
+  ' "$SHUNT_MODELS_FILE" 2>/dev/null || true)
+  if [ -n "$roles_error" ]; then
+    echo "shunt: models registry at $SHUNT_MODELS_FILE: $roles_error"
+    return 1
+  fi
+
   return 0
 }
 
-# shunt_models_candidates
-# Prints, one per line, the enabled model ids to try in order: the registry's
-# `active` model first (if it names a real, enabled entry), then the
-# remaining enabled entries in priority (array) order, deduped. Prints
-# nothing when the registry has no enabled models. Requires shunt_models_validate
-# to already have passed; callers should check shunt_models_available first.
-shunt_models_candidates() {
-  local active
-  active=$(jq -r '.active // empty' "$SHUNT_MODELS_FILE")
+# shunt_models_role_known <role>
+# Success (0) if <role> is one of SHUNT_MODELS_ROLES.
+shunt_models_role_known() {
+  local role="$1" known
+  for known in "${SHUNT_MODELS_ROLES[@]}"; do
+    [ "$role" = "$known" ] && return 0
+  done
+  return 1
+}
 
-  if [ -n "$active" ]; then
-    local known
-    known=$(jq -r --arg a "$active" '[.models[].id] | index($a) // empty' "$SHUNT_MODELS_FILE")
-    if [ -z "$known" ]; then
-      echo "shunt: models registry's active model '$active' is not in the models list; falling back to priority order." >&2
-      active=""
-    fi
+# shunt_models_candidates [role]
+# Prints, one per line, the enabled model ids that have <role> (default
+# bulk-read, so legacy callers keep working) in the order to try them: the
+# registry's `active` model first (if it is enabled and has the role), then
+# the remaining matching entries in priority (array) order, deduped. A model
+# without a `roles` field has every role. Prints nothing when no enabled
+# model has the role, and callers decide what that means. Requires
+# shunt_models_validate to already have passed; callers should check
+# shunt_models_available first.
+#
+# One jq pass: the Read hook calls this on every large Read, so no per-model
+# spawns. The program's first output line is the `active` value when it names
+# a model that is not in the registry at all (else empty), the rest are the ids.
+shunt_models_candidates() {
+  local role="${1:-bulk-read}"
+  if ! shunt_models_role_known "$role"; then
+    echo "shunt: unknown role '$role' (known roles: ${SHUNT_MODELS_ROLES[*]})." >&2
+    return 1
   fi
 
   # Disabled models (`enabled: false`; a missing field counts as enabled)
   # never become candidates, so they cost nothing per call: the breaker is
-  # not consulted for them at all. A disabled active model is skipped
-  # silently and keeps its `active` marker for when it is re-enabled.
-  jq -r --arg a "$active" '
-    [.models[] | select(.enabled != false) | .id] as $ids
-    | (if $a != "" and ($ids | index($a)) != null then [$a] else [] end) as $head
-    | ($head + ($ids - $head))
-    | .[]
-  ' "$SHUNT_MODELS_FILE"
+  # not consulted for them at all. A disabled active model, or one that lacks
+  # the role, is skipped silently and keeps its `active` marker.
+  local out
+  out=$(jq -r --arg role "$role" --argjson all_roles "$SHUNT_MODELS_ROLES_JSON" '
+    (.active // "") as $a
+    | [.models[].id] as $known
+    | [.models[] | select(.enabled != false and ((.roles // $all_roles) | index($role) != null)) | .id] as $ids
+    | (if $a != "" and ($known | index($a)) != null and ($ids | index($a)) != null then [$a] else [] end) as $head
+    | (if $a != "" and ($known | index($a)) == null then $a else "" end),
+      ($head + ($ids - $head))[]
+  ' "$SHUNT_MODELS_FILE") || return 1
+
+  local unknown_active="${out%%$'\n'*}"
+  if [ -n "$unknown_active" ]; then
+    echo "shunt: models registry's active model '$unknown_active' is not in the models list; falling back to priority order." >&2
+  fi
+  [ "$out" = "$unknown_active" ] || printf '%s\n' "${out#*$'\n'}"
 }
 
 # shunt_models_agent_for <id>

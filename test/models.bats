@@ -138,6 +138,259 @@ JSON
   assert_line --partial "falling back to priority order"
 }
 
+@test "shunt_models_validate accepts a roles array of known roles" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/a","agent":"a1","roles":["bulk-read"]},
+  {"id":"p/b","agent":"a2","roles":["code-write","bulk-read"]},
+  {"id":"p/c","agent":"a3"}
+]}
+JSON
+  run shunt_models_validate
+  assert_success
+  assert_output ""
+}
+
+@test "shunt_models_validate rejects an unknown role, naming the model and the role" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/a","agent":"a1","roles":["bulk-read","summarize"]}
+]}
+JSON
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "p/a"
+  assert_output --partial "unknown role"
+  assert_output --partial "summarize"
+  run shunt_models_available
+  assert_failure
+}
+
+@test "shunt_models_validate rejects an empty roles array" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/a","agent":"a1","roles":[]}
+]}
+JSON
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "p/a"
+  assert_output --partial "empty"
+}
+
+@test "shunt_models_validate rejects roles that is not an array" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/a","agent":"a1","roles":"bulk-read"}
+]}
+JSON
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "p/a"
+  assert_output --partial "must be an array"
+}
+
+@test "shunt_models_validate rejects a non-string role value" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/a","agent":"a1","roles":[1]}
+]}
+JSON
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "unknown role"
+}
+
+@test "shunt_models_validate rejects a nested array as a role" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/a","agent":"a1","roles":[["bulk-read"]]}
+]}
+JSON
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "unknown role"
+}
+
+@test "shunt_models_validate rejects roles set to null" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/a","agent":"a1","roles":null}
+]}
+JSON
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "must be an array"
+}
+
+@test "the bash and JSON role lists stay in sync" {
+  [ "$(jq -c . <<<"$SHUNT_MODELS_ROLES_JSON")" = "$(printf '%s\n' "${SHUNT_MODELS_ROLES[@]}" | jq -R . | jq -sc .)" ]
+}
+
+@test "shunt_models_candidates prints only the warning when active is unknown and no model has the role" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/missing","models":[
+  {"id":"p/reader","agent":"a1","roles":["bulk-read"]}
+]}
+JSON
+  run shunt_models_candidates code-write
+  assert_success
+  [ "${#lines[@]}" -eq 1 ]
+  assert_line --partial "falling back to priority order"
+}
+
+@test "shunt_models_candidates treats a missing roles field as both roles" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/first","agent":"a1"},
+  {"id":"p/second","agent":"a2"}
+]}
+JSON
+  run shunt_models_candidates bulk-read
+  assert_success
+  assert_line --index 0 "p/first"
+  assert_line --index 1 "p/second"
+  [ "${#lines[@]}" -eq 2 ]
+  run shunt_models_candidates code-write
+  assert_success
+  assert_line --index 0 "p/first"
+  assert_line --index 1 "p/second"
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "shunt_models_candidates keeps only models that have the requested role" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/reader","agent":"a1","roles":["bulk-read"]},
+  {"id":"p/writer","agent":"a2","roles":["code-write"]},
+  {"id":"p/both","agent":"a3","roles":["code-write","bulk-read"]},
+  {"id":"p/legacy","agent":"a4"}
+]}
+JSON
+  run shunt_models_candidates bulk-read
+  assert_success
+  assert_line --index 0 "p/reader"
+  assert_line --index 1 "p/both"
+  assert_line --index 2 "p/legacy"
+  [ "${#lines[@]}" -eq 3 ]
+  run shunt_models_candidates code-write
+  assert_success
+  assert_line --index 0 "p/writer"
+  assert_line --index 1 "p/both"
+  assert_line --index 2 "p/legacy"
+  [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "shunt_models_candidates puts the active model first within a role, deduped" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/third","models":[
+  {"id":"p/first","agent":"a1","roles":["code-write"]},
+  {"id":"p/second","agent":"a2","roles":["bulk-read"]},
+  {"id":"p/third","agent":"a3","roles":["code-write","bulk-read"]}
+]}
+JSON
+  run shunt_models_candidates code-write
+  assert_success
+  assert_line --index 0 "p/third"
+  assert_line --index 1 "p/first"
+  [ "${#lines[@]}" -eq 2 ]
+  run shunt_models_candidates bulk-read
+  assert_success
+  assert_line --index 0 "p/third"
+  assert_line --index 1 "p/second"
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "shunt_models_candidates skips an active model lacking the role without noise" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/reader","models":[
+  {"id":"p/first","agent":"a1"},
+  {"id":"p/reader","agent":"a2","roles":["bulk-read"]},
+  {"id":"p/third","agent":"a3"}
+]}
+JSON
+  run shunt_models_candidates code-write
+  assert_success
+  assert_line --index 0 "p/first"
+  assert_line --index 1 "p/third"
+  [ "${#lines[@]}" -eq 2 ]
+  refute_output --partial "falling back"
+}
+
+@test "shunt_models_candidates excludes disabled models within a role" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/off","models":[
+  {"id":"p/off","agent":"a1","enabled":false,"roles":["code-write"]},
+  {"id":"p/on","agent":"a2","roles":["code-write"]}
+]}
+JSON
+  run shunt_models_candidates code-write
+  assert_success
+  [ "${#lines[@]}" -eq 1 ]
+  assert_line --index 0 "p/on"
+}
+
+@test "shunt_models_candidates prints nothing when no enabled model has the role" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/reader","models":[
+  {"id":"p/reader","agent":"a1","roles":["bulk-read"]},
+  {"id":"p/off","agent":"a2","enabled":false,"roles":["code-write"]}
+]}
+JSON
+  run shunt_models_candidates code-write
+  assert_success
+  assert_output ""
+}
+
+@test "shunt_models_candidates defaults to the bulk-read role when called without one" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/writer","agent":"a1","roles":["code-write"]},
+  {"id":"p/reader","agent":"a2","roles":["bulk-read"]}
+]}
+JSON
+  run shunt_models_candidates
+  assert_success
+  [ "${#lines[@]}" -eq 1 ]
+  assert_line --index 0 "p/reader"
+}
+
+@test "shunt_models_candidates rejects an unknown role argument" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/a","agent":"a1"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_candidates summarize
+  assert_failure
+  assert_output --partial "unknown role"
+}
+
+@test "shunt_models_candidates still warns about an unknown active model for a role" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/missing","models":[
+  {"id":"p/first","agent":"a1","roles":["code-write"]}
+]}
+JSON
+  run shunt_models_candidates code-write
+  assert_success
+  assert_line --partial "p/first"
+  assert_line --partial "falling back to priority order"
+}
+
+@test "shunt_models_candidates reads the registry with a single jq call" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/second","models":[
+  {"id":"p/first","agent":"a1"},
+  {"id":"p/second","agent":"a2","roles":["code-write"]}
+]}
+JSON
+  local real_jq shim_dir="$TEST_TMPDIR/shim"
+  real_jq=$(command -v jq)
+  mkdir -p "$shim_dir"
+  printf '#!/bin/bash\necho x >>"%s/jq-calls"\nexec "%s" "$@"\n' "$TEST_TMPDIR" "$real_jq" >"$shim_dir/jq"
+  chmod +x "$shim_dir/jq"
+  PATH="$shim_dir:$PATH" run shunt_models_candidates code-write
+  assert_success
+  [ "$(wc -l <"$TEST_TMPDIR/jq-calls" | tr -d ' ')" -eq 1 ]
+}
+
 @test "shunt_models_agent_for returns the registered agent name" {
   cat >"$SHUNT_MODELS_FILE" <<'JSON'
 {"version":1,"active":null,"models":[

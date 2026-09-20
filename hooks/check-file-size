@@ -48,7 +48,7 @@ if [ "$lines" -le "$MIN_LINES" ]; then
 fi
 
 if shunt_models_available; then
-  candidates=$(shunt_models_candidates)
+  candidates=$(shunt_models_candidates bulk-read)
   # No enabled delegate models (empty registry, or all disabled), or every
   # one of them is breaker-open: there is nothing to redirect to, so don't
   # strand Claude, let the direct Read through.

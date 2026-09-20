@@ -340,3 +340,204 @@ teardown() {
   assert_success
   [ -f "$SHUNT_AGENTS_DIR/$agent.md" ]
 }
+
+@test "add gives the model both roles explicitly by default" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m"
+  run jq -c '.models[0].roles' "$SHUNT_MODELS_FILE"
+  assert_output '["bulk-read","code-write"]'
+}
+
+@test "add records the roles it is given" {
+  shunt_write_provider "p"
+  run "$SHUNT_MODELS_BIN" add "p/m" "code-write"
+  assert_success
+  run jq -c '.models[0].roles' "$SHUNT_MODELS_FILE"
+  assert_output '["code-write"]'
+}
+
+@test "add drops duplicate roles and keeps their order" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m" "code-write,bulk-read,code-write"
+  run jq -c '.models[0].roles' "$SHUNT_MODELS_FILE"
+  assert_output '["code-write","bulk-read"]'
+}
+
+@test "add refuses an unknown role before touching the registry or agents" {
+  shunt_write_provider "p"
+  run "$SHUNT_MODELS_BIN" add "p/m" "bulk_read"
+  assert_failure
+  assert_output --partial "unknown role"
+  [ ! -f "$SHUNT_MODELS_FILE" ]
+  [ -z "$(ls -A "$SHUNT_AGENTS_DIR" 2>/dev/null)" ]
+}
+
+@test "add refuses an empty role entry" {
+  shunt_write_provider "p"
+  run "$SHUNT_MODELS_BIN" add "p/m" "bulk-read,"
+  assert_failure
+  [ ! -f "$SHUNT_MODELS_FILE" ]
+}
+
+@test "add with a restricted role set still materializes the agent" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m" "bulk-read"
+  local agent
+  agent=$(jq -r '.models[0].agent' "$SHUNT_MODELS_FILE")
+  [ -f "$SHUNT_AGENTS_DIR/$agent.md" ]
+}
+
+@test "roles sets a model's roles in the given order and leaves the rest alone" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" add "p/two"
+  "$SHUNT_MODELS_BIN" activate "p/two"
+  run "$SHUNT_MODELS_BIN" roles "p/one" "code-write,bulk-read"
+  assert_success
+  assert_output --partial "p/one"
+  run jq -c '.models[0].roles' "$SHUNT_MODELS_FILE"
+  assert_output '["code-write","bulk-read"]'
+  run jq -c '.models[1].roles' "$SHUNT_MODELS_FILE"
+  assert_output '["bulk-read","code-write"]'
+  run jq -r '.active' "$SHUNT_MODELS_FILE"
+  assert_output "p/two"
+}
+
+@test "roles accepts a single role and drops duplicates" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" roles "p/one" "code-write"
+  assert_success
+  run jq -c '.models[0].roles' "$SHUNT_MODELS_FILE"
+  assert_output '["code-write"]'
+  run "$SHUNT_MODELS_BIN" roles "p/one" "bulk-read,bulk-read"
+  assert_success
+  run jq -c '.models[0].roles' "$SHUNT_MODELS_FILE"
+  assert_output '["bulk-read"]'
+}
+
+@test "roles produces a registry that shunt_models_candidates honors" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" add "p/two"
+  "$SHUNT_MODELS_BIN" roles "p/one" "code-write"
+  source "$REPO_ROOT/scripts/lib/models.sh"
+  run shunt_models_candidates bulk-read
+  assert_output "p/two"
+  run shunt_models_candidates code-write
+  assert_line --index 0 "p/one"
+  assert_line --index 1 "p/two"
+}
+
+@test "roles refuses an unknown role and leaves the registry untouched" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  local before
+  before=$(cat "$SHUNT_MODELS_FILE")
+  run "$SHUNT_MODELS_BIN" roles "p/one" "bulk-read,summarize"
+  assert_failure
+  assert_output --partial "summarize"
+  [ "$(cat "$SHUNT_MODELS_FILE")" = "$before" ]
+}
+
+@test "roles refuses an empty role list" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  local before
+  before=$(cat "$SHUNT_MODELS_FILE")
+  run "$SHUNT_MODELS_BIN" roles "p/one" ""
+  assert_failure
+  assert_output --partial "usage"
+  run "$SHUNT_MODELS_BIN" roles "p/one" ","
+  assert_failure
+  assert_output --partial "empty role"
+  run "$SHUNT_MODELS_BIN" roles "p/one" "bulk-read,"
+  assert_failure
+  assert_output --partial "empty role"
+  run "$SHUNT_MODELS_BIN" roles "p/one" $'bulk-read\ncode-write'
+  assert_failure
+  [ "$(cat "$SHUNT_MODELS_FILE")" = "$before" ]
+}
+
+@test "roles refuses missing arguments with a usage message" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" roles
+  assert_failure
+  assert_output --partial "usage"
+  run "$SHUNT_MODELS_BIN" roles "p/one"
+  assert_failure
+  assert_output --partial "usage"
+}
+
+@test "roles refuses an id not in the registry" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" roles "p/missing" "bulk-read"
+  assert_failure
+  assert_output --partial "not in the registry"
+}
+
+@test "roles refuses when no registry exists" {
+  run "$SHUNT_MODELS_BIN" roles "p/one" "bulk-read"
+  assert_failure
+  assert_output --partial "no models registry"
+}
+
+@test "status shows each model's effective roles" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" add "p/two"
+  "$SHUNT_MODELS_BIN" roles "p/two" "code-write"
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  assert_line --regexp '^p/one.*roles=bulk-read,code-write'
+  assert_line --regexp '^p/two.*roles=code-write'
+  refute_line --regexp '^p/two.*roles=bulk-read'
+}
+
+@test "status computes the first choice for the bulk-read role" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" add "p/two"
+  "$SHUNT_MODELS_BIN" roles "p/one" "code-write"
+  "$SHUNT_MODELS_BIN" activate "p/one"
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  assert_output --partial "first choice: p/two"
+}
+
+@test "status says reads are not redirected when no enabled model has the bulk-read role" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" roles "p/one" "code-write"
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  assert_output --partial "no enabled model has the bulk-read role (large reads are not redirected)"
+  refute_output --partial "first choice"
+}
+
+@test "roles repairs a registry that is invalid only because of a bad roles value" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  jq '.models[0].roles = ["bulk_read"]' "$SHUNT_MODELS_FILE" >"$TEST_TMPDIR/edited.json"
+  mv "$TEST_TMPDIR/edited.json" "$SHUNT_MODELS_FILE"
+  run "$SHUNT_MODELS_BIN" roles "p/one" "bulk-read"
+  assert_success
+  run jq -c '.models[0].roles' "$SHUNT_MODELS_FILE"
+  assert_output '["bulk-read"]'
+  source "$REPO_ROOT/scripts/lib/models.sh"
+  run shunt_models_validate
+  assert_success
+}
+
+@test "status and list explain an invalid registry instead of claiming legacy mode" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/one","agent":"a","roles":["bulk_read"]}]}' >"$SHUNT_MODELS_FILE"
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  assert_output --partial "unknown role"
+  assert_output --partial "bulk_read"
+  run "$SHUNT_MODELS_BIN" list
+  assert_success
+  assert_output --partial "unknown role"
+}

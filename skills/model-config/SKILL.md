@@ -1,6 +1,6 @@
 ---
 name: model-config
-description: Dashboard and editor for the shunt-owned delegate model registry (which models are configured, which is active, per-model retry/failover behavior) and its retry settings. Use when the user wants to add/remove/reorder/disable/enable delegate models, switch the active one, turn a model's thinking mode on/off, or tune how shunt reacts to a model repeatedly failing.
+description: Dashboard and editor for the shunt-owned delegate model registry (which models are configured, which is active, which jobs each may do, per-model retry/failover behavior) and its retry settings. Use when the user wants to add/remove/reorder/disable/enable delegate models, switch the active one, limit a model to reading or writing (roles), turn a model's thinking mode on/off, or tune how shunt reacts to a model repeatedly failing.
 ---
 
 # Model Config
@@ -49,14 +49,15 @@ it tries that model again."
 Drive `scripts/shunt-models`:
 
 ```bash
-scripts/shunt-models add <provider/model>       # also materializes its OpenCode agent
+scripts/shunt-models add <provider/model> [<role>[,<role>...]]   # roles default to both, also materializes its OpenCode agent
 scripts/shunt-models remove <provider/model>
 scripts/shunt-models reorder <provider/model> <1-based position>
 scripts/shunt-models activate <provider/model>
 scripts/shunt-models disable <provider/model>    # keep it, but stop using it
 scripts/shunt-models enable <provider/model>
+scripts/shunt-models roles <provider/model> <role>[,<role>...]   # bulk-read, code-write
 scripts/shunt-models list
-scripts/shunt-models status                      # id, agent, enabled/disabled, thinking flag, active marker, then the first choice
+scripts/shunt-models status                      # id, agent, enabled/disabled, thinking flag, roles, active marker, then the first choice
 scripts/shunt-models sync                         # re-materialize all agent files
 ```
 
@@ -84,6 +85,63 @@ with it.
 config's `provider` block (`$SHUNT_OPENCODE_CONFIG_HOME/opencode.json` or
 `~/.config/opencode/opencode.json`) — if it's missing, the command fails
 with a clear message rather than materializing an agent that can't run.
+
+## Roles, per model
+
+Each model can be limited to the jobs it may do. There are two roles:
+`bulk-read` (answering questions about large files, what `/bulk-reader` uses)
+and `code-write` (generating new files, not yet used by any command, so setting
+it has no effect today). A model with no `roles` set has both,
+so registries written before roles existed keep working unchanged.
+
+### Adding a model: let the user pick its roles
+
+Before running `add`, ask which roles the new model should have, with the
+`AskUserQuestion` tool as a multi-select (`multiSelect: true`), one option per
+role: `bulk-read` and `code-write`. Both are the default, so label both options
+"(Recommended)" and say in the question text that both are on unless the user
+unticks one, for example: "Which jobs may this model do? Keep both unless you
+want to limit it." The tool cannot pre-tick options, so treat the selection as
+the roles to keep:
+
+- Both selected: run `add <provider/model>` with no roles argument (same as
+  passing both).
+- One selected: run `add <provider/model> <that-role>`.
+- Nothing selected: a model needs at least one role, so ask again instead of
+  guessing.
+
+Only ask when the user did not already name the roles in the request. If they
+did ("add X for reading only"), pass those roles and skip the question.
+
+```bash
+scripts/shunt-models roles <provider/model> bulk-read              # reading only
+scripts/shunt-models roles <provider/model> code-write             # writing only
+scripts/shunt-models roles <provider/model> bulk-read,code-write   # both
+```
+
+- `roles` replaces the model's whole role list. Order is kept and duplicates
+  are dropped. An empty list or an unknown role is refused and the registry is
+  left as it was.
+- There is one `active` pointer and one priority order for every role. For a
+  given role, the candidates are the `active` model first (only if it is
+  enabled and has that role), then the other enabled models that have the role,
+  in registry order. A model that lacks the role is simply skipped for it and
+  keeps its `active` marker.
+- The role list is the only way to say "this model only reads" or "this model
+  only writes". It cannot express "A first for reading, B first for writing"
+  while both stay fallbacks for both jobs. If the user wants that, restrict each
+  model to its role.
+- If no enabled model has `bulk-read`, large reads are not redirected, exactly
+  as with an empty registry, and `status` says so. `status` shows each model's
+  effective roles (`roles=bulk-read,code-write` when none are set) and its
+  `first choice:` line is the first choice for `bulk-read`.
+- An invalid `roles` value in the registry (for example a hand-edit typo like
+  `bulk_read`) makes the whole registry invalid, so shunt falls back to legacy
+  single-agent mode. `status` and `list` then print the reason. Run
+  `scripts/shunt-models roles <provider/model> <role>[,<role>...]` on the
+  offending model to repair it.
+- Changing roles only edits the registry. It does not touch agent files or
+  retry/failover state.
 
 ## Thinking/extended-reasoning, per model (off by default)
 
