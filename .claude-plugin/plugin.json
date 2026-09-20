@@ -1,7 +1,7 @@
 {
   "name": "agent-model-shunt",
   "displayName": "Model Shunt",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Shunts token-heavy, low-intelligence work (large file reads) away from your coding agent and onto your own custom models, routed through OpenCode. Currently implemented for Claude Code; built to extend to other agent hosts (Codex, etc.) as they're added.",
   "author": {
     "name": "agent-model-shunt contributors"
