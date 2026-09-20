@@ -117,9 +117,9 @@ FAKE
   local f="$TEST_TMPDIR/file.txt"
   echo hi >"$f"
 
-  shunt_invoke_with_failover "question" "$f" >"$TEST_TMPDIR/out_path"
+  shunt_invoke_with_failover "question" "$f"
   [ "$SHUNT_INVOKE_AGENT_USED" = "bulk-reader" ]
-  [ -s "$(cat "$TEST_TMPDIR/out_path")" ]
+  [ -s "$SHUNT_INVOKE_OUT_FILE" ]
 }
 
 @test "shunt_invoke_with_failover uses the registry's active model on success" {
@@ -128,7 +128,7 @@ FAKE
   local f="$TEST_TMPDIR/file.txt"
   echo hi >"$f"
 
-  shunt_invoke_with_failover "question" "$f" >"$TEST_TMPDIR/out_path"
+  shunt_invoke_with_failover "question" "$f"
   [ "$SHUNT_INVOKE_AGENT_USED" = "p/one" ]
   run shunt_breaker_status "p/one"
   assert_output --partial "failures=0"
@@ -160,7 +160,7 @@ FAKE
   local f="$TEST_TMPDIR/file.txt"
   echo hi >"$f"
 
-  shunt_invoke_with_failover "question" "$f" >"$TEST_TMPDIR/out_path"
+  shunt_invoke_with_failover "question" "$f"
   [ "$SHUNT_INVOKE_AGENT_USED" = "p/two" ]
 }
 

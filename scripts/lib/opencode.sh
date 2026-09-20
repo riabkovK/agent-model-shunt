@@ -115,9 +115,11 @@ shunt_try_invoke() {
   local out status
   out=$(shunt_tmpfile)
   status=0
+  # </dev/null: opencode reads stdin, and this runs inside shunt_invoke_with_failover's
+  # `while read ... <<<"$candidates"` loop, where it would swallow the remaining candidates.
   XDG_CONFIG_HOME="$iso_config" timeout "${SHUNT_TIMEOUT_SECONDS}" \
     "$SHUNT_OPENCODE_BIN" run --agent "$agent" "$question" "${file_args[@]}" --format json \
-    >"$out" 2>/dev/null || status=$?
+    </dev/null >"$out" 2>/dev/null || status=$?
 
   if [ "$status" -ne 0 ] || [ ! -s "$out" ]; then
     rm -f "$out"
@@ -147,9 +149,12 @@ shunt_invoke() {
 # registry (priority order, skipping any whose circuit breaker is open) and
 # recording each attempt's outcome via shunt_breaker_record_success/
 # _failure. Falls back to the single legacy SHUNT_BULK_READER_AGENT
-# unchanged (no breaker involved) when no registry exists yet. Prints the
-# successful call's output file path and sets SHUNT_INVOKE_AGENT_USED to
-# the model id (or legacy agent name) that produced it. Fatal only once
+# unchanged (no breaker involved) when no registry exists yet. Sets
+# SHUNT_INVOKE_OUT_FILE to the successful call's output file path and
+# SHUNT_INVOKE_AGENT_USED to the model id (or legacy agent name) that
+# produced it. Both are globals, not stdout: a caller that captured stdout
+# with $(...) would run this in a subshell and lose the second variable, so
+# call it directly, never inside a command substitution. Fatal only once
 # every candidate has been tried and failed, or every registered
 # candidate's breaker is currently open.
 shunt_invoke_with_failover() {
@@ -158,9 +163,9 @@ shunt_invoke_with_failover() {
   local files=("$@")
 
   if ! shunt_models_available; then
+    SHUNT_INVOKE_OUT_FILE=$(shunt_invoke "$SHUNT_BULK_READER_AGENT" "$question" "${files[@]}")
     SHUNT_INVOKE_AGENT_USED="$SHUNT_BULK_READER_AGENT"
-    shunt_invoke "$SHUNT_BULK_READER_AGENT" "$question" "${files[@]}"
-    return
+    return 0
   fi
 
   local candidates
@@ -176,7 +181,7 @@ shunt_invoke_with_failover() {
     if out=$(shunt_try_invoke "$agent" "$question" "${files[@]}"); then
       shunt_breaker_record_success "$id"
       SHUNT_INVOKE_AGENT_USED="$id"
-      echo "$out"
+      SHUNT_INVOKE_OUT_FILE="$out"
       return 0
     fi
     shunt_breaker_record_failure "$id"

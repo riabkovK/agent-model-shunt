@@ -45,7 +45,8 @@ done
 
 shunt_preflight
 
-out_file=$(shunt_invoke_with_failover "$question" "${paths[@]}")
+shunt_invoke_with_failover "$question" "${paths[@]}"
+out_file="$SHUNT_INVOKE_OUT_FILE"
 used_agent="$SHUNT_INVOKE_AGENT_USED"
 
 answer=$(shunt_extract_text "$out_file")
