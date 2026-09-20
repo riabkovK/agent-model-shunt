@@ -21,3 +21,5 @@ rather than duplicating it here.
 | [0008](0008-native-file-attachment-over-manual-wrapping.md) | Native `-f/--file` attachment over manual XML wrapping | Accepted | Yes (`scripts/lib/opencode.sh` uses `-f`, no XML wrapping) |
 | [0009](0009-multi-host-scope-shift.md) | Scope shift from Claude Code only to Claude Code first, other hosts planned | Accepted | Partial: naming/framing done (repo, docs, cache paths); the adapter layer for an actual second host is explicitly not built yet, per its own Consequences |
 | [0010](0010-defer-host-adapter-module-extraction.md) | Defer host-adapter module extraction until a second host is built | Accepted | Yes (decision is to do nothing structurally yet) |
+| [0011](0011-model-registry-materialized-agents.md) | Multi-model registry with materialized agent files, not dynamic generation | Accepted | Yes (`scripts/shunt-models`, `scripts/lib/models.sh`) |
+| [0012](0012-circuit-breaker-separate-from-model-selection.md) | Circuit breaker on consecutive failures only, no latency racing | Accepted | Yes (`scripts/lib/breaker.sh`, `scripts/shunt-breaker-config`) |
