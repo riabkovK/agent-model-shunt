@@ -2,9 +2,10 @@
 # into its own temp HOME/config/cache dir so nothing touches the real
 # ~/.config or ~/.cache.
 
-HELPER_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-load "$HELPER_DIR/test_helper/bats-support/load.bash"
-load "$HELPER_DIR/test_helper/bats-assert/load.bash"
+# Resolved through BATS_LIB_PATH (default includes /usr/lib/bats, where the
+# bats/bats test image ships both libraries).
+bats_load_library bats-support
+bats_load_library bats-assert
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
