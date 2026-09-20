@@ -1,0 +1,125 @@
+#!/bin/bash
+# Write side of the shunt-owned circuit breaker config
+# (~/.config/agent-model-shunt/breaker-config.json by default). Lets a user
+# tune the failure threshold and cooldown, or disable the breaker outright,
+# without hand-editing JSON or exporting env vars. Driven by the
+# /model-config skill; never hand-edit breaker-config.json directly.
+#
+# Usage:
+#   shunt-breaker-config show
+#   shunt-breaker-config set threshold <positive integer>
+#   shunt-breaker-config set cooldown <non-negative integer>
+#   shunt-breaker-config disable
+#   shunt-breaker-config reset
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/opencode.sh
+source "$SCRIPT_DIR/lib/opencode.sh"
+# shellcheck source=lib/models.sh
+source "$SCRIPT_DIR/lib/models.sh"
+# shellcheck source=lib/breaker.sh
+source "$SCRIPT_DIR/lib/breaker.sh"
+
+SHUNT_BREAKER_DISABLED_THRESHOLD=999999999
+
+# shunt_breaker_config_read_or_empty
+# Prints the current config file JSON, or an empty object if it doesn't
+# exist yet.
+shunt_breaker_config_read_or_empty() {
+  if [ -f "$SHUNT_BREAKER_CONFIG_FILE" ]; then
+    cat "$SHUNT_BREAKER_CONFIG_FILE"
+  else
+    echo '{}'
+  fi
+}
+
+# shunt_breaker_config_write <json>
+# Atomically replaces the config file with <json>, validating it first.
+shunt_breaker_config_write() {
+  local json="$1"
+  mkdir -p "$(dirname "$SHUNT_BREAKER_CONFIG_FILE")"
+
+  local tmp_file
+  tmp_file=$(mktemp "$(dirname "$SHUNT_BREAKER_CONFIG_FILE")/.breaker-config.json.XXXXXX")
+  echo "$json" | jq -e . >"$tmp_file" 2>/dev/null \
+    || { rm -f "$tmp_file"; shunt_report_error "refusing to write an invalid breaker config."; }
+
+  mv "$tmp_file" "$SHUNT_BREAKER_CONFIG_FILE"
+}
+
+cmd_show() {
+  echo "threshold=$SHUNT_BREAKER_THRESHOLD (default: 3)"
+  echo "cooldown_seconds=$SHUNT_BREAKER_COOLDOWN_SECONDS (default: 300)"
+  if [ "$SHUNT_BREAKER_THRESHOLD" -ge "$SHUNT_BREAKER_DISABLED_THRESHOLD" ]; then
+    echo "status: disabled (threshold effectively unreachable)"
+  fi
+
+  if shunt_models_available; then
+    echo "---"
+    jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+      echo "$id: $(shunt_breaker_status "$id")"
+    done
+  else
+    echo "shunt: circuit breaker not applicable (no models registry at $SHUNT_MODELS_FILE; legacy single-agent mode)."
+  fi
+}
+
+cmd_set_threshold() {
+  local value="${1:-}"
+  case "$value" in
+    ''|*[!0-9]*) shunt_report_error "threshold must be a positive integer." ;;
+  esac
+  [ "$value" -ge 1 ] || shunt_report_error "threshold must be a positive integer."
+
+  local updated
+  updated=$(shunt_breaker_config_read_or_empty | jq --argjson t "$value" '.threshold = $t | .cooldown_seconds //= 300')
+  shunt_breaker_config_write "$updated"
+  echo "shunt: breaker threshold set to $value."
+}
+
+cmd_set_cooldown() {
+  local value="${1:-}"
+  case "$value" in
+    ''|*[!0-9]*) shunt_report_error "cooldown must be a non-negative integer." ;;
+  esac
+
+  local updated
+  updated=$(shunt_breaker_config_read_or_empty | jq --argjson c "$value" '.cooldown_seconds = $c | .threshold //= 3')
+  shunt_breaker_config_write "$updated"
+  echo "shunt: breaker cooldown set to ${value}s."
+}
+
+cmd_set() {
+  local field="${1:-}" value="${2:-}"
+  case "$field" in
+    threshold) cmd_set_threshold "$value" ;;
+    cooldown) cmd_set_cooldown "$value" ;;
+    *) shunt_report_error "usage: shunt-breaker-config set <threshold|cooldown> <value>" ;;
+  esac
+}
+
+cmd_disable() {
+  local updated
+  updated=$(shunt_breaker_config_read_or_empty | jq --argjson t "$SHUNT_BREAKER_DISABLED_THRESHOLD" '.threshold = $t | .cooldown_seconds //= 300')
+  shunt_breaker_config_write "$updated"
+  echo "shunt: circuit breaker disabled (threshold set to an unreachable value)."
+}
+
+cmd_reset() {
+  rm -f "$SHUNT_BREAKER_CONFIG_FILE"
+  echo "shunt: breaker config reset to hardcoded defaults."
+}
+
+subcommand="${1:-}"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-breaker-config <show|set|disable|reset> [args...]"
+shift
+
+case "$subcommand" in
+  show) cmd_show "$@" ;;
+  set) cmd_set "$@" ;;
+  disable) cmd_disable "$@" ;;
+  reset) cmd_reset "$@" ;;
+  *) shunt_report_error "unknown subcommand: $subcommand" ;;
+esac

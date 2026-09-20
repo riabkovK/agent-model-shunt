@@ -1,6 +1,19 @@
 #!/bin/bash
 # Block full-file reads on large files, redirect to the bulk-reader skill.
 # Self-contained: all routing logic lives here, no AGENTS.md/CLAUDE.md needed.
+#
+# Breaker exhaustion behavior (docs/TODO.md, 2026-09-16): if every candidate
+# delegate model in the registry currently has its circuit breaker open,
+# denying would just strand Claude with no usable path forward. In that
+# case, allow the direct Read through instead, same as SHUNT_HOOKS_DISABLED
+# for that one call. Only applies when a models registry exists; the legacy
+# single-agent path (no registry) keeps denying as before.
+
+HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=../scripts/lib/models.sh
+source "$HOOK_DIR/../scripts/lib/models.sh"
+# shellcheck source=../scripts/lib/breaker.sh
+source "$HOOK_DIR/../scripts/lib/breaker.sh"
 
 allow() { echo '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}'; }
 deny() { echo "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"$1\"}}"; }
@@ -32,6 +45,17 @@ lines=$(wc -l < "$file_path" 2>/dev/null | tr -d ' ' || echo "0")
 if [ "$lines" -le "$MIN_LINES" ]; then
   allow
   exit 0
+fi
+
+if shunt_models_available; then
+  candidates=$(shunt_models_candidates)
+  # No enabled delegate models (empty registry, or all disabled), or every
+  # one of them is breaker-open: there is nothing to redirect to, so don't
+  # strand Claude, let the direct Read through.
+  if [ -z "$candidates" ] || ! shunt_breaker_any_closed $candidates; then
+    allow
+    exit 0
+  fi
 fi
 
 deny "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to a custom model instead of reading it directly. If you need exact content for editing, re-read with an offset/limit for just the section you need."
