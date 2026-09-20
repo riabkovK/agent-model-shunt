@@ -49,7 +49,10 @@ fi
 
 if shunt_models_available; then
   candidates=$(shunt_models_candidates)
-  if [ -n "$candidates" ] && ! shunt_breaker_any_closed $candidates; then
+  # No enabled delegate models (empty registry, or all disabled), or every
+  # one of them is breaker-open: there is nothing to redirect to, so don't
+  # strand Claude, let the direct Read through.
+  if [ -z "$candidates" ] || ! shunt_breaker_any_closed $candidates; then
     allow
     exit 0
   fi

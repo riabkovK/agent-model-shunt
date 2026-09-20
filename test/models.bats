@@ -29,11 +29,56 @@ JSON
   assert_output --partial "invalid JSON"
 }
 
-@test "shunt_models_validate rejects an empty models array" {
+@test "shunt_models_validate accepts an empty models array" {
   echo '{"version":1,"active":null,"models":[]}' >"$SHUNT_MODELS_FILE"
   run shunt_models_validate
-  assert_failure
-  assert_output --partial "at least one model"
+  assert_success
+  run shunt_models_available
+  assert_success
+}
+
+@test "shunt_models_candidates prints nothing for an empty registry" {
+  echo '{"version":1,"active":null,"models":[]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_candidates
+  assert_success
+  assert_output ""
+}
+
+@test "shunt_models_candidates skips disabled models, treating a missing enabled field as enabled" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/first","agent":"a1","enabled":false},
+  {"id":"p/second","agent":"a2"},
+  {"id":"p/third","agent":"a3","enabled":true}
+]}
+JSON
+  run shunt_models_candidates
+  assert_success
+  assert_line --index 0 "p/second"
+  assert_line --index 1 "p/third"
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "shunt_models_candidates ignores a disabled active model without noise" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/second","models":[
+  {"id":"p/first","agent":"a1","enabled":true},
+  {"id":"p/second","agent":"a2","enabled":false}
+]}
+JSON
+  run shunt_models_candidates
+  assert_success
+  [ "${#lines[@]}" -eq 1 ]
+  assert_line --index 0 "p/first"
+}
+
+@test "shunt_models_candidates prints nothing when every model is disabled" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":"p/one","models":[{"id":"p/one","agent":"a1","enabled":false}]}
+JSON
+  run shunt_models_candidates
+  assert_success
+  assert_output ""
 }
 
 @test "shunt_models_validate rejects duplicate ids" {
@@ -144,5 +189,31 @@ JSON
   run grep -c "^  read: true$" "$agent_file"
   assert_output "1"
   run grep -c "^  bash: false$" "$agent_file"
+  assert_output "1"
+}
+
+@test "shunt_models_materialize_agent omits reasoning frontmatter when thinking is off" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"shunt-bulk-reader-p-m","thinking":false,"thinking_options":{"reasoningEffort":"high"}}
+]}
+JSON
+  run shunt_models_materialize_agent "p/m"
+  assert_success
+  local agent_file="$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md"
+  run grep -c "reasoningEffort" "$agent_file"
+  assert_output "0"
+}
+
+@test "shunt_models_materialize_agent merges thinking_options into frontmatter when thinking is on" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"shunt-bulk-reader-p-m","thinking":true,"thinking_options":{"reasoningEffort":"high"}}
+]}
+JSON
+  run shunt_models_materialize_agent "p/m"
+  assert_success
+  local agent_file="$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md"
+  run grep -c "^reasoningEffort: high$" "$agent_file"
   assert_output "1"
 }

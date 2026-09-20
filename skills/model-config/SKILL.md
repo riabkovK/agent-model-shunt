@@ -1,6 +1,6 @@
 ---
 name: model-config
-description: Dashboard and editor for the shunt-owned delegate model registry (which models are configured, which is active, per-model retry/failover behavior) and its retry settings. Use when the user wants to add/remove/reorder delegate models, switch the active one, turn a model's thinking mode on/off, or tune how shunt reacts to a model repeatedly failing.
+description: Dashboard and editor for the shunt-owned delegate model registry (which models are configured, which is active, per-model retry/failover behavior) and its retry settings. Use when the user wants to add/remove/reorder/disable/enable delegate models, switch the active one, turn a model's thinking mode on/off, or tune how shunt reacts to a model repeatedly failing.
 ---
 
 # Model Config
@@ -53,20 +53,75 @@ scripts/shunt-models add <provider/model>       # also materializes its OpenCode
 scripts/shunt-models remove <provider/model>
 scripts/shunt-models reorder <provider/model> <1-based position>
 scripts/shunt-models activate <provider/model>
+scripts/shunt-models disable <provider/model>    # keep it, but stop using it
+scripts/shunt-models enable <provider/model>
 scripts/shunt-models list
-scripts/shunt-models status                      # id, agent, thinking flag, active marker
+scripts/shunt-models status                      # id, agent, enabled/disabled, thinking flag, active marker, then the first choice
 scripts/shunt-models sync                         # re-materialize all agent files
 ```
+
+`remove` also deletes that model's materialized agent file and its retry/failover
+state, so nothing stale is left behind and a later re-add starts clean. If the
+removed model was the active one, `active` becomes unset and no other model is
+promoted automatically. Removing the last model is allowed: the registry then
+holds zero models, and shunt stops redirecting large reads (Claude reads files
+directly again) until a model is added or enabled.
+
+`disable` / `enable` are the reversible alternative to `remove`. A disabled
+model stays in the registry with its position, agent file, thinking settings and
+active marker, but is never tried for a call and never counts toward the
+"is any model usable" check that lets reads through. It costs nothing per call,
+because it is filtered out before any retry/failover state is looked at. A
+disabled model cannot be made active until it is enabled. If every model is
+disabled, the effect is the same as an empty registry. `status` marks a disabled
+active model as `active (skipped, disabled)` and ends with a `first choice:` line
+naming the model the next call tries first (or saying no model is enabled), so
+report that line when the user asks which model is the default now. Prefer `disable` when the
+user wants a model out of rotation for a while, and `remove` when they are done
+with it.
 
 `add` requires the model's provider to already exist in the OpenCode
 config's `provider` block (`$SHUNT_OPENCODE_CONFIG_HOME/opencode.json` or
 `~/.config/opencode/opencode.json`) — if it's missing, the command fails
 with a clear message rather than materializing an agent that can't run.
 
-For a model's thinking/extended-reasoning flag (off by default per
-`docs/TODO.md`'s design), there is currently no dedicated `shunt-models`
-subcommand; report this as not yet implemented if asked, rather than
-hand-editing `models.json`.
+## Thinking/extended-reasoning, per model (off by default)
+
+Delegate models that support a "thinking" mode have it off by default —
+bulk-read is a summarize/extract task, not deep reasoning, and thinking
+tokens cost time and money without a clear fidelity benefit. Never turn it
+on unprompted; only in response to the user asking about a specific model.
+
+```bash
+scripts/shunt-models thinking <provider/model> on '<options-json>'
+scripts/shunt-models thinking <provider/model> off
+```
+
+- When a model is added, thinking is off and no reasoning-related
+  frontmatter is written to its agent file at all.
+- To turn it on for one model, ask a plain yes/no question first (never a
+  global switch): "Include <model>'s extended-reasoning mode? It costs more
+  time and tokens per call." Only proceed on yes.
+- `on` requires the caller to also supply the provider's own reasoning
+  option(s) as a flat JSON object, e.g. `'{"reasoningEffort":"high"}'` for
+  an OpenAI-style provider or whatever key/value the user's provider
+  expects — shunt doesn't hardcode one provider's shape, it merges these
+  keys verbatim into the agent's frontmatter. If the user doesn't know
+  their provider's exact option name, say so plainly and ask them to check
+  `opencode models <provider>` or their provider's docs rather than
+  guessing a key that might silently do nothing.
+- `off` clears both the flag and any stored options and re-materializes the
+  agent without reasoning fields.
+- Either direction re-materializes that one model's agent file
+  immediately — no separate `sync` needed.
+- shunt always sends the on/off/options intent to the provider through the
+  agent's frontmatter. Whether it's actually honored depends on whether that
+  provider/host forwards those fields into its API call — confirmed *not* to
+  work on OpenCode 1.18.18 with a `@ai-sdk/openai-compatible` provider in
+  front of Ollama, where a hybrid-reasoning model kept reasoning on its own
+  default regardless of `thinking off`. Tell the user this plainly if they
+  ask why a model still seems to be reasoning after turning it off: shunt
+  can't detect or fix a provider silently ignoring its request.
 
 ## Editing retry/failover behavior (circuit breaker), once opted in
 

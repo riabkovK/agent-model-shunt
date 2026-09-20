@@ -93,6 +93,22 @@ shunt_breaker_write_state() {
     || { rm -f "$tmp_file"; return 1; }
 }
 
+# shunt_breaker_clear_state <id>
+# Atomically drops <id>'s entry from the state file so a removed model
+# doesn't leave stale failure/cooldown data behind (a later re-add would
+# otherwise inherit an open breaker). No-op if there is no state file.
+shunt_breaker_clear_state() {
+  local id="$1"
+  [ -f "$SHUNT_BREAKER_STATE_FILE" ] || return 0
+
+  local tmp_file
+  tmp_file=$(mktemp "$(dirname "$SHUNT_BREAKER_STATE_FILE")/.breaker-state.json.XXXXXX")
+
+  jq -e --arg id "$id" 'del(.models[$id])' "$SHUNT_BREAKER_STATE_FILE" >"$tmp_file" \
+    && mv "$tmp_file" "$SHUNT_BREAKER_STATE_FILE" \
+    || { rm -f "$tmp_file"; return 1; }
+}
+
 # shunt_breaker_record_failure <id>
 # Increments <id>'s consecutive failure count. Once it reaches
 # SHUNT_BREAKER_THRESHOLD, (re-)starts the cooldown window from now.

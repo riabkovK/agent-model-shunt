@@ -164,6 +164,30 @@ FAKE
   [ "$SHUNT_INVOKE_AGENT_USED" = "p/two" ]
 }
 
+@test "shunt_invoke_with_failover skips a disabled model" {
+  write_models_registry "p/one" "p/two"
+  local tmp
+  tmp=$(jq '.models[0].enabled = false' "$SHUNT_MODELS_FILE") && echo "$tmp" >"$SHUNT_MODELS_FILE"
+  write_fake_opencode_bin succeed
+  local f="$TEST_TMPDIR/file.txt"
+  echo hi >"$f"
+
+  shunt_invoke_with_failover "question" "$f"
+  [ "$SHUNT_INVOKE_AGENT_USED" = "p/two" ]
+}
+
+@test "shunt_invoke_with_failover fails with a clear message when no model is enabled" {
+  write_models_registry "p/one"
+  local tmp
+  tmp=$(jq '.models[0].enabled = false' "$SHUNT_MODELS_FILE") && echo "$tmp" >"$SHUNT_MODELS_FILE"
+  local f="$TEST_TMPDIR/file.txt"
+  echo hi >"$f"
+
+  run shunt_invoke_with_failover "question" "$f"
+  assert_failure
+  assert_output --partial "no enabled delegate models"
+}
+
 @test "shunt_invoke_with_failover fails fatally when every candidate's breaker is open" {
   export SHUNT_BREAKER_THRESHOLD=1
   write_models_registry "p/one" "p/two"

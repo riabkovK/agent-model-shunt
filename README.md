@@ -140,6 +140,43 @@ opencode agent list   # confirm "bulk-reader" is listed
 scripts/bulk-read --question "What license is this project under?" --paths LICENSE
 ```
 
+## Multiple delegate models + automatic failover
+
+Step 2 above sets up a single hand-written agent (`SHUNT_BULK_READER_AGENT`,
+default `bulk-reader`). That's still all you need to get started, but you
+can instead register several delegate models and let shunt rotate across
+them automatically. Drive this through the `/model-config` skill, never by
+hand-editing the files below:
+
+- **Registry** (`~/.config/agent-model-shunt/models.json`, written by
+  `scripts/shunt-models`): a priority-ordered list of `provider/model`
+  entries. `scripts/shunt-models add <provider/model>` materializes a
+  `bulk-reader.md`-shaped agent file for it under
+  `~/.config/agent-model-shunt/agents/` automatically — you never
+  hand-write these once a registry exists.
+- **Failover**: on each delegated call, shunt tries the registry's active
+  model first, then the rest in priority order, skipping any model whose
+  circuit breaker is currently open. If a registry exists but every
+  candidate is paused, the file-size hook allows the direct `Read` through
+  instead of denying it, so Claude isn't stranded with no usable path.
+- **Disable / remove**: `scripts/shunt-models disable <provider/model>`
+  takes a model out of rotation without deleting it (`enable` brings it
+  back in place). `remove` deletes it along with its agent file and
+  failover state. With no models left, or none enabled, the hook stops
+  redirecting large reads and Claude reads files directly.
+- **Circuit breaker**: N consecutive failures (errors/timeouts, not
+  latency) on a model pause it for a cooldown period before it's retried.
+  Configurable via `scripts/shunt-breaker-config` (defaults: 3 failures /
+  300s cooldown) — see the `/model-config` skill, which only surfaces this
+  after an explicit opt-in question.
+- **Thinking/extended-reasoning**: off by default for every registered
+  model. Turn it on per model, with the provider's own reasoning options,
+  via `scripts/shunt-models thinking <provider/model> on '<options-json>'`
+  (see the `/model-config` skill).
+
+If no registry file exists, shunt stays in the legacy single-agent mode
+described in [Setup](#setup) above.
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -147,12 +184,18 @@ scripts/bulk-read --question "What license is this project under?" --paths LICEN
 | `SHUNT_MIN_LINES` | `350` | Line-count threshold above which reads are blocked and delegated. |
 | `SHUNT_OPENCODE_BIN` | `opencode` | Path or name of the OpenCode binary to invoke. |
 | `SHUNT_TIMEOUT_SECONDS` | `300` | Timeout for a single delegated `opencode run` call. |
-| `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation. |
+| `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation when no models registry exists (legacy single-agent mode). |
 | `SHUNT_HOOKS_DISABLED` | unset | When `1`/`true`/`yes`, both PreToolUse hooks allow every read through unchecked. See the `/toggle-hooks` skill for A/B testing hooks-on vs hooks-off. |
 | `SHUNT_OPENCODE_CONFIG_HOME` | `~/.config/opencode` | Where to read your real OpenCode agent/provider config from, when building the isolated per-call config below. |
 | `SHUNT_ISOLATED_CONFIG_DIR` | `~/.cache/agent-model-shunt/opencode-config` | Where the isolated, minimal OpenCode config (one agent, one provider) is written and reused for every delegated call. Safe to delete; it's regenerated on each `opencode run`. |
 | `SHUNT_DEBUG_LOG` | unset | When `1`/`true`/`yes`, every real `scripts/bulk-read` call appends its usage to `SHUNT_DEBUG_LOG_PATH`. See the `/usage-report` skill and `scripts/usage-report`. |
 | `SHUNT_DEBUG_LOG_PATH` | `~/.cache/agent-model-shunt/usage.jsonl` | Where `SHUNT_DEBUG_LOG` writes its JSONL usage records. |
+| `SHUNT_MODELS_FILE` | `~/.config/agent-model-shunt/models.json` | Multi-model registry (see above). Its absence is the legacy-mode detection point. |
+| `SHUNT_AGENTS_DIR` | `~/.config/agent-model-shunt/agents` | Where `scripts/shunt-models` materializes one OpenCode agent file per registered model. |
+| `SHUNT_BREAKER_STATE_FILE` | `~/.cache/agent-model-shunt/breaker-state.json` | Per-model failure counts / cooldown timestamps. Safe to delete to reset all breakers. |
+| `SHUNT_BREAKER_CONFIG_FILE` | `~/.config/agent-model-shunt/breaker-config.json` | Threshold/cooldown overrides, written by `scripts/shunt-breaker-config`. |
+| `SHUNT_BREAKER_THRESHOLD` | `3` | Env override for consecutive failures before a model's breaker opens; takes precedence over the config file. |
+| `SHUNT_BREAKER_COOLDOWN_SECONDS` | `300` | Env override for how long a model stays paused once its breaker opens; takes precedence over the config file. |
 
 ## Evals
 

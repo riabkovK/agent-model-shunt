@@ -165,7 +165,7 @@ shunt_invoke_with_failover() {
 
   local candidates
   candidates=$(shunt_models_candidates)
-  [ -n "$candidates" ] || shunt_report_error "models registry at $(shunt_models_file) lists no candidate models."
+  [ -n "$candidates" ] || shunt_report_error "no enabled delegate models in the registry at $(shunt_models_file). Read the file directly instead, or add/enable a model with scripts/shunt-models."
 
   local id agent out tried_any=""
   while IFS= read -r id; do

@@ -41,13 +41,8 @@ shunt_models_validate() {
     return 1
   fi
 
-  local count
-  count=$(jq '(.models // []) | length' "$SHUNT_MODELS_FILE")
-  if [ "$count" -eq 0 ]; then
-    echo "shunt: models registry at $SHUNT_MODELS_FILE must list at least one model."
-    return 1
-  fi
-
+  # An empty models array is valid: it means "no delegate models
+  # configured", under which the Read hook stops redirecting reads.
   local dupes
   dupes=$(jq -r '[.models[].id] | group_by(.) | map(select(length > 1)) | flatten | unique | .[]' "$SHUNT_MODELS_FILE" 2>/dev/null || true)
   if [ -n "$dupes" ]; then
@@ -59,9 +54,10 @@ shunt_models_validate() {
 }
 
 # shunt_models_candidates
-# Prints, one per line, the model ids to try in order: the registry's
-# `active` model first (if it names a real entry), then the remaining
-# entries in priority (array) order, deduped. Requires shunt_models_validate
+# Prints, one per line, the enabled model ids to try in order: the registry's
+# `active` model first (if it names a real, enabled entry), then the
+# remaining enabled entries in priority (array) order, deduped. Prints
+# nothing when the registry has no enabled models. Requires shunt_models_validate
 # to already have passed; callers should check shunt_models_available first.
 shunt_models_candidates() {
   local active
@@ -76,9 +72,14 @@ shunt_models_candidates() {
     fi
   fi
 
+  # Disabled models (`enabled: false`; a missing field counts as enabled)
+  # never become candidates, so they cost nothing per call: the breaker is
+  # not consulted for them at all. A disabled active model is skipped
+  # silently and keeps its `active` marker for when it is re-enabled.
   jq -r --arg a "$active" '
-    (.models | map(.id)) as $ids
-    | (if $a != "" then [$a] else [] end) + ($ids - (if $a != "" then [$a] else [] end))
+    [.models[] | select(.enabled != false) | .id] as $ids
+    | (if $a != "" and ($ids | index($a)) != null then [$a] else [] end) as $head
+    | ($head + ($ids - $head))
     | .[]
   ' "$SHUNT_MODELS_FILE"
 }
@@ -128,16 +129,36 @@ shunt_models_materialize_agent() {
   agent=$(shunt_models_agent_for "$id")
   [ -n "$agent" ] || shunt_report_error "no registered agent name for model '$id'."
 
+  # thinking defaults OFF (docs/TODO.md): omit any reasoning-related
+  # frontmatter unless the user explicitly turned thinking on and supplied
+  # provider-specific options (flat key/value pairs) via `shunt-models
+  # thinking <id> on <json>`. Those pairs are passed through verbatim as
+  # extra top-level agent frontmatter fields, since OpenCode's AgentConfig
+  # accepts arbitrary provider-specific keys and their shape varies by
+  # provider (e.g. Anthropic's "thinking" object vs. OpenAI's
+  # "reasoningEffort" string) - shunt doesn't hardcode one provider's shape.
+  local thinking thinking_options thinking_block
+  thinking=$(shunt_models_thinking_for "$id")
+  thinking_options=$(shunt_models_thinking_options_for "$id")
+  thinking_block=""
+  if [ "$thinking" = "true" ] && [ "$thinking_options" != "null" ]; then
+    thinking_block=$(echo "$thinking_options" | jq -r 'to_entries[] | "\(.key): \(.value)"')
+  fi
+
   mkdir -p "$SHUNT_AGENTS_DIR"
   local agent_file="$SHUNT_AGENTS_DIR/$agent.md"
   local tmp_file
   tmp_file=$(mktemp "$SHUNT_AGENTS_DIR/.$agent.md.XXXXXX")
 
-  cat >"$tmp_file" <<AGENT
+  {
+    cat <<AGENT
 ---
 description: Precise, read-only code analyst for delegated bulk-read questions.
 mode: primary
 model: $id
+AGENT
+    [ -n "$thinking_block" ] && echo "$thinking_block"
+    cat <<AGENT
 tools:
   read: true
   bash: false
@@ -158,6 +179,7 @@ file(s) directly and concisely. Use bullet points, not prose. Do not
 speculate beyond what is in the attached content. Do not suggest edits or
 next steps unless asked.
 AGENT
+  } >"$tmp_file"
 
   mv "$tmp_file" "$agent_file"
 }
