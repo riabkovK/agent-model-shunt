@@ -626,7 +626,7 @@ n
 echo "<<<SHUNT-CODE>>>"
 x <<<SHUNT-NOTES>>>
 <<<SHUNT-NOTES>>> trailing
-  <<<SHUNT-CODE>>>
+  <<<SHUNT-CODE>>> y
 <<<SHUNT-CODE>>>x
 EOF
   run shunt_cw_parse "$RESP" "$OUT"
@@ -1201,6 +1201,56 @@ EOF
 @test "parse marks zero width and other invisible characters in CODE as unusable" {
   printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = "a\342\200\213b \342\200\216"\n' >"$RESP"
   assert_parse_unusable "invisible-characters"
+}
+
+@test "parse marks a stray protocol tag line in CODE as unusable" {
+  # The live failure: correct delimiters plus a stray closing tag at the end.
+  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = 1\n</SHUNT-CODE>>\n' >"$RESP"
+  assert_parse_unusable "protocol-tag-in-code"
+  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = 1\n<<</shunt-notes>>>\ny = 2\n' >"$RESP"
+  assert_parse_unusable "protocol-tag-in-code"
+  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = 1\n \t <SHUNT-CODE>  \r\ny = 2\n' >"$RESP"
+  assert_parse_unusable "protocol-tag-in-code"
+  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = 1\nShunt-Notes\n' >"$RESP"
+  assert_parse_unusable "protocol-tag-in-code"
+}
+
+@test "parse accepts CODE that only mentions a protocol tag inside a line" {
+  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = "<<<SHUNT-CODE>>>"\n# see SHUNT-CODE above\ny = 2 # </SHUNT-NOTES>\n<<<<SHUNT-CODE>>>>\n<SHUNT-CODEX>\n' >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+  assert_output "ok"
+  grep -qxF 'x = "<<<SHUNT-CODE>>>"' "$OUT/code"
+  grep -qxF '# see SHUNT-CODE above' "$OUT/code"
+}
+
+@test "parse still accepts a normal response after the protocol tag check" {
+  printf '<<<SHUNT-NOTES>>>\nnote\n<<<SHUNT-CODE>>>\nx = 1\ny = 2\n' >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+  assert_output "ok"
+}
+
+@test "parse accepts a protocol tag look-alike in NOTES" {
+  printf '<<<SHUNT-NOTES>>>\n</SHUNT-CODE>>\n<<<SHUNT-CODE>>>\nx = 1\n' >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+}
+
+@test "publish refuses a protocol tag line in the content and accepts a mention" {
+  local before line
+  : >"$TEST_TMPDIR/tag"
+  before="$(snapshot)"
+  for line in '</SHUNT-CODE>>' '<<</shunt-notes>>>' '  <SHUNT-CODE>  '; do
+    printf 'x = 1\n%s\ny = 2\n' "$line" >"$TEST_TMPDIR/tag"
+    run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/tag"
+    assert_failure
+    assert_output --partial "protocol-tag-in-code"
+  done
+  [ "$before" = "$(snapshot)" ]
+  printf 'x = "<<<SHUNT-CODE>>>"\n# see SHUNT-CODE above\n' >"$TEST_TMPDIR/tag"
+  run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/tag"
+  assert_success
 }
 
 @test "publish refuses control characters and bidi controls in the content" {

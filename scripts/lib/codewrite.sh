@@ -344,6 +344,25 @@ _shunt_cw_check_code_controls() {
   return 0
 }
 
+# _shunt_cw_check_protocol_tags <code-file>
+# Prints "protocol-tag-in-code" and fails when a line of the code, after
+# trimming spaces, tabs and CRs, is a look-alike of a protocol delimiter: 0 to
+# 3 "<", an optional "/", SHUNT-CODE or SHUNT-NOTES (any case), 0 to 3 ">".
+# The model got the protocol wrong (for example a stray closing tag after the
+# code), so the file would hold a line that is never valid content. Whole
+# lines only, a line that merely mentions a tag inside a string or a comment
+# is fine. A file that cannot be read counts as a hit.
+_shunt_cw_check_protocol_tags() {
+  local rc=0 pattern
+  pattern=$'^[ \t\r]*<{0,3}/?SHUNT-(CODE|NOTES)>{0,3}[ \t\r]*$'
+  LC_ALL=C grep -qEi -- "$pattern" "$1" 2>/dev/null || rc=$?
+  if [ "$rc" -ne 1 ]; then
+    echo "protocol-tag-in-code"
+    return 1
+  fi
+  return 0
+}
+
 # _shunt_cw_check_text <file>
 # Prints a reason token and fails when the file has NUL bytes, other raw
 # control characters (everything below 0x20 except tab, line feed, form feed
@@ -833,7 +852,7 @@ shunt_cw_normalize_path() {
 #       missing-code-delimiter, duplicate-notes-delimiter,
 #       duplicate-code-delimiter, out-of-order, text-before-delimiter,
 #       empty-code, oversize, nul-bytes, control-characters, invalid-utf8,
-#       bidi-controls
+#       bidi-controls, invisible-characters, protocol-tag-in-code
 #   2   bad arguments or a missing tool, nothing about the response
 shunt_cw_parse() {
   local response="${1:-}" out_dir="${2:-}"
@@ -871,12 +890,13 @@ shunt_cw_parse() {
     CW_NOTES_OUT="$out_dir/notes" CW_CODE_OUT="$out_dir/code" \
     awk "$_SHUNT_CW_AWK_PROGRAM" "$response") || reason=""
 
-  # Invisible characters, a lone CR and a form feed are refused in the code
-  # only, NOTES are stripped when printed. Nothing is left behind for a
-  # refused answer.
+  # Invisible characters, a lone CR, a form feed and a protocol tag line are
+  # refused in the code only, NOTES are stripped when printed. Nothing is left
+  # behind for a refused answer.
   if [ "$reason" = "ok" ] \
       && ! invisible=$(_shunt_cw_check_code_controls "$out_dir/code" "$response" \
-        && _shunt_cw_check_invisible "$out_dir/code"); then
+        && _shunt_cw_check_invisible "$out_dir/code" \
+        && _shunt_cw_check_protocol_tags "$out_dir/code"); then
     rm -f -- "$out_dir/code" "$out_dir/notes"
     echo "$invisible"
     return "$SHUNT_CW_EXIT_UNUSABLE"
@@ -941,7 +961,7 @@ _shunt_cw_check_code_file() {
     return 1
   fi
   if ! reason=$(_shunt_cw_check_text "$1" && _shunt_cw_check_code_controls "$1" \
-      && _shunt_cw_check_invisible "$1"); then
+      && _shunt_cw_check_invisible "$1" && _shunt_cw_check_protocol_tags "$1"); then
     echo "shunt: refusing to write the content: $reason."
     return 1
   fi

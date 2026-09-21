@@ -699,6 +699,27 @@ package src
   done
 }
 
+@test "a stray protocol tag in the code fails over, counts against the breaker and writes nothing" {
+  add_models p/one p/two
+  set_resp p/one "$(printf '%s\nn\n%s\nx := 1\n</SHUNT-CODE>>\n' "$NOTES_DELIM" "$CODE_DELIM")"
+  set_resp p/two "$(response ok "x := 2")"
+  run "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target src/out.go
+  assert_success
+  [ "$(stub_agents)" = "$(agent_of p/one),$(agent_of p/two)" ]
+  [ "$(breaker_failures p/one)" = "1" ]
+  [ "$(breaker_failures p/two)" = "0" ]
+  [ "$(cat src/out.go)" = "x := 2" ]
+}
+
+@test "a stray protocol tag in the code from the only model writes nothing" {
+  add_models p/one
+  set_resp default "$(printf '%s\nn\n%s\nx := 1\n</SHUNT-CODE>>\n' "$NOTES_DELIM" "$CODE_DELIM")"
+  run "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target brand/out.go
+  assert_failure
+  [ ! -e brand ]
+  [ "$(breaker_failures p/one)" = "1" ]
+}
+
 @test "a truncated response is a failure even when it looks well formed" {
   add_models p/one p/two
   set_resp p/one "$(response none "x := 1")"
