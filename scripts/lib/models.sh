@@ -319,6 +319,9 @@ Rules for the reply:
   delimiter.
 - Each delimiter appears exactly once in the whole reply and is never quoted
   in the notes or in the code.
+- There is no closing delimiter and no closing tag. The reply ends with the
+  last line of the file. Do not repeat "<<<SHUNT-CODE>>>" or write a tag such
+  as "</SHUNT-CODE>" at the end.
 - The text after "<<<SHUNT-CODE>>>" is written to disk verbatim. Do not wrap
   it in a markdown fence and add no commentary after it. If the file itself
   contains fenced blocks (a markdown file, for example), use four backticks

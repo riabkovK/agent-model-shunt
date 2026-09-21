@@ -602,6 +602,14 @@ JSON
   grep -q "never quoted" "$agent_file"
 }
 
+@test "the code-writer agent prompt says there is no closing delimiter or closing tag" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
+  shunt_models_materialize_agent "p/m"
+  local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+  grep -q "no closing delimiter and no closing tag" "$agent_file"
+  grep -q "last line of the file" "$agent_file"
+}
+
 @test "the code-writer agent prompt carries a full example reply with notes, delimiters and code" {
   echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
   shunt_models_materialize_agent "p/m"
