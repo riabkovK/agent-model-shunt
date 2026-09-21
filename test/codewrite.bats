@@ -272,6 +272,7 @@ assert_parse_unusable() {
   assert_refused_target ".GIT/x"
   assert_refused_target "a/.Claude/x"
   assert_refused_target ".GitHub/x"
+  assert_refused_target ".GITHUB/workflows/x.yml"
   assert_refused_target "a/.ENV"
 }
 
@@ -359,14 +360,10 @@ assert_parse_unusable() {
   assert_output "$PROJ/x.txt"
 }
 
-@test "check does not treat lookalike names as denylisted" {
+@test "check does not treat lookalike names as refused" {
   run shunt_cw_check_target "$PROJ" "env.txt"
   assert_success
   run shunt_cw_check_target "$PROJ" "my.git/x.txt"
-  assert_success
-  run shunt_cw_check_target "$PROJ" "docs/.github-notes.md"
-  assert_success
-  run shunt_cw_check_target "$PROJ" ".gitignore"
   assert_success
   run shunt_cw_check_target "$PROJ" "environment/x.txt"
   assert_success
@@ -1042,17 +1039,6 @@ EOF
 # Hardening found in review
 # ---------------------------------------------------------------------------
 
-@test "check refuses the denylist in a Turkish locale where I does not lower to i" {
-  locale -a 2>/dev/null | grep -qi '^tr_.*utf-\?8$' || skip "no Turkish UTF-8 locale installed"
-  local loc
-  loc="$(locale -a | grep -i '^tr_.*utf-\?8$' | head -n 1)"
-  LC_ALL="$loc" run shunt_cw_check_target "$PROJ" ".GITHUB/workflows/x.yml"
-  assert_failure
-  assert_output --partial "is not allowed"
-  LC_ALL="$loc" run shunt_cw_check_target "$PROJ" ".GIT/x"
-  assert_failure
-}
-
 @test "check refuses files that run code or steer the agent without a permission prompt" {
   local target
   for target in ".mcp.json" "CLAUDE.md" "sub/claude.local.md" ".gitmodules" ".gitattributes" \
@@ -1142,9 +1128,65 @@ EOF
   assert_parse_unusable "control-characters"
 }
 
-@test "parse still accepts tab, form feed and CRLF in CODE" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n\tindented\r\n\f\n' >"$RESP"
+@test "parse still accepts tab and CRLF in CODE" {
+  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n\tindented\r\n\n' >"$RESP"
   run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+}
+
+@test "parse marks a lone carriage return in CODE as unusable" {
+  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\rEVIL\n' >"$RESP"
+  assert_parse_unusable "control-characters"
+  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\r\rEVIL\r\n' >"$RESP"
+  assert_parse_unusable "control-characters"
+}
+
+@test "parse marks a carriage return at the very end of the response as unusable" {
+  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\r' >"$RESP"
+  assert_parse_unusable "control-characters"
+  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\r\ny=2\r' >"$RESP"
+  assert_parse_unusable "control-characters"
+}
+
+@test "parse marks a form feed in CODE as unusable" {
+  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\fEVIL\n' >"$RESP"
+  assert_parse_unusable "control-characters"
+  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n\f\nx=1\n' >"$RESP"
+  assert_parse_unusable "control-characters"
+}
+
+@test "parse accepts CRLF on every line of CODE and keeps the bytes" {
+  printf '<<<SHUNT-NOTES>>>\r\nn\r\n<<<SHUNT-CODE>>>\r\na=1\r\n\r\nb=2\r\n' >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+  printf 'a=1\r\n\r\nb=2\r\n' >"$TEST_TMPDIR/expected"
+  cmp -s "$OUT/code" "$TEST_TMPDIR/expected"
+}
+
+@test "parse marks mixed CRLF plus one lone carriage return in CODE as unusable" {
+  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\na=1\r\nb=2\rEVIL\r\nc=3\r\n' >"$RESP"
+  assert_parse_unusable "control-characters"
+}
+
+@test "parse still accepts a carriage return and a form feed in NOTES" {
+  printf '<<<SHUNT-NOTES>>>\nnote\rone\f\n<<<SHUNT-CODE>>>\nx=1\n' >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+}
+
+@test "publish refuses a lone carriage return or a form feed in the content" {
+  local before content
+  : >"$TEST_TMPDIR/ctl"
+  before="$(snapshot)"
+  for content in 'x=1\rEVIL\n' 'x=1\r' 'x=1\fy\n' 'a\r\nb\rc\r\n'; do
+    printf "$content" >"$TEST_TMPDIR/ctl"
+    run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/ctl"
+    assert_failure
+    assert_output --partial "control-characters"
+  done
+  [ "$before" = "$(snapshot)" ]
+  printf 'a\r\nb\r\n' >"$TEST_TMPDIR/ctl"
+  run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/ctl"
   assert_success
 }
 
@@ -1156,10 +1198,9 @@ EOF
   done
 }
 
-@test "parse accepts other invisible-adjacent characters that are not bidi overrides" {
+@test "parse marks zero width and other invisible characters in CODE as unusable" {
   printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = "a\342\200\213b \342\200\216"\n' >"$RESP"
-  run shunt_cw_parse "$RESP" "$OUT"
-  assert_success
+  assert_parse_unusable "invisible-characters"
 }
 
 @test "publish refuses control characters and bidi controls in the content" {
@@ -1232,4 +1273,547 @@ EOF
   [ ! -e "$PROJ/a/b" ]
   [ -d "$PROJ/a" ]
   [ -z "$(leftover_temp_files)" ]
+}
+
+# --- lexical path normalization ---------------------------------------------
+
+@test "normalize drops dot and empty segments and collapses a/.." {
+  run shunt_cw_normalize_path /r/./x
+  assert_output "/r/x"
+  run shunt_cw_normalize_path /r/a/./b
+  assert_output "/r/a/b"
+  run shunt_cw_normalize_path /r/a//b
+  assert_output "/r/a/b"
+  run shunt_cw_normalize_path /r/a/../b
+  assert_output "/r/b"
+  run shunt_cw_normalize_path /r/a/b/../../c
+  assert_output "/r/c"
+}
+
+@test "normalize lets an absolute path climb no higher than /" {
+  run shunt_cw_normalize_path /../x
+  assert_output "/x"
+  run shunt_cw_normalize_path /a/../../x
+  assert_output "/x"
+  run shunt_cw_normalize_path /a/..
+  assert_output "/"
+}
+
+@test "normalize keeps leading .. of a relative path and prints . for an empty result" {
+  run shunt_cw_normalize_path ../x
+  assert_output "../x"
+  run shunt_cw_normalize_path a/../../x
+  assert_output "../x"
+  run shunt_cw_normalize_path ../../x
+  assert_output "../../x"
+  run shunt_cw_normalize_path ./x
+  assert_output "x"
+  run shunt_cw_normalize_path a/..
+  assert_output "."
+}
+
+@test "normalize does not treat names that only contain dots as dot segments" {
+  run shunt_cw_normalize_path /r/..a/b../.c/...
+  assert_output "/r/..a/b../.c/..."
+}
+
+@test "normalize leaves an empty path, a trailing slash and control characters for the check to refuse" {
+  run shunt_cw_normalize_path ""
+  assert_output ""
+  run shunt_cw_normalize_path /r/a/
+  assert_output "/r/a/"
+  run shunt_cw_normalize_path $'/r/a\nb/../c'
+  assert_output $'/r/a\nb/../c'
+}
+
+@test "check accepts a normalized spelling of a dotted target and still refuses one that escapes" {
+  local norm
+  norm=$(shunt_cw_normalize_path "$PROJ/./tests//sub/../x_test.go")
+  run shunt_cw_check_target "$PROJ" "$norm"
+  assert_success
+  assert_output "$PROJ/tests/x_test.go"
+  norm=$(shunt_cw_normalize_path "$PROJ/../x")
+  run shunt_cw_check_target "$PROJ" "$norm"
+  assert_failure
+}
+
+# ---------------------------------------------------------------------------
+# Security review round: root fallback, denylist additions, Unicode
+# ---------------------------------------------------------------------------
+
+# test_locales: C, and C.UTF-8 when the platform provides it. The Unicode
+# checks must give the same answer in both.
+test_locales() {
+  echo C
+  if ! command -v locale >/dev/null 2>&1 || locale -a 2>/dev/null | grep -qi '^c\.utf'; then
+    echo C.UTF-8
+  fi
+}
+
+# in_locale <locale> <command...>: runs a library function in a fresh shell
+# with LC_ALL set, the way a user with that locale would hit it.
+in_locale() {
+  local loc="$1"
+  shift
+  run env LC_ALL="$loc" bash -c 'source "$1"; shift; "$@"' _ "$REPO_ROOT/scripts/lib/codewrite.sh" "$@"
+}
+
+# The invisible characters as printf escapes: C1 controls, the soft hyphen,
+# zero width and format characters, line and paragraph separators, bidi
+# overrides and isolates, the BOM, the Arabic letter mark, filler characters
+# (Hangul, Khmer, Braille blank), variation selectors, the interlinear
+# annotation marks, the musical formatting characters and the ends and middle
+# of the Tag block and of the variation selectors supplement.
+INVISIBLE_SEQS=(
+  '\302\200' '\302\205' '\302\237' '\302\255'
+  '\315\217' '\330\234'
+  '\341\205\237' '\341\205\240' '\341\236\264' '\341\236\265' '\341\240\216'
+  '\342\200\213' '\342\200\214' '\342\200\215' '\342\200\216' '\342\200\217'
+  '\342\200\250' '\342\200\251' '\342\200\252' '\342\200\253' '\342\200\254' '\342\200\255' '\342\200\256'
+  '\342\201\240' '\342\201\241' '\342\201\242' '\342\201\243' '\342\201\244' '\342\201\245'
+  '\342\201\246' '\342\201\247' '\342\201\250' '\342\201\251'
+  '\342\201\252' '\342\201\253' '\342\201\254' '\342\201\255' '\342\201\256' '\342\201\257'
+  '\342\240\200' '\343\205\244'
+  '\357\270\200' '\357\270\207' '\357\270\217'
+  '\357\273\277' '\357\276\240'
+  '\357\277\271' '\357\277\272' '\357\277\273'
+  '\360\235\205\263' '\360\235\205\266' '\360\235\205\272'
+  '\363\240\200\200' '\363\240\201\201' '\363\240\201\277'
+  '\363\240\204\200' '\363\240\206\200' '\363\240\207\257'
+)
+
+# The characters a code file may keep although shunt_cw_strip_invisible
+# removes them: the zero width non-joiner and joiner and variation selector 16
+# (emoji sequences).
+CODE_ALLOWED_SEQS=('\342\200\214' '\342\200\215' '\357\270\217')
+
+# Characters next to the ranges above that must stay untouched: NBSP, e-acute,
+# CJK, an emoji, hair space, U+E0080, U+FEFE and the neighbours of the ranges
+# (U+00AC, U+00AE, U+034E, U+061B, U+115E, U+1161, U+17B3, U+17B6, U+180D,
+# U+180F, U+2027, U+202F, U+2070, U+27FF, U+2801, U+3163, U+3165, U+FF9F,
+# U+FFA1, U+FE10, U+FFF8, U+FFFC, U+1D172, U+1D17B, U+E00FF, U+E01F0).
+PLAIN_UNICODE_SEQS=(
+  '\302\240' '\303\251' '\344\270\255' '\360\237\230\200' '\342\200\212' '\363\240\202\200' '\357\273\276'
+  '\302\254' '\302\256' '\315\216' '\330\233' '\341\205\236' '\341\205\241' '\341\236\263' '\341\236\266'
+  '\341\240\215' '\341\240\217' '\342\200\247' '\342\200\257' '\342\201\260' '\342\237\277' '\342\240\201'
+  '\343\205\243' '\343\205\245' '\357\276\237' '\357\276\241' '\357\270\220' '\357\277\270' '\357\277\274'
+  '\360\235\205\262' '\360\235\205\273' '\363\240\203\277' '\363\240\207\260'
+)
+
+# code_refused_seqs: the invisible sequences that make CODE unusable under the
+# reason "invisible-characters". C1 controls and bidi controls have their own
+# reasons, and the code-allowed ones are the exception.
+code_refused_seqs() {
+  local seq
+  for seq in "${INVISIBLE_SEQS[@]}"; do
+    case "$seq" in
+      '\302\200'|'\302\205'|'\302\237') ;;
+      '\342\200\214'|'\342\200\215'|'\357\270\217') ;;
+      '\342\200\25'[2-6]|'\342\201\246'|'\342\201\247'|'\342\201\250'|'\342\201\251') ;;
+      *) printf '%s\n' "$seq" ;;
+    esac
+  done
+}
+
+@test "project root refuses a cwd fallback below a root-list or sensitive component" {
+  git() { return 128; }
+  local bad root
+  for bad in .git/hooks .claude/agents .ssh .gnupg .aws .kube .config/gcloud .local/share .docker .azure \
+      .github/workflows .SSH .Git. ".claude "; do
+    root="$TEST_TMPDIR/fake-home/$bad"
+    mkdir -p "$root"
+    cd "$root"
+    run shunt_cw_project_root
+    assert_failure
+    assert_output --partial "git work tree"
+    assert_output --partial "CLAUDE_PROJECT_DIR"
+  done
+}
+
+@test "project root refuses a cwd fallback whose ancestor is on the root list, not only its last component" {
+  git() { return 128; }
+  mkdir -p "$TEST_TMPDIR/fake-home/.ssh/deep/er"
+  cd "$TEST_TMPDIR/fake-home/.ssh/deep/er"
+  run shunt_cw_project_root
+  assert_failure
+  assert_output --partial "'.ssh'"
+}
+
+@test "project root accepts an ordinary cwd fallback" {
+  git() { return 128; }
+  mkdir -p "$TEST_TMPDIR/work/my-project"
+  cd "$TEST_TMPDIR/work/my-project"
+  run shunt_cw_project_root
+  assert_success
+  assert_output "$(cd -P "$TEST_TMPDIR/work/my-project" && pwd -P)"
+}
+
+@test "project root keeps a git worktree below .claude/worktrees working" {
+  local wt="$TEST_TMPDIR/repo/.claude/worktrees/feature"
+  mkdir -p "$wt/src"
+  wt="$(cd -P "$wt" && pwd -P)"
+  git() { echo "$wt"; }
+  cd "$wt/src"
+  run shunt_cw_project_root
+  assert_success
+  assert_output "$wt"
+  CLAUDE_PROJECT_DIR="$wt" run shunt_cw_project_root
+  assert_success
+  assert_output "$wt"
+}
+
+@test "an explicit CLAUDE_PROJECT_DIR is not treated as a cwd fallback" {
+  git() { return 128; }
+  mkdir -p "$TEST_TMPDIR/fake-home/.config/tool"
+  cd "$TEST_TMPDIR/fake-home/.config/tool"
+  CLAUDE_PROJECT_DIR="$PROJ" run shunt_cw_project_root
+  assert_success
+  assert_output "$PROJ"
+}
+
+# --- structural target rule: dotted components and a short non-dot list -----
+
+@test "check refuses any dotted component, at any depth and in the not-yet-created tail" {
+  local target
+  for target in .git/hooks/pre-commit .github/workflows/x.yml .mcp.json .cursorrules .env.local .foo \
+      .husky/pre-commit .vscode/tasks.json .npmrc .gitlab-ci.yml .circleci/config.yml .config/a.txt \
+      .local/x.txt .gitignore .idea/x.xml sub/.hidden/test_x.py a/b/c/.d/e.txt sub/.envrc; do
+    assert_refused_target "$target"
+  done
+}
+
+@test "check refuses a dotted component that exists on disk and one under a fresh tail" {
+  mkdir -p "$PROJ/sub/.hidden"
+  assert_refused_target "sub/.hidden/new.txt"
+  assert_refused_target "sub/fresh/deeper/.hidden/new.txt"
+  assert_refused_target "$PROJ/sub/fresh/.hidden/new.txt"
+}
+
+@test "check refuses the short non-dot names case-insensitively and at any depth" {
+  local name
+  for name in claude.md claude.local.md agents.md gemini.md jenkinsfile opencode.json makefile gnumakefile justfile rakefile vagrantfile conftest.py; do
+    assert_refused_target "$name"
+    assert_refused_target "sub/$name"
+    assert_refused_target "sub/$name/x.txt"
+    assert_refused_target "$(printf '%s' "$name" | tr 'a-z' 'A-Z')"
+  done
+  assert_refused_target "CLAUDE.md"
+  assert_refused_target "sub/claude.md"
+  assert_refused_target "Makefile"
+  assert_refused_target "GEMINI.md"
+}
+
+@test "check refuses trailing dot and space variants of refused names" {
+  local target
+  for target in ".git./x" ".GIT/x" ".Git /x" "a/.github.../x.yml" ".env." "CLAUDE.md." "Makefile " ".foo. ." "sub/... /x"; do
+    assert_refused_target "$target"
+  done
+}
+
+@test "check treats a component of only dots and spaces as dotted" {
+  assert_refused_target "..."
+  assert_refused_target "sub/.../x.txt"
+  assert_refused_target ". ./x.txt"
+}
+
+@test "check keeps the split messages for exact . and .. components" {
+  run shunt_cw_check_target "$PROJ" "sub/./x.txt"
+  assert_failure
+  assert_output --partial "'.' component"
+  run shunt_cw_check_target "$PROJ" "sub/../x.txt"
+  assert_failure
+  assert_output --partial "'..' component"
+  run shunt_cw_check_target "$PROJ" "sub//x.txt"
+  assert_failure
+  assert_output --partial "empty component"
+}
+
+@test "check still accepts ordinary targets and names with a dot only inside" {
+  local target
+  for target in tests/test_x.py src/a.b/c.txt foo.test.js docs/notes.md config/a.txt src/local/a.txt \
+      docs/agents.txt jenkinsfile.md not-opencode.json.txt makefile.txt my.git/x.txt githooks/a.txt \
+      cursor/a.txt npmrc.txt env.txt; do
+    run shunt_cw_check_target "$PROJ" "$target"
+    assert_success
+    assert_output "$PROJ/$target"
+  done
+}
+
+@test "check refusal message names the component and points to the Write tool" {
+  run shunt_cw_check_target "$PROJ" "sub/.hidden/x.py"
+  assert_failure
+  assert_output --partial "the path component '.hidden' is not allowed"
+  assert_output --partial "Write tool"
+  run shunt_cw_check_target "$PROJ" "Makefile"
+  assert_failure
+  assert_output --partial "'makefile'"
+  assert_output --partial "Write tool"
+}
+
+@test "project root accepts a cwd fallback below a dotted directory outside the root list" {
+  git() { return 128; }
+  local d
+  for d in .cache .dotfiles .idea .cursor .opencode .hidden/proj; do
+    mkdir -p "$TEST_TMPDIR/fake-home/$d/work"
+    cd "$TEST_TMPDIR/fake-home/$d/work"
+    run shunt_cw_project_root
+    assert_success
+    assert_output "$(cd -P "$TEST_TMPDIR/fake-home/$d/work" && pwd -P)"
+  done
+}
+
+@test "project root refuses a cwd fallback below a root-list name given with trailing dots or another case" {
+  git() { return 128; }
+  local d
+  for d in .GIT .Claude .ssh. .Config .LOCAL .Aws; do
+    mkdir -p "$TEST_TMPDIR/fake-home/$d/work"
+    cd "$TEST_TMPDIR/fake-home/$d/work"
+    run shunt_cw_project_root
+    assert_failure
+    assert_output --partial "git work tree"
+  done
+}
+
+@test "sensitive component names the new credential stores and keeps the old patterns" {
+  local name
+  for name in .vault-token .VAULT-TOKEN .azure/x prod.tfvars prod.auto.tfvars .password-store/a.gpg .dockercfg .s3cfg .boto \
+      .config/gcloud/creds.db application_default_credentials.json ssh_host_ed25519_key ssh_host_rsa_key \
+      id_rsa.pub credentials.json server.key .git/config .env; do
+    run shunt_cw_sensitive_component "$name"
+    assert_success
+  done
+}
+
+@test "sensitive component does not flag ordinary lookalikes of the new names" {
+  local name
+  for name in vault-token.md azure/x tfvars.md main.tf .config/other/x .password-store-notes.md dockercfg.md boto.py \
+      s3cfg.md ssh_host_notes.txt application_default_credentials.md ssh_host_rsa_key.md.txt; do
+    run shunt_cw_sensitive_component "$name"
+    assert_failure
+  done
+}
+
+@test "check refuses invisible, bidi, C1 and control characters in the target under any locale" {
+  local loc seq target
+  for loc in $(test_locales); do
+    for seq in "${INVISIBLE_SEQS[@]}"; do
+      target=$(printf "dir/a${seq}b.txt")
+      in_locale "$loc" shunt_cw_check_target "$PROJ" "$target"
+      assert_failure
+      assert_output --partial "refusing target"
+    done
+    for seq in '\t' '\033' '\177' '\v' '\f' '\r' '\n'; do
+      target=$(printf "dir/a${seq}b.txt")
+      in_locale "$loc" shunt_cw_check_target "$PROJ" "$target"
+      assert_failure
+      assert_output --partial "refusing target"
+    done
+  done
+}
+
+@test "check accepts ordinary Unicode in the target under any locale" {
+  local loc seq target
+  for loc in $(test_locales); do
+    for seq in "${PLAIN_UNICODE_SEQS[@]}"; do
+      target=$(printf "dir/a${seq}b.txt")
+      in_locale "$loc" shunt_cw_check_target "$PROJ" "$target"
+      assert_success
+    done
+  done
+}
+
+@test "check refuses an invisible character in the project root under any locale" {
+  local loc root
+  root="$TEST_TMPDIR/root$(printf '\342\200\256')x"
+  mkdir -p "$root"
+  for loc in $(test_locales); do
+    in_locale "$loc" shunt_cw_check_target "$root" "x.txt"
+    assert_failure
+    assert_output --partial "control characters"
+  done
+}
+
+@test "normalize leaves a path with an invisible character for the check to refuse" {
+  local path
+  path="a/./b$(printf '\342\200\256')/../c.txt"
+  run shunt_cw_normalize_path "$path"
+  assert_success
+  assert_output "$path"
+}
+
+@test "strip_invisible removes every invisible class under any locale and keeps the rest" {
+  local loc seq
+  for loc in $(test_locales); do
+    for seq in "${INVISIBLE_SEQS[@]}"; do
+      in_locale "$loc" shunt_cw_strip_invisible "$(printf "a${seq}b")"
+      assert_success
+      assert_output "ab"
+    done
+    for seq in "${PLAIN_UNICODE_SEQS[@]}"; do
+      in_locale "$loc" shunt_cw_strip_invisible "$(printf "a${seq}b")"
+      assert_success
+      assert_output "$(printf "a${seq}b")"
+    done
+  done
+}
+
+@test "strip_invisible cannot be defeated by nesting one sequence inside another" {
+  local loc
+  for loc in $(test_locales); do
+    in_locale "$loc" shunt_cw_strip_invisible "$(printf 'a\342\342\200\213\200\213b')"
+    assert_output "ab"
+    in_locale "$loc" shunt_cw_strip_invisible "$(printf 'a\302\302\200\200b')"
+    assert_output "ab"
+    in_locale "$loc" shunt_cw_strip_invisible "$(printf 'a\363\240\363\240\201\201\201\201b')"
+    assert_output "ab"
+  done
+}
+
+@test "parse marks C1 control characters in CODE and NOTES as unusable under any locale" {
+  local loc seq
+  for loc in $(test_locales); do
+    for seq in '\302\200' '\302\205' '\302\237'; do
+      printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = \"a${seq}b\"\n" >"$RESP"
+      in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
+      assert_failure 11
+      assert_output "control-characters"
+      printf "<<<SHUNT-NOTES>>>\nnote a${seq}b\n<<<SHUNT-CODE>>>\ncode\n" >"$RESP"
+      in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
+      assert_failure 11
+      assert_output "control-characters"
+    done
+  done
+}
+
+@test "parse still accepts NBSP, accented and CJK text next to the C1 range under any locale" {
+  local loc seq
+  for loc in $(test_locales); do
+    for seq in '\302\240' '\303\251' '\344\270\255'; do
+      printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = \"a${seq}b\"\n" >"$RESP"
+      in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
+      assert_success
+    done
+  done
+}
+
+@test "publish refuses C1 control characters in the content" {
+  local before
+  printf 'x = "a\302\205b"\n' >"$TEST_TMPDIR/c1"
+  before="$(snapshot)"
+  run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/c1"
+  assert_failure
+  assert_output --partial "control-characters"
+  [ "$before" = "$(snapshot)" ]
+}
+
+# ---------------------------------------------------------------------------
+# Security review round 2: invisible characters in generated code, more
+# credential stores, more steering files, container secret mounts
+# ---------------------------------------------------------------------------
+
+@test "parse marks every invisible character in CODE as unusable except ZWNJ, ZWJ and VS16 under any locale" {
+  local loc seq
+  for loc in $(test_locales); do
+    for seq in $(code_refused_seqs); do
+      printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = \"a${seq}b\"\n" >"$RESP"
+      in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
+      assert_failure 11
+      assert_output "invisible-characters"
+      [ ! -e "$OUT/code" ]
+      [ ! -e "$OUT/notes" ]
+    done
+  done
+}
+
+@test "parse marks the Tag block, separators, BOM and format characters in CODE as unusable" {
+  local seq
+  for seq in '\363\240\201\201' '\363\240\200\200' '\363\240\201\277' '\342\200\250' '\342\200\251' '\357\273\277' \
+      '\330\234' '\342\201\240' '\342\201\244' '\342\200\213' '\342\200\216' '\342\200\217'; do
+    printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = 1${seq}\n" >"$RESP"
+    assert_parse_unusable "invisible-characters"
+  done
+}
+
+@test "parse still accepts ZWJ emoji sequences, ZWNJ, VS16, Cyrillic, CJK and tabs in CODE under any locale" {
+  local loc
+  for loc in $(test_locales); do
+    printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n\tfamily = "\360\237\221\250\342\200\215\360\237\221\251\342\200\215\360\237\221\247"\n' >"$RESP"
+    in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
+    assert_success
+    printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nheart = "\342\235\244\357\270\217"\nzwnj = "a\342\200\214b"\n' >"$RESP"
+    in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
+    assert_success
+    printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n# \320\237\321\200\320\270\320\262\320\265\321\202 \344\270\226\347\225\214\n\tx = 1\n' >"$RESP"
+    in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
+    assert_success
+    [ -s "$OUT/code" ]
+  done
+}
+
+@test "parse keeps invisible characters in NOTES and leaves stripping to the printer" {
+  local seq notes=""
+  for seq in $(code_refused_seqs) '\342\200\214' '\342\200\215' '\357\270\217'; do
+    notes="$notes$(printf "$seq")"
+  done
+  printf '<<<SHUNT-NOTES>>>\nkeep%sthis\n<<<SHUNT-CODE>>>\nx = 1\n' "$notes" >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+  [ "$(shunt_cw_strip_invisible "$(cat "$OUT/notes")")" = "keepthis" ]
+}
+
+@test "publish refuses invisible characters in the content and still writes a ZWJ emoji" {
+  local before seq
+  # The input file lives in TEST_TMPDIR too, so it must exist before the
+  # snapshot, otherwise creating it would look like a leftover of the publish.
+  : >"$TEST_TMPDIR/inv"
+  before="$(snapshot)"
+  for seq in '\363\240\201\201' '\342\200\213' '\357\273\277' '\342\200\250' '\341\240\216'; do
+    printf "x = \"a${seq}b\"\n" >"$TEST_TMPDIR/inv"
+    run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/inv"
+    assert_failure
+    assert_output --partial "invisible-characters"
+  done
+  [ "$before" = "$(snapshot)" ]
+  printf 'x = "\360\237\221\250\342\200\215\360\237\221\251"\n' >"$TEST_TMPDIR/zwj"
+  run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/zwj"
+  assert_success
+  [ -f "$PROJ/newdir/x.txt" ]
+}
+
+@test "strip_invisible cannot be defeated by nesting the added sequences" {
+  local loc
+  for loc in $(test_locales); do
+    in_locale "$loc" shunt_cw_strip_invisible "$(printf 'a\341\205\302\255\237b')"
+    assert_output "ab"
+    in_locale "$loc" shunt_cw_strip_invisible "$(printf 'a\363\240\204\363\240\201\201\200b')"
+    assert_output "ab"
+    in_locale "$loc" shunt_cw_strip_invisible "$(printf 'a\357\270\357\270\217\217b')"
+    assert_output "ab"
+    in_locale "$loc" shunt_cw_strip_invisible "$(printf 'a\360\235\205\342\201\240\263b')"
+    assert_output "ab"
+  done
+}
+
+@test "sensitive component names the secret, cloud, package and tool config stores added later" {
+  local name
+  for name in secrets.json secrets.yml secrets.yaml SECRETS.YAML .dev.vars .dev.vars.production serviceAccountKey.json \
+      gcp-credentials.json my-app-credentials.json client_secret_123.apps.json firebase-adminsdk-abc.json \
+      wrangler.toml local.settings.json .yarnrc .yarnrc.yml .gitconfig .my.cnf _netrc .authinfo .authinfo.gpg \
+      key.gpg id.ppk AuthKey_X.p8 pub.asc client.ovpn .terraformrc .composer/auth.json .m2/settings.xml \
+      .claude.json .config/rclone/rclone.conf .config/doctl/config.yaml .config/heroku/x .config/op/x .config/sops/age/keys.txt \
+      sub/.Composer/Auth.json home/u/.M2/settings.xml; do
+    run shunt_cw_sensitive_component "$name"
+    assert_success
+  done
+}
+
+@test "sensitive component does not flag lookalikes of the later additions" {
+  local name
+  for name in secrets.md secretsjson.txt my-credentials.md client_secret.md client-secret-x.json firebase-adminsdk.md \
+      wrangler.toml.md local.settings.md yarnrc.md gitconfig.md my.cnf.bak netrc _netrc.md authinfo.md gpg.md \
+      notes.asc.md ovpn.md terraformrc.md auth.json settings.xml pom.xml .composer/composer.json .m2/pom.xml \
+      claude.json .config/other/x rclone/x op/x sops/x; do
+    run shunt_cw_sensitive_component "$name"
+    assert_failure
+  done
 }

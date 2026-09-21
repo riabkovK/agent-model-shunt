@@ -13,6 +13,10 @@
 #   shunt-models reorder <provider/model> <1-based position>
 #   shunt-models activate <provider/model>
 #   shunt-models thinking <provider/model> <on|off> [options-json]
+#     on: options-json holds the provider's reasoning options (flat object).
+#     off: options-json (a flat object) sets explicit off options, e.g.
+#          '{"reasoningEffort":"none"}', rendered into the agent files while
+#          thinking is off. Omitted: stored off options stay. '{}' clears them.
 #   shunt-models roles <provider/model> <role>[,<role>...]
 #   shunt-models sync
 
@@ -116,7 +120,7 @@ cmd_add() {
 
   local updated
   updated=$(echo "$current" | jq --arg id "$id" --arg agent "$slug" --argjson roles "$roles_json" \
-    '.models += [{id: $id, agent: $agent, enabled: true, thinking: false, thinking_options: null, roles: $roles}]')
+    '.models += [{id: $id, agent: $agent, enabled: true, thinking: false, thinking_options: null, thinking_off_options: null, roles: $roles}]')
 
   shunt_models_write "$updated"
   shunt_models_materialize_agent "$id"
@@ -135,8 +139,9 @@ cmd_remove() {
     shunt_report_error "model '$id' is not in the registry."
   fi
 
-  local agent
+  local agent writer
   agent=$(shunt_models_agent_for "$id")
+  writer=$(shunt_models_code_writer_agent_for "$id")
 
   local updated
   updated=$(echo "$current" | jq --arg id "$id" '
@@ -147,8 +152,9 @@ cmd_remove() {
   shunt_models_write "$updated"
 
   # Registry write succeeded; now drop the model's leftovers so nothing stale
-  # survives (its materialized agent file and its circuit breaker state).
+  # survives (its materialized agent files and its circuit breaker state).
   [ -z "$agent" ] || rm -f "$SHUNT_AGENTS_DIR/$agent.md"
+  rm -f "$SHUNT_AGENTS_DIR/$writer.md"
   shunt_breaker_clear_state "$id"
   echo "shunt: removed '$id'."
 }
@@ -250,8 +256,20 @@ cmd_thinking() {
       .models |= map(if .id == $id then .thinking = true | .thinking_options = $opts else . end)
     ')
   else
-    updated=$(echo "$current" | jq --arg id "$id" '
-      .models |= map(if .id == $id then .thinking = false | .thinking_options = null else . end)
+    # Without options-json the stored off options stay as they are. An empty
+    # object clears them. `on` never touches them.
+    local set_off=false off_options_json="null"
+    if [ -n "$options" ]; then
+      echo "$options" | jq empty >/dev/null 2>&1 || shunt_report_error "thinking options must be valid JSON: $options"
+      echo "$options" | jq -e 'type == "object"' >/dev/null 2>&1 || shunt_report_error "thinking off options must be a JSON object: $options"
+      set_off=true
+      off_options_json=$(echo "$options" | jq -c 'if length == 0 then null else . end')
+    fi
+    updated=$(echo "$current" | jq --arg id "$id" --argjson set_off "$set_off" --argjson off "$off_options_json" '
+      .models |= map(if .id == $id then
+        .thinking = false | .thinking_options = null
+        | (if $set_off then .thinking_off_options = $off else . end)
+      else . end)
     ')
   fi
 
@@ -262,7 +280,9 @@ cmd_thinking() {
 
 # cmd_roles <id> <role>[,<role>...]
 # Sets the model's `roles` (bulk-read, code-write). Order is kept and
-# duplicates dropped. Only writes the registry: agent files are unaffected.
+# duplicates dropped. Rewrites the registry, then re-materializes the model's
+# agent files so its code-writer agent exists exactly while it has the
+# code-write role.
 cmd_roles() {
   local id="${1:-}" roles_arg="${2:-}"
   [ -n "$id" ] && [ -n "$roles_arg" ] || shunt_report_error "usage: shunt-models roles <provider/model> <role>[,<role>...] (roles: ${SHUNT_MODELS_ROLES[*]})"
@@ -287,6 +307,7 @@ cmd_roles() {
   updated=$(echo "$current" | jq --arg id "$id" --argjson roles "$roles_json" \
     '.models |= map(if .id == $id then .roles = $roles else . end)')
   shunt_models_write "$updated"
+  shunt_models_materialize_agent "$id"
   echo "shunt: roles for '$id' set to $(echo "$roles_json" | jq -r 'join(",")')."
 
   local problem
@@ -316,7 +337,7 @@ cmd_status() {
     .active as $active
     | .models[]
     | "\(.id)\t\(.agent)\t" + (if .enabled == false then "disabled" else "enabled" end)
-      + "\tthinking=\(.thinking)\troles=\((.roles // $all_roles) | join(","))\t"
+      + "\tthinking=\(.thinking)\tthinking_off=\(if .thinking_off_options == null then "none" else "set" end)\troles=\((.roles // $all_roles) | join(","))\t"
       + (if .id != $active then ""
          elif .enabled == false then "active (skipped, disabled)"
          else "active" end)
@@ -334,6 +355,25 @@ cmd_status() {
   else
     echo "shunt: no enabled models (large reads are not redirected)."
   fi
+
+  # The same for code-write, which uses the same order over the models that
+  # have that role. Quiet: the lookup above already warned about an unknown
+  # active model.
+  candidates=$(shunt_models_candidates code-write quiet)
+  first="${candidates%%$'\n'*}"
+  if [ -n "$first" ]; then
+    echo "shunt: code-write first choice: $first"
+  else
+    echo "shunt: no enabled model has the code-write role (code-write is unavailable)."
+  fi
+
+  # code-write keeps its own failure counter per model, apart from bulk-read's.
+  local id
+  jq -r --argjson all_roles "$SHUNT_MODELS_ROLES_JSON" \
+    '.models[] | select((.roles // $all_roles) | index("code-write") != null) | .id' \
+    "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+    echo "shunt: code-write breaker $id: $(shunt_breaker_status "$(shunt_breaker_key "$id" code-write)")"
+  done
 }
 
 cmd_sync() {

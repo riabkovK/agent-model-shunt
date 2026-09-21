@@ -1,0 +1,571 @@
+#!/bin/bash
+# Delegate the generation of ONE NEW file to a custom model via OpenCode.
+# The model only returns text, this script validates the response and writes
+# the file (scripts/lib/codewrite.sh), so the model never touches the disk.
+#
+# Usage:
+#   code-write --kind test|generic --spec "<what to generate>" \
+#              --reference <file>... [--source <file>...] [--rules <file>...] \
+#              [--allow-outside] --target <new file>
+#
+#   --kind       test or generic. Required, no default.
+#   --spec       What to generate. Required.
+#   --reference  Files whose style and structure to match. Required.
+#   --source     The code the new file is about. Required for --kind test.
+#   --rules      Project conventions to follow (both kinds).
+#   --allow-outside
+#                Allow --reference, --source and --rules files that live outside
+#                the project root (a file or symlink that resolves outside it is
+#                refused without this flag). The refusal of credential and key
+#                files applies either way. Takes no value.
+#   --target     The new file. Required, exactly one, must not exist yet. A
+#                relative path is relative to the current directory, and '.', '..'
+#                and empty segments are normalized away before the checks. Any
+#                path component that starts with a dot is refused, and so are
+#                CLAUDE.md, CLAUDE.local.md, AGENTS.md, GEMINI.md, Jenkinsfile,
+#                opencode.json, Makefile, GNUmakefile, justfile, Rakefile,
+#                Vagrantfile and conftest.py. Claude has to write such a file
+#                itself with the Write tool, which asks for permission.
+#
+# Exit status: 0 the file was created, 1 refused or failed (nothing was
+# written), 3 the model deliberately declined (nothing was written, its notes
+# are printed). Every argument and target refusal happens before the model is
+# called and never touches the circuit breaker.
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/opencode.sh
+source "$SCRIPT_DIR/lib/opencode.sh"
+# shellcheck source=lib/codewrite.sh
+source "$SCRIPT_DIR/lib/codewrite.sh"
+
+TEST_RULES_FILE="$SCRIPT_DIR/../prompts/test-rules.md"
+# The prompt travels as one argv element, and Linux caps a single argument at
+# 128 KiB. Stay well below it so an oversized call is refused up front and
+# never shows up as a model failure.
+MAX_SPEC_CHARS=32768
+MAX_PROMPT_BYTES=100000
+# Total size of the attached files. Each one is uploaded to the delegate's
+# provider, so an accidental huge file is refused up front. Overridable for tests.
+DEFAULT_MAX_ATTACH_BYTES=2097152
+# Debug capture of unusable answers (cw_save_unusable): the size cap of one
+# saved answer (overridable for tests through SHUNT_CW_MAX_SAVE_BYTES) and how
+# many saved answers are kept.
+DEFAULT_MAX_SAVE_BYTES=1048576
+KEEP_SAVED_RESPONSES=20
+EXIT_DECLINED=3
+
+kind=""
+spec=""
+targets=()
+references=()
+sources=()
+rules=()
+allow_outside=0
+project_root=""
+builtin_rules_resolved=""
+given=" "
+attachments=()
+prompt=""
+work=""
+outcome=""
+
+cw_cleanup_work() {
+  [ -z "$work" ] || rm -rf "$work"
+  work=""
+}
+
+# cw_on_signal <exit-code>
+# shunt_cw_cleanup removes a half-published file and the directories this run
+# created. A trap that only returned would let the script carry on to the
+# publish after a signal, so the handler always exits.
+cw_on_signal() {
+  shunt_cw_cleanup
+  cw_cleanup_work
+  exit "$1"
+}
+
+# cw_parse_args <args...>
+# Fills kind, spec, targets, references, sources, rules, allow_outside and
+# given. The file flags take every following value up to the next flag, and
+# may repeat. --allow-outside takes no value.
+cw_parse_args() {
+  local mode=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --kind|--spec)
+        [ $# -ge 2 ] || shunt_report_error "$1 requires a value."
+        case "$given" in *" $1 "*) shunt_report_error "$1 given more than once." ;; esac
+        given="$given$1 "
+        if [ "$1" = "--kind" ]; then kind="$2"; else spec="$2"; fi
+        mode=""
+        shift 2
+        ;;
+      --reference|--source|--rules|--target)
+        mode="${1#--}"
+        given="$given$1 "
+        shift
+        ;;
+      --allow-outside)
+        allow_outside=1
+        mode=""
+        shift
+        ;;
+      --*) shunt_report_error "unknown argument: $(cw_clean "$1")" ;;
+      *)
+        case "$mode" in
+          reference) references+=("$1") ;;
+          source) sources+=("$1") ;;
+          rules) rules+=("$1") ;;
+          target) targets+=("$1") ;;
+          *) shunt_report_error "unexpected argument: $(cw_clean "$1")" ;;
+        esac
+        shift
+        ;;
+    esac
+  done
+}
+
+# cw_clean <text>
+# Prints the text without control characters (C0 including form feed, DEL and
+# newline) and without the invisible ones (C1 controls, zero width and format
+# characters, bidi controls, the Unicode Tag block, see
+# shunt_cw_strip_invisible). Model-controlled and user-controlled text goes
+# through this before it is printed to stderr, so it cannot carry terminal
+# escapes, hidden instructions or pass for a status line of its own. The
+# controls go first, so bytes they separated cannot be left joined into an
+# invisible character. Independent of the locale.
+cw_clean() {
+  shunt_cw_strip_invisible "$(printf '%s' "$1" | LC_ALL=C tr -d '[:cntrl:]')"
+}
+
+# cw_spec_has_unsafe_chars <text>
+# Succeeds when the text has a C0 control other than tab and newline, DEL, or
+# an invisible Unicode character (C1 controls, zero width and format
+# characters, bidi controls, the Unicode Tag block, see
+# shunt_cw_strip_invisible). Tab and newline stay allowed, a spec is often
+# multi-line. U+200C, U+200D and U+FE0F stay allowed too, the same as in
+# generated code, so emoji sequences and Indic text pass. They are dropped
+# first, which is safe: an unsafe sequence cannot overlap them, and bytes
+# joined by the removal can only make the check stricter.
+cw_spec_has_unsafe_chars() {
+  local LC_ALL=C kept="$1"
+  kept="${kept//$'\n'/}"
+  kept="${kept//$'\t'/}"
+  kept="${kept//$'\xe2\x80\x8c'/}"
+  kept="${kept//$'\xe2\x80\x8d'/}"
+  kept="${kept//$'\xef\xb8\x8f'/}"
+  _shunt_cw_has_unsafe_chars "$kept"
+}
+
+# cw_resolve_path <path>
+# Prints the path with symlinks resolved. Fails, printing nothing, when the
+# system has neither realpath nor readlink -f or when neither can resolve the
+# path. Callers refuse the file then: skipping the symlink check would let a
+# link to a secret through.
+cw_resolve_path() {
+  local out=""
+  if command -v realpath >/dev/null 2>&1; then
+    out=$(realpath -- "$1" 2>/dev/null) || out=""
+  fi
+  if [ -z "$out" ] && command -v readlink >/dev/null 2>&1; then
+    out=$(readlink -f -- "$1" 2>/dev/null) || out=""
+  fi
+  [ -n "$out" ] || return 1
+  printf '%s\n' "$out"
+}
+
+# cw_relative_to_root <absolute-path>
+# Prints the path below the project root, or the path unchanged when it is
+# not inside it. The sensitive-name scan runs on this part, so a project that
+# itself lives under a .claude directory (a worktree) or the home directory
+# does not trip on the names above its root.
+cw_relative_to_root() {
+  case "$1" in
+    "$project_root"/*) printf '%s' "${1#"$project_root"/}" ;;
+    *) printf '%s' "$1" ;;
+  esac
+}
+
+# cw_check_input_file <path>
+# Refuses a path that is not a readable regular file, that cannot be resolved,
+# that lives in a virtual filesystem such as /proc, that (as given or once its
+# symlinks are resolved) names a credential or key store, or that resolves
+# outside the project root unless --allow-outside was given. Control
+# characters are refused too: the path is written into the prompt. The
+# built-in test rules file is exempt from the last two checks, it ships with
+# the plugin and is never secret.
+cw_check_input_file() {
+  ! _shunt_cw_has_unsafe_chars "$1" \
+    || shunt_report_error "an input file path contains a control character or an invisible Unicode character."
+  [ -f "$1" ] || shunt_report_error "file not found: $1"
+  [ -r "$1" ] || shunt_report_error "file not readable: $1"
+
+  local resolved hit
+  resolved=$(cw_resolve_path "$1") \
+    || shunt_report_error "refusing input file $1: cannot resolve its symlinks (neither realpath nor readlink -f worked), so it cannot be checked."
+  case "$resolved" in
+    /proc/*|/sys/*|/dev/*) shunt_report_error "refusing input file $1: it resolves into a virtual filesystem ($(cw_clean "$resolved"))." ;;
+  esac
+  [ -z "$builtin_rules_resolved" ] || [ "$resolved" != "$builtin_rules_resolved" ] || return 0
+
+  if hit=$(shunt_cw_sensitive_component "$(cw_relative_to_root "$1")") \
+      || hit=$(shunt_cw_sensitive_component "$(cw_relative_to_root "$resolved")"); then
+    shunt_report_error "refusing input file $1: '$(cw_clean "$hit")' looks like a sensitive file (credentials, keys, .env, history, tool config), and input files are sent to the delegate model's provider."
+  fi
+  if [ "$allow_outside" -ne 1 ]; then
+    case "$resolved" in
+      "$project_root"/*) ;;
+      *) shunt_report_error "refusing input file $1: it resolves to $(cw_clean "$resolved"), outside the project root ($(cw_clean "$project_root")). Pass --allow-outside to attach files from outside the project." ;;
+    esac
+  fi
+}
+
+# cw_check_project_root <root>
+# Refuses a project root that would make too much writable: / , the home
+# directory or any ancestor of it (for example /home). Without a git repo or
+# CLAUDE_PROJECT_DIR the root falls back to the current directory, and running
+# from there would make all of it writable.
+cw_check_project_root() {
+  local home
+  home=$(cd -P "$HOME" 2>/dev/null && pwd -P) || home=""
+  if [ "$1" = "/" ]; then
+    shunt_report_error "refusing to write: the project root would be / . Run code-write from inside a project, a git repository."
+  fi
+  case "$home/" in
+    "$1"/*) shunt_report_error "refusing to write: the project root would be $(cw_clean "$1"), the home directory or an ancestor of it. Run code-write from inside a project, a git repository." ;;
+  esac
+}
+
+# cw_validate_args
+# Every refusal about the arguments, all before any model call.
+cw_validate_args() {
+  case "$kind" in
+    test|generic) ;;
+    "") shunt_report_error "--kind is required (test or generic)." ;;
+    *) shunt_report_error "--kind must be test or generic, got: $(cw_clean "$kind")" ;;
+  esac
+  [ -n "${spec//[[:space:]]/}" ] || shunt_report_error "--spec is required (what to generate)."
+  [ "${#spec}" -le "$MAX_SPEC_CHARS" ] \
+    || shunt_report_error "--spec is too long (${#spec} characters, the cap is $MAX_SPEC_CHARS). Put long instructions in a file and pass it with --rules."
+  # After the length cap on purpose: the invisible-character strip is
+  # quadratic on nested sequences, so it must only see a bounded spec.
+  ! cw_spec_has_unsafe_chars "$spec" \
+    || shunt_report_error "--spec contains a control character or an invisible Unicode character (only tab and newline are allowed as controls). Remove it and try again."
+
+  [ "${#references[@]}" -gt 0 ] || shunt_report_error "--reference requires at least one file."
+  case "$given" in
+    *" --source "*) [ "${#sources[@]}" -gt 0 ] || shunt_report_error "--source requires at least one file." ;;
+  esac
+  case "$given" in
+    *" --rules "*) [ "${#rules[@]}" -gt 0 ] || shunt_report_error "--rules requires at least one file." ;;
+  esac
+  if [ "$kind" = "test" ] && [ "${#sources[@]}" -eq 0 ]; then
+    shunt_report_error "--kind test requires --source (the code under test)."
+  fi
+  [ "${#targets[@]}" -gt 0 ] || shunt_report_error "--target is required (the new file to create)."
+  [ "${#targets[@]}" -eq 1 ] \
+    || shunt_report_error "exactly one --target is allowed, got ${#targets[@]}. Make one call per file."
+
+  project_root=$(shunt_cw_project_root) || exit 1
+  cw_check_project_root "$project_root"
+  # The raw --target is vetted BEFORE it is normalized (normalizing would drop a
+  # trailing newline) and before the prompt is built from it. The check prints
+  # the refusal with the target quoted and stripped of invisible characters.
+  if _shunt_cw_has_unsafe_chars "${targets[0]}"; then
+    shunt_cw_check_target "$project_root" "${targets[0]}" >/dev/null
+    exit 1
+  fi
+  builtin_rules_resolved=$(cw_resolve_path "$TEST_RULES_FILE" 2>/dev/null) || builtin_rules_resolved=""
+
+  local p total=0
+  for p in "${references[@]}" ${sources[@]+"${sources[@]}"} ${rules[@]+"${rules[@]}"}; do
+    cw_check_input_file "$p"
+    total=$((total + $(wc -c <"$p")))
+  done
+  local max_attach="${SHUNT_CW_MAX_ATTACH_BYTES:-$DEFAULT_MAX_ATTACH_BYTES}"
+  case "$max_attach" in ''|*[!0-9]*) max_attach="$DEFAULT_MAX_ATTACH_BYTES" ;; esac
+  [ "$total" -le "$max_attach" ] \
+    || shunt_report_error "the attached files are too large ($total bytes, the cap is $max_attach). Attach fewer or smaller files."
+}
+
+# cw_add_attachment <path>
+# Appends <path> to attachments unless it is already there.
+cw_add_attachment() {
+  local existing
+  for existing in ${attachments[@]+"${attachments[@]}"}; do
+    [ "$existing" != "$1" ] || return 0
+  done
+  attachments+=("$1")
+}
+
+# cw_list_section <heading> <paths...>
+# Prints a heading and one "- path" line per path.
+cw_list_section() {
+  local heading="$1" p
+  shift
+  echo
+  echo "$heading"
+  for p in "$@"; do
+    echo "- $p"
+  done
+}
+
+# cw_build_prompt
+# Prints the message sent with the attached files. The built-in test rules go
+# in for --kind test only and cannot be switched off.
+cw_build_prompt() {
+  echo "Generate one new file, following your instructions for the reply format."
+  echo
+  echo "File kind: $kind"
+  echo "Path of the new file (it does not exist yet): $(cw_clean "${targets[0]}")"
+  echo
+  echo "Instructions:"
+  printf '%s\n' "$spec"
+  cw_list_section "Reference files (match their style, structure and conventions, do not copy their content):" \
+    "${references[@]}"
+  if [ "${#sources[@]}" -gt 0 ]; then
+    cw_list_section "Source files (the code the new file is about, the only source of truth for symbols and behavior):" \
+      "${sources[@]}"
+  fi
+  if [ "${#rules[@]}" -gt 0 ]; then
+    cw_list_section "Rules files (project conventions to follow):" "${rules[@]}"
+  fi
+  echo
+  echo "Use only symbols that appear in the attached files. If you need one that is missing, leave that part out and say so in the notes."
+  if [ "$kind" = "test" ]; then
+    echo
+    cat "$TEST_RULES_FILE"
+  fi
+}
+
+# cw_prepare_prompt
+# Builds the prompt and the attachment list, and refuses one that is too big.
+cw_prepare_prompt() {
+  [ "$kind" != "test" ] || [ -r "$TEST_RULES_FILE" ] \
+    || shunt_report_error "the built-in test rules are missing at $TEST_RULES_FILE (incomplete plugin install)."
+  prompt=$(cw_build_prompt)
+  local bytes
+  bytes=$(printf '%s' "$prompt" | wc -c | tr -d ' ')
+  [ "$bytes" -le "$MAX_PROMPT_BYTES" ] \
+    || shunt_report_error "the prompt is too large ($bytes bytes, the cap is $MAX_PROMPT_BYTES). Shorten --spec or use fewer files."
+
+  local p
+  for p in "${references[@]}" ${sources[@]+"${sources[@]}"} ${rules[@]+"${rules[@]}"}; do
+    cw_add_attachment "$p"
+  done
+}
+
+# cw_require_candidates
+# Fails before the model call when code-write cannot run: no usable registry,
+# no enabled model with the code-write role, or a candidate whose code-writer
+# agent file has not been materialized yet. Prints nothing on success.
+cw_require_candidates() {
+  if ! shunt_models_available; then
+    if [ -f "$(shunt_models_file)" ]; then
+      echo "$(shunt_models_validate) code-write needs a valid models registry." >&2
+      exit 1
+    fi
+    shunt_report_error "code-write needs a models registry with at least one model that has the code-write role. Add one with scripts/shunt-models add <provider/model>."
+  fi
+
+  local candidates id agent
+  candidates=$(shunt_models_candidates code-write)
+  [ -n "$candidates" ] \
+    || shunt_report_error "no enabled delegate models with the code-write role in the registry at $(shunt_models_file). Add or enable one with scripts/shunt-models."
+  while IFS= read -r id; do
+    [ -n "$id" ] || continue
+    agent=$(shunt_models_code_writer_agent_for "$id")
+    [ -f "$SHUNT_AGENTS_DIR/$agent.md" ] \
+      || shunt_report_error "the code-writer agent '$agent' for '$id' is missing. Run scripts/shunt-models sync to create it."
+  done <<<"$candidates"
+}
+
+# cw_save_unusable <response-file> <model-id>
+# Debug aid. When the debug log is on (shunt_debug_log_enabled), copies the raw
+# response of an unusable answer to a new 0600 file in an "unusable-responses"
+# directory next to SHUNT_DEBUG_LOG_PATH, named by UTC timestamp and model
+# slug, and prints its path. Never overwrites: a clash gets a counter suffix.
+# A raw answer can echo anything the model saw, so the capture is kept small
+# and private: the directory is created 0700 (an existing one that we own is
+# tightened to 0700), the copy is cut at SHUNT_CW_MAX_SAVE_BYTES (default
+# 1 MiB) with a marker line, and only the newest 20 saved answers stay. A
+# directory that is a symlink or belongs to someone else is not used, the
+# skip is announced on stderr. Never prints a key or any config content.
+# Prints nothing and succeeds when the switch is off or the copy fails, the
+# capture must never change the outcome of the call.
+cw_save_unusable() {
+  shunt_debug_log_enabled || return 0
+  local dir slug stamp file n=0 max size
+  dir="$(dirname "$SHUNT_DEBUG_LOG_PATH")/unusable-responses"
+  if [ ! -L "$dir" ]; then
+    (umask 077 && mkdir -p "$dir") 2>/dev/null || return 0
+  fi
+  if [ -L "$dir" ] || [ ! -d "$dir" ] || [ ! -O "$dir" ]; then
+    echo "shunt: code-write: the raw answer was not saved: $(cw_clean "$dir") must be a real directory owned by the current user." >&2
+    return 0
+  fi
+  chmod 700 -- "$dir" 2>/dev/null || :
+  max=$(_shunt_cw_limit SHUNT_CW_MAX_SAVE_BYTES "$DEFAULT_MAX_SAVE_BYTES")
+  size=$(wc -c <"$1" | tr -d ' ')
+  slug=$(printf '%s' "$2" | LC_ALL=C tr 'A-Z' 'a-z' | LC_ALL=C tr -c 'a-z0-9._-' '-')
+  stamp=$(date -u +%Y%m%dT%H%M%SZ)
+  file="$dir/$stamp-$slug.txt"
+  while ! (set -o noclobber && umask 077 && cw_capped_copy "$1" "$max" "$size" >"$file") 2>/dev/null; do
+    n=$((n + 1))
+    [ "$n" -lt 100 ] || return 0
+    file="$dir/$stamp-$slug-$n.txt"
+  done
+  cw_prune_saved "$dir"
+  printf '%s\n' "$file"
+}
+
+# cw_capped_copy <file> <max-bytes> <size-bytes>
+# Prints the file, cut at <max-bytes> with a marker line when it is longer.
+cw_capped_copy() {
+  if [ "$3" -le "$2" ]; then
+    cat "$1"
+    return
+  fi
+  head -c "$2" "$1"
+  printf '\n[shunt: response truncated, kept %s of %s bytes]\n' "$2" "$3"
+}
+
+# cw_prune_saved <dir>
+# Keeps the newest KEEP_SAVED_RESPONSES saved answers in <dir> (the names start
+# with a UTC timestamp, so name order is age order) and deletes the older ones.
+# Only regular files that match the capture naming are touched, and only in
+# this directory.
+cw_prune_saved() {
+  local LC_ALL=C f i count files=()
+  for f in "$1"/[0-9]*Z-*.txt; do
+    if [ -f "$f" ] && [ ! -L "$f" ]; then
+      files+=("$f")
+    fi
+  done
+  count=${#files[@]}
+  [ "$count" -gt "$KEEP_SAVED_RESPONSES" ] || return 0
+  for ((i = 0; i < count - KEEP_SAVED_RESPONSES; i++)); do
+    rm -f -- "${files[$i]}" 2>/dev/null || :
+  done
+}
+
+# cw_accept_response <out-file> <model-id>
+# Acceptance check for shunt_invoke_role_with_failover (decision 8 in
+# docs/TODO.md). Splits the answer into $work/parsed/{notes,code} and sets
+# outcome to "written" or "declined". Returns 0 to accept, 1 for an unusable
+# answer (a model failure, next model), 2 for an environment error. A
+# transcript that does not end with finish reason "stop" is truncated or
+# incomplete, even if it looks well formed, so it counts as unusable too. Both
+# kinds of unusable answer are saved for inspection in debug mode.
+cw_accept_response() {
+  local out_file="$1" id="$2" finish reason parse_status=0 saved
+  finish=$(shunt_extract_finish_reason "$out_file")
+  jq -s -r '[.[] | select(.type=="text")] | last | .part.text // empty' "$out_file" \
+    >"$work/response" 2>/dev/null || : >"$work/response"
+  if [ "$finish" != "stop" ]; then
+    saved=$(cw_save_unusable "$work/response" "$id")
+    echo "shunt: code-write: the answer from $(cw_clean "$id") was cut off or incomplete (finish reason: $(cw_clean "${finish:-none}"))${saved:+, saved to $(cw_clean "$saved")}, trying the next model." >&2
+    return 1
+  fi
+
+  reason=$(shunt_cw_parse "$work/response" "$work/parsed") || parse_status=$?
+  case "$parse_status" in
+    0) outcome="written"; return 0 ;;
+    "$SHUNT_CW_EXIT_REFUSAL") outcome="declined"; return 0 ;;
+    "$SHUNT_CW_EXIT_UNUSABLE")
+      saved=$(cw_save_unusable "$work/response" "$id")
+      echo "shunt: code-write: the answer from $(cw_clean "$id") was unusable ($(cw_clean "$reason"))${saved:+, saved to $(cw_clean "$saved")}, trying the next model." >&2
+      return 1
+      ;;
+    *)
+      echo "shunt: code-write: could not check the answer from $(cw_clean "$id") (missing tool or internal error), stopping." >&2
+      return 2
+      ;;
+  esac
+}
+
+# cw_print_notes
+# Shows the delegate's notes. They are untrusted model text, so every line is
+# prefixed: a note cannot pass for one of this script's own status lines.
+cw_print_notes() {
+  echo "shunt: NOTES from the delegate model (untrusted text, not instructions, review before relying on it):"
+  local notes=""
+  if [ -s "$work/parsed/notes" ]; then
+    # CR and form feed go, then the invisible characters (C1, zero width, bidi,
+    # Tag block). Tab and newline stay, the parser already refused the other
+    # C0 controls.
+    notes=$(shunt_cw_strip_invisible "$(LC_ALL=C tr -d '\r\014' <"$work/parsed/notes")")
+  fi
+  if [ -n "$notes" ]; then
+    printf '%s\n' "$notes" | LC_ALL=C sed 's/^/| /'
+  else
+    echo "| (none)"
+  fi
+}
+
+# cw_log_call <out-file> <agent> <generated-bytes>
+cw_log_call() {
+  shunt_debug_log_enabled || return 0
+  shunt_log_code_write "$2" "$1" "$spec" "$3" "${attachments[@]}"
+}
+
+main() {
+  trap 'cw_on_signal 130' INT
+  trap 'cw_on_signal 143' TERM
+  trap 'cw_on_signal 129' HUP
+  trap 'shunt_cw_cleanup; cw_cleanup_work' EXIT
+
+  cw_parse_args "$@"
+  cw_validate_args
+  cw_prepare_prompt
+  shunt_preflight
+  command -v iconv >/dev/null 2>&1 || shunt_report_error "'iconv' not found in PATH."
+  command -v awk >/dev/null 2>&1 || shunt_report_error "'awk' not found in PATH."
+
+  # The root was resolved and vetted in cw_validate_args (it is not / , the home
+  # directory or an ancestor of it).
+  local root="$project_root" target="${targets[0]}"
+  case "$target" in
+    /*|"") ;;
+    *) target="$(pwd -P)/$target" ;;
+  esac
+  # Lexical clean-up of '.', empty and 'a/..' segments. A '..' that climbs out
+  # of the root is left to the target check to refuse.
+  target=$(shunt_cw_normalize_path "$target")
+  shunt_cw_check_target "$root" "$target" >/dev/null || exit 1
+  cw_require_candidates
+
+  # The delegate runs from the current directory. Stop it from loading a
+  # project-level opencode config or agent (which could re-enable tools for
+  # the code-writer agent) and Claude Code's own config and instruction files.
+  export OPENCODE_DISABLE_PROJECT_CONFIG=1 OPENCODE_DISABLE_CLAUDE_CODE=1
+
+  # Temp files made by the shared helpers (shunt_tmpfile) land in the work
+  # directory too, so one removal cleans up after every path out of here.
+  work=$(mktemp -d "${TMPDIR:-/tmp}/shunt-code-write.XXXXXX")
+  mkdir "$work/parsed"
+  export TMPDIR="$work"
+
+  shunt_invoke_role_with_failover code-write shunt_models_code_writer_agent_for cw_accept_response \
+    "$prompt" "${attachments[@]}"
+  local out_file="$SHUNT_INVOKE_OUT_FILE" used_agent="$SHUNT_INVOKE_AGENT_USED" usage
+
+  usage=$(shunt_extract_usage "$out_file")
+  [ -z "$usage" ] || echo "shunt: code-write usage: $(cw_clean "$usage")" >&2
+
+  if [ "$outcome" = "declined" ]; then
+    cw_log_call "$out_file" "$used_agent" 0
+    echo "shunt: code-write: the delegate model declined to write the file, nothing was written."
+    cw_print_notes
+    exit "$EXIT_DECLINED"
+  fi
+
+  shunt_cw_publish "$root" "$target" "$work/parsed/code" >"$work/final" || exit 1
+  cw_log_call "$out_file" "$used_agent" "$(wc -c <"$work/parsed/code" | tr -d ' ')"
+  echo "shunt: code-write: created $(cat "$work/final") (generated content, review it before running or trusting it)"
+  cw_print_notes
+}
+
+main "$@"

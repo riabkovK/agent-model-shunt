@@ -88,3 +88,14 @@ teardown() {
   assert_success
   assert_output --partial "not applicable"
 }
+
+@test "show lists the code-write breaker state next to each model's own" {
+  shunt_write_provider "p"
+  "$REPO_ROOT/scripts/shunt-models" add "p/one" >/dev/null
+  echo '{"version":1,"models":{"p/one":{"failures":1,"cooldown_until":0},"p/one#code-write":{"failures":2,"cooldown_until":0}}}' \
+    >"$SHUNT_BREAKER_STATE_FILE"
+  run "$REPO_ROOT/scripts/shunt-breaker-config" show
+  assert_success
+  assert_output --partial "p/one: failures=1 open=false"
+  assert_output --partial "p/one (code-write): failures=2 open=false"
+}

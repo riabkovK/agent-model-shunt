@@ -60,6 +60,9 @@ cmd_show() {
     echo "---"
     jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
       echo "$id: $(shunt_breaker_status "$id")"
+      if shunt_models_has_role "$id" code-write; then
+        echo "$id (code-write): $(shunt_breaker_status "$(shunt_breaker_key "$id" code-write)")"
+      fi
     done
   else
     echo "shunt: circuit breaker not applicable (no models registry at $SHUNT_MODELS_FILE; legacy single-agent mode)."

@@ -313,6 +313,120 @@ teardown() {
   assert_failure
 }
 
+@test "thinking off with options stores them and renders them into both agent files" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off '{"reasoningEffort":"none"}'
+  assert_success
+  run jq -r '.models[0].thinking' "$SHUNT_MODELS_FILE"
+  assert_output "false"
+  run jq -c '.models[0].thinking_off_options' "$SHUNT_MODELS_FILE"
+  assert_output '{"reasoningEffort":"none"}'
+  run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-one.md"
+  assert_output "1"
+  run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-code-writer-p-one.md"
+  assert_output "1"
+}
+
+@test "thinking off refuses off options that are not valid JSON" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off "not json"
+  assert_failure
+  assert_output --partial "valid JSON"
+  run jq -c '.models[0].thinking_off_options' "$SHUNT_MODELS_FILE"
+  assert_output "null"
+}
+
+@test "thinking off refuses off options that are not a JSON object" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off '["none"]'
+  assert_failure
+  assert_output --partial "JSON object"
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off '"none"'
+  assert_failure
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off 'null'
+  assert_failure
+}
+
+@test "thinking off without options keeps stored off options" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" thinking "p/one" off '{"reasoningEffort":"none"}'
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off
+  assert_success
+  run jq -c '.models[0].thinking_off_options' "$SHUNT_MODELS_FILE"
+  assert_output '{"reasoningEffort":"none"}'
+  run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-one.md"
+  assert_output "1"
+}
+
+@test "thinking off with an empty object clears stored off options" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" thinking "p/one" off '{"reasoningEffort":"none"}'
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off '{}'
+  assert_success
+  run jq -c '.models[0].thinking_off_options' "$SHUNT_MODELS_FILE"
+  assert_output "null"
+  run grep -c "reasoningEffort" "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-one.md"
+  assert_output "0"
+  run grep -c "reasoningEffort" "$SHUNT_AGENTS_DIR/shunt-code-writer-p-one.md"
+  assert_output "0"
+}
+
+@test "thinking on keeps stored off options and does not render them" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" thinking "p/one" off '{"reasoningEffort":"none"}'
+  run "$SHUNT_MODELS_BIN" thinking "p/one" on '{"reasoningEffort":"high"}'
+  assert_success
+  run jq -c '.models[0].thinking_off_options' "$SHUNT_MODELS_FILE"
+  assert_output '{"reasoningEffort":"none"}'
+  run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-one.md"
+  assert_output "0"
+  run grep -c "^reasoningEffort: high$" "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-one.md"
+  assert_output "1"
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off
+  assert_success
+  run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-code-writer-p-one.md"
+  assert_output "1"
+}
+
+@test "thinking off works on a registry entry that has no thinking_off_options field" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  local legacy
+  legacy=$(jq -c 'del(.models[0].thinking_off_options)' "$SHUNT_MODELS_FILE")
+  echo "$legacy" >"$SHUNT_MODELS_FILE"
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off
+  assert_success
+  run "$SHUNT_MODELS_BIN" thinking "p/one" off '{"reasoningEffort":"none"}'
+  assert_success
+  run jq -c '.models[0].thinking_off_options' "$SHUNT_MODELS_FILE"
+  assert_output '{"reasoningEffort":"none"}'
+}
+
+@test "add records null off options for a new model" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run jq -c '.models[0] | has("thinking_off_options"), .thinking_off_options' "$SHUNT_MODELS_FILE"
+  assert_line --index 0 "true"
+  assert_line --index 1 "null"
+}
+
+@test "status shows whether off options are set" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" add "p/two"
+  "$SHUNT_MODELS_BIN" thinking "p/two" off '{"reasoningEffort":"none"}'
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  assert_line --regexp '^p/one.*thinking=false.*thinking_off=none.*roles='
+  assert_line --regexp '^p/two.*thinking=false.*thinking_off=set.*roles='
+}
+
 @test "thinking refuses an id not in the registry" {
   shunt_write_provider "p"
   "$SHUNT_MODELS_BIN" add "p/one"
@@ -514,7 +628,7 @@ teardown() {
   run "$SHUNT_MODELS_BIN" status
   assert_success
   assert_output --partial "no enabled model has the bulk-read role (large reads are not redirected)"
-  refute_output --partial "first choice"
+  refute_output --partial "shunt: first choice"
 }
 
 @test "roles repairs a registry that is invalid only because of a bad roles value" {
@@ -540,4 +654,133 @@ teardown() {
   run "$SHUNT_MODELS_BIN" list
   assert_success
   assert_output --partial "unknown role"
+}
+
+# --- code-writer agent files ---------------------------------------------
+
+@test "add materializes a code-writer agent next to the bulk-reader agent" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m"
+  [ -f "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md" ]
+  [ -f "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "add with only the bulk-read role creates no code-writer agent" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m" "bulk-read"
+  [ -f "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md" ]
+  [ ! -e "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "remove deletes the code-writer agent file too" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m"
+  run "$SHUNT_MODELS_BIN" remove "p/m"
+  assert_success
+  [ ! -e "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md" ]
+  [ ! -e "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "sync creates a missing code-writer agent for a registry written before roles existed" {
+  shunt_write_provider "p"
+  mkdir -p "$SHUNT_AGENTS_DIR"
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m","enabled":true}]}' >"$SHUNT_MODELS_FILE"
+  run "$SHUNT_MODELS_BIN" sync
+  assert_success
+  [ -f "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "sync removes a code-writer agent of a model that lacks the role" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m"
+  local tmp
+  tmp=$(jq '.models[0].roles = ["bulk-read"]' "$SHUNT_MODELS_FILE") && echo "$tmp" >"$SHUNT_MODELS_FILE"
+  run "$SHUNT_MODELS_BIN" sync
+  assert_success
+  [ ! -e "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "roles removes the code-writer agent when code-write is dropped and restores it when added back" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m"
+  run "$SHUNT_MODELS_BIN" roles "p/m" bulk-read
+  assert_success
+  [ ! -e "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+  [ -f "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md" ]
+  run "$SHUNT_MODELS_BIN" roles "p/m" bulk-read,code-write
+  assert_success
+  [ -f "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "roles keeps the agent files consistent for a code-write only model" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m" bulk-read
+  run "$SHUNT_MODELS_BIN" roles "p/m" code-write
+  assert_success
+  [ -f "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "thinking on also refreshes the code-writer agent" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m"
+  "$SHUNT_MODELS_BIN" thinking "p/m" on '{"reasoningEffort":"high"}'
+  grep -q "^reasoningEffort: high$" "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+}
+
+@test "status names the code-write first choice separately from the bulk-read one" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/reader" bulk-read
+  "$SHUNT_MODELS_BIN" add "p/writer" code-write
+  "$SHUNT_MODELS_BIN" activate "p/reader"
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  assert_line "shunt: first choice: p/reader"
+  assert_line "shunt: code-write first choice: p/writer"
+}
+
+@test "status says code-write is unavailable when no enabled model has the role" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m" bulk-read
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  assert_output --partial "no enabled model has the code-write role"
+  refute_output --partial "code-write first choice"
+}
+
+@test "remove also drops the model's code-write breaker key, keeping other models'" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" add "p/two"
+  echo '{"version":1,"models":{"p/one":{"failures":1,"cooldown_until":0},"p/one#code-write":{"failures":3,"cooldown_until":9999999999},"p/two#code-write":{"failures":2,"cooldown_until":0}}}' \
+    >"$SHUNT_BREAKER_STATE_FILE"
+
+  run "$SHUNT_MODELS_BIN" remove "p/one"
+  assert_success
+  run jq -r '.models | keys | join(",")' "$SHUNT_BREAKER_STATE_FILE"
+  assert_output "p/two#code-write"
+}
+
+@test "status shows the code-write breaker state of each model with that role" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  "$SHUNT_MODELS_BIN" add "p/two"
+  "$SHUNT_MODELS_BIN" roles "p/two" bulk-read
+  echo '{"version":1,"models":{"p/one#code-write":{"failures":3,"cooldown_until":9999999999}}}' \
+    >"$SHUNT_BREAKER_STATE_FILE"
+  export SHUNT_NOW_EPOCH=1000
+
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  assert_output --partial "code-write breaker p/one: failures=3 open=true"
+  refute_output --partial "code-write breaker p/two"
+}
+
+@test "status warns once about an active model missing from the registry" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  jq '.active = "p/missing"' "$SHUNT_MODELS_FILE" >"$TEST_TMPDIR/m.json" && mv "$TEST_TMPDIR/m.json" "$SHUNT_MODELS_FILE"
+
+  run "$SHUNT_MODELS_BIN" status
+  assert_success
+  [ "$(echo "$output" | grep -c "falling back to priority order")" -eq 1 ]
 }

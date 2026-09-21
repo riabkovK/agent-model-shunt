@@ -413,6 +413,75 @@ JSON
   assert_output "true"
 }
 
+@test "shunt_models_thinking_off_options_for prints null when the field is missing" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null}
+]}
+JSON
+  run shunt_models_thinking_off_options_for "p/m"
+  assert_success
+  assert_output "null"
+}
+
+@test "shunt_models_thinking_off_options_for prints the stored object" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null,"thinking_off_options":{"reasoningEffort":"none"}}
+]}
+JSON
+  run shunt_models_thinking_off_options_for "p/m"
+  assert_success
+  assert_output '{"reasoningEffort":"none"}'
+}
+
+@test "the thinking block renders off options when thinking is off" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null,"thinking_off_options":{"reasoningEffort":"none"}}
+]}
+JSON
+  run _shunt_models_thinking_block "p/m"
+  assert_success
+  assert_output "reasoningEffort: none"
+}
+
+@test "the thinking block is empty when thinking is off and no off options are stored" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null}
+]}
+JSON
+  run _shunt_models_thinking_block "p/m"
+  assert_success
+  assert_output ""
+}
+
+@test "the thinking block ignores off options when thinking is on" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"a","thinking":true,"thinking_options":{"reasoningEffort":"high"},"thinking_off_options":{"reasoningEffort":"none"}}
+]}
+JSON
+  run _shunt_models_thinking_block "p/m"
+  assert_success
+  assert_output "reasoningEffort: high"
+}
+
+@test "shunt_models_materialize_agent writes off options into both agent files when thinking is off" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"shunt-bulk-reader-p-m","thinking":false,"thinking_options":null,"thinking_off_options":{"reasoningEffort":"none"}}
+]}
+JSON
+  run shunt_models_materialize_agent "p/m"
+  assert_success
+  run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md"
+  assert_output "1"
+  run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+  assert_output "1"
+}
+
 @test "shunt_models_slug lowercases and dashes a provider/model id" {
   run shunt_models_slug "Spark/deepseek-ai/DeepSeek-V4-Flash-0731"
   assert_success
@@ -469,4 +538,117 @@ JSON
   local agent_file="$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md"
   run grep -c "^reasoningEffort: high$" "$agent_file"
   assert_output "1"
+}
+
+@test "shunt_models_code_writer_agent_for derives the agent name from the model id" {
+  run shunt_models_code_writer_agent_for "Spark/deepseek-ai/DeepSeek-V4-Flash-0731"
+  assert_success
+  assert_output "shunt-code-writer-spark-deepseek-ai-deepseek-v4-flash-0731"
+}
+
+@test "shunt_models_has_role is true for a listed role and for every role when roles is missing" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/all","agent":"a1"},
+  {"id":"p/read","agent":"a2","roles":["bulk-read"]}
+]}
+JSON
+  run shunt_models_has_role "p/all" code-write
+  assert_success
+  run shunt_models_has_role "p/read" bulk-read
+  assert_success
+  run shunt_models_has_role "p/read" code-write
+  assert_failure
+}
+
+@test "shunt_models_materialize_agent also writes a tool-less code-writer agent for a code-write model" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"shunt-bulk-reader-p-m","thinking":false,"thinking_options":null}
+]}
+JSON
+  run shunt_models_materialize_agent "p/m"
+  assert_success
+  local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+  [ -f "$agent_file" ]
+  grep -q "^model: p/m$" "$agent_file"
+  grep -q "^mode: primary$" "$agent_file"
+  grep -q "^temperature: 0.2$" "$agent_file"
+  grep -q "^  read: false$" "$agent_file"
+  grep -q "^  write: false$" "$agent_file"
+  grep -q "^  edit: false$" "$agent_file"
+  grep -q "^  bash: false$" "$agent_file"
+  run grep -c ": true$" "$agent_file"
+  assert_output "0"
+}
+
+@test "the code-writer agent prompt describes the response protocol" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
+  shunt_models_materialize_agent "p/m"
+  local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+  grep -q '^<<<SHUNT-NOTES>>>$' "$agent_file"
+  grep -q '^<<<SHUNT-CODE>>>$' "$agent_file"
+  grep -qi "exactly one" "$agent_file"
+  grep -qi "only symbols" "$agent_file"
+  grep -qi "not wrap" "$agent_file"
+  grep -q "four backticks" "$agent_file"
+}
+
+@test "the code-writer agent prompt says each delimiter appears once and is never quoted" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
+  shunt_models_materialize_agent "p/m"
+  local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+  grep -q "exactly once in the whole reply" "$agent_file"
+  grep -q "never quoted" "$agent_file"
+}
+
+@test "the code-writer agent prompt carries a full example reply with notes, delimiters and code" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
+  shunt_models_materialize_agent "p/m"
+  local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+  local example
+  example=$(sed -n '/^Example of a complete, correct reply/,/^End of example\.$/p' "$agent_file")
+  [ -n "$example" ]
+  # Notes line, then the code delimiter, then the code, in that order.
+  [ "$(echo "$example" | grep -n '^<<<SHUNT-NOTES>>>$' | cut -d: -f1)" -lt "$(echo "$example" | grep -n '^<<<SHUNT-CODE>>>$' | cut -d: -f1)" ]
+  [ "$(echo "$example" | grep -c '^<<<SHUNT-NOTES>>>$')" -eq 1 ]
+  [ "$(echo "$example" | grep -c '^<<<SHUNT-CODE>>>$')" -eq 1 ]
+  echo "$example" | grep -q '^def add(a, b):$'
+}
+
+@test "shunt_models_materialize_agent skips the code-writer agent for a model without the role" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"shunt-bulk-reader-p-m","roles":["bulk-read"]}
+]}
+JSON
+  shunt_models_materialize_agent "p/m"
+  [ -f "$SHUNT_AGENTS_DIR/shunt-bulk-reader-p-m.md" ]
+  [ ! -e "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "shunt_models_materialize_agent removes a stale code-writer agent once the role is gone" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
+  shunt_models_materialize_agent "p/m"
+  [ -f "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m","roles":["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
+  shunt_models_materialize_agent "p/m"
+  [ ! -e "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md" ]
+}
+
+@test "shunt_models_materialize_agent merges thinking_options into the code-writer agent too" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/m","agent":"shunt-bulk-reader-p-m","thinking":true,"thinking_options":{"reasoningEffort":"high"}}
+]}
+JSON
+  shunt_models_materialize_agent "p/m"
+  grep -q "^reasoningEffort: high$" "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+}
+
+@test "the code-writer agent denies every tool by default, not only the listed ones" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
+  shunt_models_materialize_agent "p/m"
+  local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
+  awk '/^tools:$/{getline; print; exit}' "$agent_file" | grep -qx '  "\*": false'
 }

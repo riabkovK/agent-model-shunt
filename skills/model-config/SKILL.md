@@ -49,7 +49,7 @@ it tries that model again."
 Drive `scripts/shunt-models`:
 
 ```bash
-scripts/shunt-models add <provider/model> [<role>[,<role>...]]   # roles default to both, also materializes its OpenCode agent
+scripts/shunt-models add <provider/model> [<role>[,<role>...]]   # roles default to both, also materializes its OpenCode agent files
 scripts/shunt-models remove <provider/model>
 scripts/shunt-models reorder <provider/model> <1-based position>
 scripts/shunt-models activate <provider/model>
@@ -57,11 +57,12 @@ scripts/shunt-models disable <provider/model>    # keep it, but stop using it
 scripts/shunt-models enable <provider/model>
 scripts/shunt-models roles <provider/model> <role>[,<role>...]   # bulk-read, code-write
 scripts/shunt-models list
-scripts/shunt-models status                      # id, agent, enabled/disabled, thinking flag, roles, active marker, then the first choice
-scripts/shunt-models sync                         # re-materialize all agent files
+scripts/shunt-models status                      # id, agent, enabled/disabled, thinking flag, thinking_off=set|none, roles, active marker, then the first choice
+scripts/shunt-models sync                         # re-materialize all agent files (bulk-reader, and code-writer for models with that role)
 ```
 
-`remove` also deletes that model's materialized agent file and its retry/failover
+`remove` also deletes that model's materialized agent files (bulk-reader and
+code-writer) and its retry/failover
 state, so nothing stale is left behind and a later re-add starts clean. If the
 removed model was the active one, `active` becomes unset and no other model is
 promoted automatically. Removing the last model is allowed: the registry then
@@ -90,8 +91,8 @@ with a clear message rather than materializing an agent that can't run.
 
 Each model can be limited to the jobs it may do. There are two roles:
 `bulk-read` (answering questions about large files, what `/bulk-reader` uses)
-and `code-write` (generating new files, not yet used by any command, so setting
-it has no effect today). A model with no `roles` set has both,
+and `code-write` (generating new files, what `scripts/code-write` uses). A model
+with no `roles` set has both,
 so registries written before roles existed keep working unchanged.
 
 ### Adding a model: let the user pick its roles
@@ -134,14 +135,32 @@ scripts/shunt-models roles <provider/model> bulk-read,code-write   # both
 - If no enabled model has `bulk-read`, large reads are not redirected, exactly
   as with an empty registry, and `status` says so. `status` shows each model's
   effective roles (`roles=bulk-read,code-write` when none are set) and its
-  `first choice:` line is the first choice for `bulk-read`.
+  `first choice:` line is the first choice for `bulk-read`. A second line,
+  `code-write first choice:`, is the first choice for `code-write`, or says that
+  no enabled model has that role (code-write is then unavailable and
+  `scripts/code-write` stops with a clear error before calling any model).
 - An invalid `roles` value in the registry (for example a hand-edit typo like
   `bulk_read`) makes the whole registry invalid, so shunt falls back to legacy
   single-agent mode. `status` and `list` then print the reason. Run
   `scripts/shunt-models roles <provider/model> <role>[,<role>...]` on the
   offending model to repair it.
-- Changing roles only edits the registry. It does not touch agent files or
-  retry/failover state.
+- Each model with the `code-write` role gets a second materialized agent,
+  `shunt-code-writer-<slug>`, next to its bulk-reader agent. It has every tool
+  disabled and a low temperature, because `scripts/code-write` writes the file
+  itself and the model only returns text. `add`, `sync`, `thinking` and `roles`
+  keep it consistent with the registry: it is created when the role is present
+  and deleted when the role is dropped. `roles` does not touch retry/failover
+  state. After updating the plugin, run `scripts/shunt-models sync` once so
+  registries written earlier get their code-writer agents, and so existing
+  code-writer agents get the current reply protocol prompt (with its example
+  reply).
+- `code-write` keeps its own failure counter per model, separate from
+  `bulk-read`'s. A model that keeps failing writes is paused for `code-write`
+  only and stays usable for reading, and the other way round. `status` shows
+  each model's code-write state on `code-write breaker <id>:` lines, and
+  `scripts/shunt-breaker-config show` lists it as `<id> (code-write):` under the
+  model's own line. Counters recorded before this split are the `bulk-read`
+  ones, so nothing needs migrating, and `remove` clears both.
 
 ## Thinking/extended-reasoning, per model (off by default)
 
@@ -153,6 +172,7 @@ on unprompted; only in response to the user asking about a specific model.
 ```bash
 scripts/shunt-models thinking <provider/model> on '<options-json>'
 scripts/shunt-models thinking <provider/model> off
+scripts/shunt-models thinking <provider/model> off '<off-options-json>'
 ```
 
 - When a model is added, thinking is off and no reasoning-related
@@ -168,18 +188,40 @@ scripts/shunt-models thinking <provider/model> off
   their provider's exact option name, say so plainly and ask them to check
   `opencode models <provider>` or their provider's docs rather than
   guessing a key that might silently do nothing.
-- `off` clears both the flag and any stored options and re-materializes the
-  agent without reasoning fields.
+- `off` without options clears the flag and any stored on-options, and
+  keeps any stored off options. It re-materializes the agent with the off
+  options if there are any, otherwise without reasoning fields.
 - Either direction re-materializes that one model's agent file
-  immediately — no separate `sync` needed.
-- shunt always sends the on/off/options intent to the provider through the
-  agent's frontmatter. Whether it's actually honored depends on whether that
-  provider/host forwards those fields into its API call — confirmed *not* to
-  work on OpenCode 1.18.18 with a `@ai-sdk/openai-compatible` provider in
-  front of Ollama, where a hybrid-reasoning model kept reasoning on its own
-  default regardless of `thinking off`. Tell the user this plainly if they
-  ask why a model still seems to be reasoning after turning it off: shunt
-  can't detect or fix a provider silently ignoring its request.
+  immediately, so no separate `sync` is needed. `scripts/shunt-models sync`
+  regenerates every agent file from the registry, including the off options.
+
+### Explicit off options (hybrid reasoning models)
+
+Omitting the reasoning fields does not turn thinking off on a hybrid
+reasoning model, which keeps reasoning on its own default. To really switch it
+off, store the provider's own "off" option as a flat JSON object:
+
+```bash
+scripts/shunt-models thinking <provider/model> off '{"reasoningEffort":"none"}'
+```
+
+- Tested on Ollama and other `@ai-sdk/openai-compatible` providers:
+  `reasoningEffort: none` in the agent frontmatter cut a qwen model from about
+  7300 to about 4500 output tokens on a large file (280 s to 139 s), and let
+  DeepSeek finish in 95 s where it had timed out at 300 s.
+- This is provider dependent. Verify it per provider and per model: some
+  servers ignore the parameter and some reject it with an error. If a model
+  still reasons after this, or a call starts failing, clear it with
+  `thinking <provider/model> off '{}'` and tell the user the provider does not
+  support it. shunt cannot detect a provider silently ignoring the request.
+- The off options apply to both the bulk-reader and the code-writer agent of
+  that model, and only while thinking is off. `thinking <id> on ...` keeps
+  them stored but renders the on-options instead.
+- `off '<json>'` requires a JSON object. `off` with no JSON leaves the stored
+  off options unchanged. `off '{}'` removes them. `status` shows
+  `thinking_off=set` or `thinking_off=none` per model.
+- Only set this when the user asks for it or when a model is measurably slow
+  because it reasons. It is opt-in per model, never a global default.
 
 ## Editing retry/failover behavior (circuit breaker), once opted in
 
