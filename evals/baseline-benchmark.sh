@@ -44,7 +44,7 @@
 #                            counts against real usage/rate limits with no
 #                            retry if a later iteration fails.
 #   SHUNT_BASELINE_MODEL     Model alias for `claude -p --model` (default: sonnet).
-#   SHUNT_BASELINE_TIMEOUT   Timeout in seconds per claude -p call (default: 120).
+#   SHUNT_BASELINE_TIMEOUT   Timeout in seconds per claude -p call (default: 300).
 
 set -uo pipefail
 
@@ -56,7 +56,7 @@ RESULTS_JSONL="$RESULTS_DIR/baseline-benchmark.jsonl"
 SUMMARY_JSON="$RESULTS_DIR/baseline-benchmark-summary.json"
 
 SHUNT_BASELINE_MODEL="${SHUNT_BASELINE_MODEL:-sonnet}"
-SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-120}"
+SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-300}"
 SHUNT_LIVE_TIMEOUT="${SHUNT_LIVE_TIMEOUT:-600}"
 ITERATIONS="${ITERATIONS:-3}"
 

@@ -302,7 +302,7 @@ repo to view it rendered).
 | Variable | Default | Purpose |
 |---|---|---|
 | `SHUNT_BASELINE_MODEL` | `sonnet` | Model alias passed to `claude -p --model` for the baseline side of `evals/baseline-benchmark.sh`. |
-| `SHUNT_BASELINE_TIMEOUT` | `120` | Timeout (seconds) for each baseline `claude -p` call. |
+| `SHUNT_BASELINE_TIMEOUT` | `300` | Timeout (seconds) for each baseline `claude -p` call. |
 | `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 2` (no-resume + resume). |
 
 ### Fidelity: does delegating lose information or hallucinate?
