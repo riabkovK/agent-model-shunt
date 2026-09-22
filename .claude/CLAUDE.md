@@ -24,6 +24,18 @@ and take precedence over them where more specific.
 - Always write the PR title and description in English, regardless of the
   language the conversation is in.
 
+## Release Tags
+
+- Every tag we create (`vX.Y.Z` or otherwise) must be an annotated tag whose
+  message is a short changelog, not just the tag name repeated
+  (`git tag v0.1.0 -m v0.1.0` is not acceptable). List what actually changed
+  since the previous tag in a few bullet points, so someone deciding whether
+  to switch to this tag can tell why from `git tag -n99` or `git show <tag>`
+  alone, without having to read the full commit log.
+- `v0.1.0`/`v0.2.0` predate this rule and only carry the tag name as their
+  message; leave them as-is (don't retroactively rewrite history), just
+  apply this going forward.
+
 ## Context Management
 
 - Do not let the main session's context fill past roughly 25%. When continuing the
