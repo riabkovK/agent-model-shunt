@@ -8,6 +8,10 @@
 # Temp / scratch
 *.tmp
 *.log
+__pycache__/
+
+# Live-eval generated Go test runs (evals/gotest/go.mod and go.sum stay tracked)
+evals/gotest/runs/
 
 # Local per-user Claude Code settings (e.g. SHUNT_HOOKS_DISABLED toggle)
 .claude/settings.local.json

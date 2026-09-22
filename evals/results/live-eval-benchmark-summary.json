@@ -1,0 +1,42 @@
+{
+  "scenarios": {
+    "cors": {
+      "direct": {
+        "n": 0,
+        "outcomes": {
+          "created": 0,
+          "declined": 0,
+          "failed": 0
+        },
+        "duration_ms": null,
+        "output_tokens": null,
+        "input_tokens": null,
+        "build_ok_rate": null,
+        "tests_pass_rate": null,
+        "tests_total": 0,
+        "tests_passed": 0
+      },
+      "shunt": {
+        "n": 1,
+        "outcomes": {
+          "created": 1,
+          "declined": 0,
+          "failed": 0
+        },
+        "duration_ms": {
+          "mean": 497269,
+          "min": 497269,
+          "max": 497269,
+          "n": 1
+        },
+        "output_tokens": null,
+        "input_tokens": null,
+        "build_ok_rate": 1.0,
+        "tests_pass_rate": 0.8947368421052632,
+        "tests_total": 38,
+        "tests_passed": 34
+      },
+      "shunt_vs_direct": {}
+    }
+  }
+}
