@@ -16,6 +16,15 @@
 #           Represents the no-delegation cost/latency baseline. Hits the
 #           real Claude API and spends real money (see cost_usd per row and
 #           the total printed at the end) - run deliberately, not in a loop.
+#           Runs with `--tools ""` (no tool access at all): the instruction
+#           text says the file is "to be saved as ...", which an agentic
+#           Claude with tool access and this repo's own CLAUDE.md loaded can
+#           read as a real file-write request against a path that might
+#           collide with a committed fixture, and decline/ask a clarifying
+#           question instead of answering - wasted since `-p` mode can't
+#           relay the question back. `--tools ""` forces pure text
+#           completion so the only possible outputs are code or a refusal in
+#           `.result`, never a stuck tool-permission prompt.
 #   shunt   The same request delegated to scripts/code-write (OpenCode), no
 #           direct API cost to Claude. Its declared outcome (created,
 #           declined, failed) is recorded as-is; declined/failed are not
@@ -236,7 +245,7 @@ $instruction"
   out_json=$(mktemp)
   status=0
   timeout "$SHUNT_BASELINE_TIMEOUT" claude -p --output-format json --model "$SHUNT_BASELINE_MODEL" \
-    "$prompt" >"$out_json" 2>/dev/null || status=$?
+    --tools="" "$prompt" >"$out_json" 2>/dev/null || status=$?
 
   local dur_ms=0 in_tok=0 out_tok=0 cread=0 cwrite=0 cost=0 outcome="failed" result
 
