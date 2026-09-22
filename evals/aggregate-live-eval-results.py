@@ -49,6 +49,20 @@ def main():
             tests_total = sum(r["tests_total"] for r in created if r.get("tests_total") is not None)
             tests_passed = sum(r["tests_passed"] for r in created if r.get("tests_passed") is not None)
 
+            # Mutation data only exists for rows where mutation-check actually
+            # ran against a green baseline (mutation_status == "ok"). Rows
+            # from before this feature existed have no mutation_status key at
+            # all; .get() treats that the same as "n/a"/"skipped"/"error" -
+            # i.e. no contribution, never crash, never counted as "ok".
+            mutation_rows = [r for r in group if r.get("mutation_status") == "ok"]
+            mut_total = sum(r.get("mutants_total") or 0 for r in mutation_rows)
+            mut_killed = sum(r.get("mutants_killed") or 0 for r in mutation_rows)
+            survived_ids = sorted({
+                mid
+                for r in mutation_rows
+                for mid in (r.get("mutants_survived_ids") or [])
+            })
+
             entry = {
                 "n": len(group),
                 "outcomes": {o: sum(1 for r in group if r["outcome"] == o) for o in ("created", "declined", "failed")},
@@ -59,6 +73,13 @@ def main():
                 "tests_pass_rate": rate(tests_passed, tests_total),
                 "tests_total": tests_total,
                 "tests_passed": tests_passed,
+                "mutation": {
+                    "mutants_total": mut_total,
+                    "mutants_killed": mut_killed,
+                    "mutation_score": rate(mut_killed, mut_total),
+                    "survived_ids": survived_ids,
+                    "rows_with_data": len(mutation_rows),
+                },
             }
             if costs:
                 entry["cost_usd"] = mean_min_max(costs)
@@ -90,7 +111,7 @@ def main():
     json.dump(summary, open(summary_path, "w"), indent=2)
 
     # human-readable table
-    print(f"{'scenario':<12}{'kind':<8}{'n':>3}  outcomes (created/declined/failed)  build_ok  tests pass/total  time ms (mean/min/max)")
+    print(f"{'scenario':<12}{'kind':<8}{'n':>3}  outcomes (created/declined/failed)  build_ok  tests pass/total  mut killed/total  time ms (mean/min/max)")
     for sc in scenarios:
         for kind in kinds:
             e = summary["scenarios"][sc].get(kind, {})
@@ -101,9 +122,11 @@ def main():
             oc_s = f"{oc['created']}/{oc['declined']}/{oc['failed']}"
             build_s = f"{e['build_ok_rate']*100:.0f}%" if e["build_ok_rate"] is not None else "n/a"
             tests_s = f"{e['tests_passed']}/{e['tests_total']}"
+            mut = e["mutation"]
+            mut_s = f"{mut['mutants_killed']}/{mut['mutants_total']}" if mut["rows_with_data"] else "n/a"
             dur = e.get("duration_ms")
             dur_s = f"{dur['mean']:.0f} / {dur['min']:.0f} / {dur['max']:.0f}" if dur else "n/a"
-            print(f"{sc:<12}{kind:<8}{e['n']:>3}  {oc_s:<36} {build_s:<9}{tests_s:<18}{dur_s}")
+            print(f"{sc:<12}{kind:<8}{e['n']:>3}  {oc_s:<36} {build_s:<9}{tests_s:<18}{mut_s:<18}{dur_s}")
         diff = summary["scenarios"][sc].get("shunt_vs_direct", {})
         if diff:
             parts = []
