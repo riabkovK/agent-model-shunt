@@ -68,6 +68,20 @@ assert_parse_unusable() {
   [ ! -e "$OUT/notes" ]
 }
 
+# resp_of <notes> <code>: writes a well-formed reply (all four tags, each on
+# a line of its own) to $RESP. Both arguments are printf formats for the exact
+# text of the section, including its final line feed. An empty argument makes
+# an empty section.
+resp_of() {
+  {
+    printf '<SHUNT-NOTES>\n'
+    printf "$1"
+    printf '</SHUNT-NOTES>\n<SHUNT-CODE>\n'
+    printf "$2"
+    printf '</SHUNT-CODE>\n'
+  } >"$RESP"
+}
+
 # ---------------------------------------------------------------------------
 # Project root resolution
 # ---------------------------------------------------------------------------
@@ -390,7 +404,7 @@ assert_parse_unusable() {
   assert_parse_unusable "empty-response"
 }
 
-@test "parse marks a response without any delimiter as unusable" {
+@test "parse marks a response without any tag as unusable" {
   printf 'just some prose\n' >"$RESP"
   assert_parse_unusable "missing-notes-delimiter"
 }
@@ -400,101 +414,169 @@ assert_parse_unusable() {
   assert_parse_unusable "missing-notes-delimiter"
 }
 
-@test "parse marks a missing NOTES delimiter as unusable" {
-  printf '<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+@test "parse marks a missing NOTES tag as unusable" {
+  printf '<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
   assert_parse_unusable "missing-notes-delimiter"
 }
 
-@test "parse marks a missing CODE delimiter as unusable" {
-  printf '<<<SHUNT-NOTES>>>\nnotes\n' >"$RESP"
+@test "parse marks a missing CODE tag as unusable" {
+  printf '<SHUNT-NOTES>\nnotes\n</SHUNT-NOTES>\n' >"$RESP"
   assert_parse_unusable "missing-code-delimiter"
 }
 
-@test "parse marks input truncated inside the CODE delimiter as unusable" {
-  printf '<<<SHUNT-NOTES>>>\nnotes\n<<<SHUNT-COD' >"$RESP"
+@test "parse marks input truncated inside the CODE tag as unusable" {
+  printf '<SHUNT-NOTES>\nnotes\n</SHUNT-NOTES>\n<SHUNT-COD' >"$RESP"
   assert_parse_unusable "missing-code-delimiter"
 }
 
-@test "parse marks a duplicated NOTES delimiter as unusable" {
-  printf '<<<SHUNT-NOTES>>>\na\n<<<SHUNT-NOTES>>>\nb\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
-  assert_parse_unusable "duplicate-notes-delimiter"
+@test "parse marks a reply cut off before the closing CODE tag as unusable" {
+  printf '<SHUNT-NOTES>\nnotes\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\nmore code\n' >"$RESP"
+  assert_parse_unusable "missing-closing-tag"
 }
 
-@test "parse marks a duplicated CODE delimiter as unusable" {
-  printf '<<<SHUNT-NOTES>>>\na\n<<<SHUNT-CODE>>>\ncode\n<<<SHUNT-CODE>>>\nmore\n' >"$RESP"
-  assert_parse_unusable "duplicate-code-delimiter"
+@test "parse marks a reply cut off inside the closing CODE tag as unusable" {
+  printf '<SHUNT-NOTES>\nnotes\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-COD' >"$RESP"
+  assert_parse_unusable "missing-closing-tag"
 }
 
-@test "parse marks delimiters in the wrong order as unusable" {
-  printf '<<<SHUNT-CODE>>>\ncode\n<<<SHUNT-NOTES>>>\nnotes\n' >"$RESP"
+@test "parse marks a missing closing NOTES tag as unusable" {
+  printf '<SHUNT-NOTES>\nnotes\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "missing-closing-tag"
+}
+
+@test "parse marks a closing tag before its opening tag as unusable" {
+  printf '</SHUNT-NOTES>\n<SHUNT-NOTES>\nnotes\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "out-of-order"
+  printf '<SHUNT-NOTES>\nnotes\n</SHUNT-NOTES>\n</SHUNT-CODE>\n<SHUNT-CODE>\ncode\n' >"$RESP"
   assert_parse_unusable "out-of-order"
 }
 
-@test "parse marks text before the first delimiter as unusable" {
-  printf 'Sure, here you go:\n<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+@test "parse marks a duplicated NOTES tag as unusable" {
+  printf '<SHUNT-NOTES>\na\n<SHUNT-NOTES>\nb\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "duplicate-notes-delimiter"
+}
+
+@test "parse marks a duplicated CODE tag as unusable" {
+  printf '<SHUNT-NOTES>\na\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n<SHUNT-CODE>\nmore\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "duplicate-code-delimiter"
+}
+
+@test "parse marks a duplicated closing CODE tag as unusable" {
+  printf '<SHUNT-NOTES>\na\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "duplicate-closing-tag"
+}
+
+@test "parse marks a duplicated closing NOTES tag as unusable" {
+  printf '<SHUNT-NOTES>\na\n</SHUNT-NOTES>\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "duplicate-closing-tag"
+}
+
+@test "parse marks tags in the wrong order as unusable" {
+  printf '<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n<SHUNT-NOTES>\nnotes\n</SHUNT-NOTES>\n' >"$RESP"
+  assert_parse_unusable "out-of-order"
+}
+
+@test "parse marks text before the first tag as unusable" {
+  printf 'Sure, here you go:\n<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
   assert_parse_unusable "text-before-delimiter"
 }
 
-@test "parse marks a delimiter with a trailing space as not a delimiter" {
-  printf '<<<SHUNT-NOTES>>> \nn\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+@test "parse marks text between the notes and the code sections as unusable" {
+  printf '<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\nHere is the file:\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "text-between-sections"
+}
+
+@test "parse marks text after the closing CODE tag as unusable" {
+  printf '<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\nHope that helps.\n' >"$RESP"
+  assert_parse_unusable "text-after-closing-tag"
+}
+
+@test "parse accepts only blank lines before, between and after the sections" {
+  printf '\n \t\n<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n\n  \n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n\n \n\n' >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+  assert_output "ok"
+  [ "$(cat "$OUT/code")" = "code" ]
+}
+
+@test "parse marks a reply in the old open-delimiter form as unusable" {
+  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  assert_parse_unusable "missing-notes-delimiter"
+  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\ncode\n</SHUNT-CODE>>>\n' >"$RESP"
   assert_parse_unusable "missing-notes-delimiter"
 }
 
-@test "parse marks a delimiter with a leading space as not a delimiter" {
-  printf ' <<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
-  assert_parse_unusable "missing-notes-delimiter"
+@test "parse does not accept a mangled closing line as the closing tag" {
+  printf '<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\nx := 1\n</SHUNT-CODE>>>' >"$RESP"
+  assert_parse_unusable "missing-closing-tag"
+  printf '<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\nx := 1\n</SHUNT-CODE>>>\n' >"$RESP"
+  assert_parse_unusable "missing-closing-tag"
 }
 
-@test "parse marks a delimiter followed by two carriage returns as not a delimiter" {
-  printf '<<<SHUNT-NOTES>>>\r\r\nn\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+@test "parse marks a tag with a trailing space as not a tag" {
+  printf '<SHUNT-NOTES> \nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "missing-notes-delimiter"
+  printf '<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE> \n' >"$RESP"
+  assert_parse_unusable "missing-closing-tag"
+}
+
+@test "parse marks a tag with a leading space as not a tag" {
+  printf ' <SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "missing-notes-delimiter"
+  printf '<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n </SHUNT-CODE>\n' >"$RESP"
+  assert_parse_unusable "missing-closing-tag"
+}
+
+@test "parse marks a tag followed by two carriage returns as not a tag" {
+  printf '<SHUNT-NOTES>\r\r\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
   assert_parse_unusable "missing-notes-delimiter"
 }
 
 @test "parse marks empty CODE without NOTES as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n' >"$RESP"
+  resp_of '' ''
   assert_parse_unusable "empty-code"
 }
 
 @test "parse marks whitespace-only CODE and NOTES as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n  \n\n<<<SHUNT-CODE>>>\n \n\t\n' >"$RESP"
+  resp_of '  \n\n' ' \n\t\n'
   assert_parse_unusable "empty-code"
 }
 
 @test "parse marks CODE that is only an empty fence and no NOTES as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n```go\n```\n' >"$RESP"
+  resp_of '' '```go\n```\n'
   assert_parse_unusable "empty-code"
 }
 
 @test "parse marks NUL bytes in CODE as unusable" {
-  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nab\000cd\n' >"$RESP"
+  resp_of 'n\n' 'ab\000cd\n'
   assert_parse_unusable "nul-bytes"
 }
 
 @test "parse marks NUL bytes in NOTES as unusable" {
-  printf '<<<SHUNT-NOTES>>>\nn\000n\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  resp_of 'n\000n\n' 'code\n'
   assert_parse_unusable "nul-bytes"
 }
 
 @test "parse marks invalid UTF-8 in CODE as unusable" {
-  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nab\377cd\n' >"$RESP"
+  resp_of 'n\n' 'ab\377cd\n'
   assert_parse_unusable "invalid-utf8"
 }
 
 @test "parse marks invalid UTF-8 in NOTES as unusable" {
-  printf '<<<SHUNT-NOTES>>>\nn\303\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  resp_of 'n\303\n' 'code\n'
   assert_parse_unusable "invalid-utf8"
 }
 
 @test "parse rejects overlong, surrogate and out-of-range UTF-8 sequences" {
   local seq
   for seq in '\300\200' '\355\240\200' '\364\220\200\200' '\370\210\200\200\200'; do
-    printf "<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx${seq}y\n" >"$RESP"
+    resp_of "n\n" "x${seq}y\n"
     assert_parse_unusable "invalid-utf8"
   done
 }
 
 @test "parse accepts valid multi-byte UTF-8 in CODE" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\ns := "h\303\251llo \342\202\254 \360\237\230\200"\n' >"$RESP"
+  resp_of '' 's := "h\303\251llo \342\202\254 \360\237\230\200"\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   assert_output "ok"
@@ -504,29 +586,29 @@ assert_parse_unusable() {
 
 @test "parse marks CODE over the size cap as unusable" {
   export SHUNT_CW_MAX_CODE_BYTES=100
-  { printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n'; head -c 100 /dev/zero | tr '\0' 'x'; printf '\n'; } >"$RESP"
+  { printf '<SHUNT-NOTES>\n</SHUNT-NOTES>\n<SHUNT-CODE>\n'; head -c 100 /dev/zero | tr '\0' 'x'; printf '\n</SHUNT-CODE>\n'; } >"$RESP"
   assert_parse_unusable "oversize"
 }
 
 @test "parse accepts CODE of exactly the size cap" {
   export SHUNT_CW_MAX_CODE_BYTES=100
-  { printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n'; head -c 99 /dev/zero | tr '\0' 'x'; printf '\n'; } >"$RESP"
+  { printf '<SHUNT-NOTES>\n</SHUNT-NOTES>\n<SHUNT-CODE>\n'; head -c 99 /dev/zero | tr '\0' 'x'; printf '\n</SHUNT-CODE>\n'; } >"$RESP"
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   [ "$(wc -c <"$OUT/code")" -eq 100 ]
 }
 
 @test "parse has a default size cap of about 256 KB" {
-  { printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n'; head -c 262145 /dev/zero | tr '\0' 'x'; printf '\n'; } >"$RESP"
+  { printf '<SHUNT-NOTES>\n</SHUNT-NOTES>\n<SHUNT-CODE>\n'; head -c 262145 /dev/zero | tr '\0' 'x'; printf '\n</SHUNT-CODE>\n'; } >"$RESP"
   assert_parse_unusable "oversize"
-  { printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n'; head -c 200000 /dev/zero | tr '\0' 'x'; printf '\n'; } >"$RESP"
+  { printf '<SHUNT-NOTES>\n</SHUNT-NOTES>\n<SHUNT-CODE>\n'; head -c 200000 /dev/zero | tr '\0' 'x'; printf '\n</SHUNT-CODE>\n'; } >"$RESP"
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
 }
 
 @test "parse marks NOTES over its cap as unusable" {
   export SHUNT_CW_MAX_NOTES_BYTES=50
-  { printf '<<<SHUNT-NOTES>>>\n'; head -c 60 /dev/zero | tr '\0' 'n'; printf '\n<<<SHUNT-CODE>>>\ncode\n'; } >"$RESP"
+  { printf '<SHUNT-NOTES>\n'; head -c 60 /dev/zero | tr '\0' 'n'; printf '\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n'; } >"$RESP"
   assert_parse_unusable "oversize"
 }
 
@@ -538,7 +620,7 @@ assert_parse_unusable() {
 
 @test "parse ignores a non-numeric size cap override and uses the default" {
   export SHUNT_CW_MAX_CODE_BYTES=banana
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  resp_of '' 'code\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
 }
@@ -546,7 +628,7 @@ assert_parse_unusable() {
 @test "parse removes stale output files from an earlier call when the response is unusable" {
   echo stale >"$OUT/code"
   echo stale >"$OUT/notes"
-  printf '<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  printf '<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
   assert_parse_unusable "missing-notes-delimiter"
 }
 
@@ -555,7 +637,7 @@ assert_parse_unusable() {
 # ---------------------------------------------------------------------------
 
 @test "parse reports empty CODE with NOTES as a deliberate refusal" {
-  printf '<<<SHUNT-NOTES>>>\nCannot write the test: function foo is missing from the source.\n<<<SHUNT-CODE>>>\n' >"$RESP"
+  resp_of 'Cannot write the test: function foo is missing from the source.\n' ''
   run shunt_cw_parse "$RESP" "$OUT"
   assert_failure 10
   assert_output "deliberate-refusal"
@@ -565,14 +647,14 @@ assert_parse_unusable() {
 }
 
 @test "parse reports whitespace-only CODE with NOTES as a deliberate refusal" {
-  printf '<<<SHUNT-NOTES>>>\nnot enough context\n<<<SHUNT-CODE>>>\n\n  \n' >"$RESP"
+  resp_of 'not enough context\n' '\n  \n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_failure 10
   assert_output "deliberate-refusal"
 }
 
 @test "parse reports an empty outer fence with NOTES as a deliberate refusal" {
-  printf '<<<SHUNT-NOTES>>>\nnothing to do\n<<<SHUNT-CODE>>>\n```\n```\n' >"$RESP"
+  resp_of 'nothing to do\n' '```\n```\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_failure 10
   assert_output "deliberate-refusal"
@@ -580,12 +662,14 @@ assert_parse_unusable() {
 
 @test "parse splits a well-formed response into notes and code files" {
   cat >"$RESP" <<'EOF'
-<<<SHUNT-NOTES>>>
+<SHUNT-NOTES>
 skipped: nothing
-<<<SHUNT-CODE>>>
+</SHUNT-NOTES>
+<SHUNT-CODE>
 package x
 
 func A() {}
+</SHUNT-CODE>
 EOF
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
@@ -597,67 +681,87 @@ EOF
 }
 
 @test "parse accepts empty NOTES with non-empty CODE" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  resp_of '' 'code\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   [ ! -s "$OUT/notes" ]
   [ "$(cat "$OUT/code")" = "code" ]
 }
 
-@test "parse accepts whitespace-only text before the first delimiter" {
-  printf '\n  \n\t\n<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+@test "parse accepts whitespace-only text before the first tag" {
+  printf '\n  \n\t\n<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\ncode\n</SHUNT-CODE>\n' >"$RESP"
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
 }
 
-@test "parse tolerates CRLF on the delimiter lines and keeps CR in the content" {
-  printf '<<<SHUNT-NOTES>>>\r\nnote\r\n<<<SHUNT-CODE>>>\r\nline one\r\nline two\r\n' >"$RESP"
+@test "parse tolerates CRLF on the tag lines and keeps CR in the content" {
+  printf '<SHUNT-NOTES>\r\nnote\r\n</SHUNT-NOTES>\r\n<SHUNT-CODE>\r\nline one\r\nline two\r\n</SHUNT-CODE>\r\n' >"$RESP"
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf 'line one\r\nline two\r\n' >"$TEST_TMPDIR/expected"
   cmp "$OUT/code" "$TEST_TMPDIR/expected"
 }
 
-@test "parse keeps delimiter-like text inside CODE that is not a whole-line match" {
+@test "parse keeps tag-like text inside CODE that is not a whole-line match" {
   cat >"$RESP" <<'EOF'
-<<<SHUNT-NOTES>>>
+<SHUNT-NOTES>
 n
-<<<SHUNT-CODE>>>
-echo "<<<SHUNT-CODE>>>"
-x <<<SHUNT-NOTES>>>
-<<<SHUNT-NOTES>>> trailing
-  <<<SHUNT-CODE>>> y
-<<<SHUNT-CODE>>>x
+</SHUNT-NOTES>
+<SHUNT-CODE>
+echo "<SHUNT-CODE>"
+x <SHUNT-NOTES>
+<SHUNT-NOTES> trailing
+  a </SHUNT-CODE> y
+</SHUNT-CODE>x
+</SHUNT-CODE>
 EOF
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
-  tail -n +4 "$RESP" >"$TEST_TMPDIR/expected"
+  sed -n '5,9p' "$RESP" >"$TEST_TMPDIR/expected"
   cmp "$OUT/code" "$TEST_TMPDIR/expected"
 }
 
-@test "parse keeps delimiter-like text inside NOTES that is not a whole-line match" {
+@test "parse keeps tag-like text inside NOTES that is not a whole-line match" {
   cat >"$RESP" <<'EOF'
-<<<SHUNT-NOTES>>>
-mention of <<<SHUNT-CODE>>> in prose
-<<<SHUNT-CODE>>>
+<SHUNT-NOTES>
+mention of <SHUNT-CODE> in prose
+</SHUNT-NOTES>
+<SHUNT-CODE>
 code
+</SHUNT-CODE>
 EOF
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
-  printf 'mention of <<<SHUNT-CODE>>> in prose\n' >"$TEST_TMPDIR/expected"
+  printf 'mention of <SHUNT-CODE> in prose\n' >"$TEST_TMPDIR/expected"
   cmp "$OUT/notes" "$TEST_TMPDIR/expected"
 }
 
-@test "parse adds a final newline when the last CODE line has none" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nno newline at end' >"$RESP"
+@test "parse ends the CODE with one line feed when the response has no final newline" {
+  printf '<SHUNT-NOTES>\n</SHUNT-NOTES>\n<SHUNT-CODE>\nlast line\n</SHUNT-CODE>' >"$RESP"
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
-  printf 'no newline at end\n' >"$TEST_TMPDIR/expected"
+  printf 'last line\n' >"$TEST_TMPDIR/expected"
   cmp "$OUT/code" "$TEST_TMPDIR/expected"
 }
 
+@test "parse keeps blank lines just inside the CODE tags" {
+  resp_of '' '\nx = 1\n\n'
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+  printf '\nx = 1\n\n' >"$TEST_TMPDIR/expected"
+  cmp "$OUT/code" "$TEST_TMPDIR/expected"
+}
+
+@test "parse still reports a deliberate refusal when the CODE section is empty" {
+  printf '<SHUNT-NOTES>\nno context\n</SHUNT-NOTES>\n<SHUNT-CODE>\n</SHUNT-CODE>\n' >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_failure 10
+  assert_output "deliberate-refusal"
+  [ "$(cat "$OUT/notes")" = "no context" ]
+}
+
 @test "parse strips an outer fence with a language tag" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n```go\npackage x\n```\n' >"$RESP"
+  resp_of '' '```go\npackage x\n```\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf 'package x\n' >"$TEST_TMPDIR/expected"
@@ -665,7 +769,7 @@ EOF
 }
 
 @test "parse strips an outer fence without a tag and with CRLF endings" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n```\r\ncode\r\n```\r\n' >"$RESP"
+  resp_of '' '```\r\ncode\r\n```\r\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf 'code\r\n' >"$TEST_TMPDIR/expected"
@@ -673,7 +777,7 @@ EOF
 }
 
 @test "parse strips an outer fence padded with blank lines" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n\n```py\nx = 1\n```\n\n\n' >"$RESP"
+  resp_of '' '\n```py\nx = 1\n```\n\n\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf 'x = 1\n' >"$TEST_TMPDIR/expected"
@@ -681,7 +785,7 @@ EOF
 }
 
 @test "parse keeps inner fence lines when stripping the outer fence" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n```md\n# Title\n```sh\nls\n```\ntext\n```\n' >"$RESP"
+  resp_of '' '```md\n# Title\n```sh\nls\n```\ntext\n```\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf '# Title\n```sh\nls\n```\ntext\n' >"$TEST_TMPDIR/expected"
@@ -689,7 +793,7 @@ EOF
 }
 
 @test "parse honors a longer outer fence around inner three-backtick fences" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n````md\n```sh\nls\n```\n````\n' >"$RESP"
+  resp_of '' '````md\n```sh\nls\n```\n````\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf '```sh\nls\n```\n' >"$TEST_TMPDIR/expected"
@@ -697,7 +801,7 @@ EOF
 }
 
 @test "parse keeps CODE untouched when the fence opens but never closes" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n```go\npackage x\n' >"$RESP"
+  resp_of '' '```go\npackage x\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf '```go\npackage x\n' >"$TEST_TMPDIR/expected"
@@ -705,7 +809,7 @@ EOF
 }
 
 @test "parse keeps CODE untouched when fence lines are only in the middle" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nintro\n```\nx\n```\noutro\n' >"$RESP"
+  resp_of '' 'intro\n```\nx\n```\noutro\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf 'intro\n```\nx\n```\noutro\n' >"$TEST_TMPDIR/expected"
@@ -713,7 +817,7 @@ EOF
 }
 
 @test "parse does not treat a closing line with trailing text as a fence" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n```go\nx\n``` trailing\n' >"$RESP"
+  resp_of '' '```go\nx\n``` trailing\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf '```go\nx\n``` trailing\n' >"$TEST_TMPDIR/expected"
@@ -721,7 +825,7 @@ EOF
 }
 
 @test "parse does not treat a shorter closing fence as closing a longer opening fence" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n````\nx\n```\n' >"$RESP"
+  resp_of '' '````\nx\n```\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf '````\nx\n```\n' >"$TEST_TMPDIR/expected"
@@ -734,7 +838,7 @@ EOF
 }
 
 @test "parse fails with exit 2 for a missing output directory" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  resp_of '' 'code\n'
   run shunt_cw_parse "$RESP" "$TEST_TMPDIR/no-such-dir"
   assert_failure 2
 }
@@ -1100,11 +1204,11 @@ EOF
 
 @test "size cap overrides with leading zeros are read as decimal" {
   export SHUNT_CW_MAX_CODE_BYTES=0000000000000100
-  { printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n'; head -c 99 /dev/zero | tr '\0' 'x'; printf '\n'; } >"$RESP"
+  { printf '<SHUNT-NOTES>\n</SHUNT-NOTES>\n<SHUNT-CODE>\n'; head -c 99 /dev/zero | tr '\0' 'x'; printf '\n</SHUNT-CODE>\n'; } >"$RESP"
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   export SHUNT_CW_MAX_CODE_BYTES=08
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n0123456789\n' >"$RESP"
+  resp_of '' '0123456789\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_failure 11
   assert_output "oversize"
@@ -1112,51 +1216,51 @@ EOF
 
 @test "size cap overrides with more than 15 digits are ignored" {
   export SHUNT_CW_MAX_CODE_BYTES=99999999999999999999
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  resp_of '' 'code\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
 }
 
 @test "parse marks raw control characters as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = 1\033[2J\n' >"$RESP"
+  resp_of '' 'x = 1\033[2J\n'
   assert_parse_unusable "control-characters"
-  printf '<<<SHUNT-NOTES>>>\nhidden \033[8m text\n<<<SHUNT-CODE>>>\ncode\n' >"$RESP"
+  resp_of 'hidden \033[8m text\n' 'code\n'
   assert_parse_unusable "control-characters"
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\na\177b\n' >"$RESP"
+  resp_of '' 'a\177b\n'
   assert_parse_unusable "control-characters"
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\na\vb\n' >"$RESP"
+  resp_of '' 'a\vb\n'
   assert_parse_unusable "control-characters"
 }
 
 @test "parse still accepts tab and CRLF in CODE" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n\tindented\r\n\n' >"$RESP"
+  resp_of '' '\tindented\r\n\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
 }
 
 @test "parse marks a lone carriage return in CODE as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\rEVIL\n' >"$RESP"
+  resp_of '' 'x=1\rEVIL\n'
   assert_parse_unusable "control-characters"
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\r\rEVIL\r\n' >"$RESP"
+  resp_of '' 'x=1\r\rEVIL\r\n'
   assert_parse_unusable "control-characters"
 }
 
-@test "parse marks a carriage return at the very end of the response as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\r' >"$RESP"
-  assert_parse_unusable "control-characters"
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\r\ny=2\r' >"$RESP"
-  assert_parse_unusable "control-characters"
+@test "parse accepts a closing tag that ends the response with a bare carriage return" {
+  printf '<SHUNT-NOTES>\n</SHUNT-NOTES>\n<SHUNT-CODE>\nx=1\n</SHUNT-CODE>\r' >"$RESP"
+  run shunt_cw_parse "$RESP" "$OUT"
+  assert_success
+  [ "$(cat "$OUT/code")" = "x=1" ]
 }
 
 @test "parse marks a form feed in CODE as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx=1\fEVIL\n' >"$RESP"
+  resp_of '' 'x=1\fEVIL\n'
   assert_parse_unusable "control-characters"
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n\f\nx=1\n' >"$RESP"
+  resp_of '' '\f\nx=1\n'
   assert_parse_unusable "control-characters"
 }
 
 @test "parse accepts CRLF on every line of CODE and keeps the bytes" {
-  printf '<<<SHUNT-NOTES>>>\r\nn\r\n<<<SHUNT-CODE>>>\r\na=1\r\n\r\nb=2\r\n' >"$RESP"
+  printf '<SHUNT-NOTES>\r\nn\r\n</SHUNT-NOTES>\r\n<SHUNT-CODE>\r\na=1\r\n\r\nb=2\r\n</SHUNT-CODE>\r\n' >"$RESP"
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   printf 'a=1\r\n\r\nb=2\r\n' >"$TEST_TMPDIR/expected"
@@ -1164,12 +1268,12 @@ EOF
 }
 
 @test "parse marks mixed CRLF plus one lone carriage return in CODE as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\na=1\r\nb=2\rEVIL\r\nc=3\r\n' >"$RESP"
+  resp_of '' 'a=1\r\nb=2\rEVIL\r\nc=3\r\n'
   assert_parse_unusable "control-characters"
 }
 
 @test "parse still accepts a carriage return and a form feed in NOTES" {
-  printf '<<<SHUNT-NOTES>>>\nnote\rone\f\n<<<SHUNT-CODE>>>\nx=1\n' >"$RESP"
+  resp_of 'note\rone\f\n' 'x=1\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
 }
@@ -1193,46 +1297,61 @@ EOF
 @test "parse marks Unicode bidi override and isolate characters as unusable" {
   local seq
   for seq in '\342\200\252' '\342\200\256' '\342\201\246' '\342\201\251'; do
-    printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = \"a${seq}b\"\n" >"$RESP"
+    resp_of "" "x = \"a${seq}b\"\n"
     assert_parse_unusable "bidi-controls"
   done
 }
 
 @test "parse marks zero width and other invisible characters in CODE as unusable" {
-  printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = "a\342\200\213b \342\200\216"\n' >"$RESP"
+  resp_of '' 'x = "a\342\200\213b \342\200\216"\n'
   assert_parse_unusable "invisible-characters"
 }
 
 @test "parse marks a stray protocol tag line in CODE as unusable" {
-  # The live failure: correct delimiters plus a stray closing tag at the end.
-  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = 1\n</SHUNT-CODE>>\n' >"$RESP"
+  # The live failure: correct tags plus a stray mangled closing tag at the end.
+  resp_of 'n\n' 'x = 1\n</SHUNT-CODE>>\n'
   assert_parse_unusable "protocol-tag-in-code"
-  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = 1\n<<</shunt-notes>>>\ny = 2\n' >"$RESP"
+  resp_of 'n\n' 'x = 1\n</SHUNT-CODE>>>\n'
   assert_parse_unusable "protocol-tag-in-code"
-  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = 1\n \t <SHUNT-CODE>  \r\ny = 2\n' >"$RESP"
+  resp_of 'n\n' 'x = 1\n<<</shunt-notes>>>\ny = 2\n'
   assert_parse_unusable "protocol-tag-in-code"
-  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = 1\nShunt-Notes\n' >"$RESP"
+  resp_of 'n\n' 'x = 1\n</shunt-notes>>\ny = 2\n'
+  assert_parse_unusable "protocol-tag-in-code"
+  resp_of 'n\n' 'x = 1\n \t <SHUNT-CODE>  \r\ny = 2\n'
+  assert_parse_unusable "protocol-tag-in-code"
+  resp_of 'n\n' 'x = 1\nShunt-Notes\n'
   assert_parse_unusable "protocol-tag-in-code"
 }
 
+@test "parse marks a whole-line protocol tag inside CODE as unusable" {
+  # An exact tag line splits the reply, so it is caught as a duplicate or a
+  # misplaced tag before the look-alike check gets to see the code.
+  resp_of 'n\n' 'x = 1\n<SHUNT-CODE>\ny = 2\n'
+  assert_parse_unusable "duplicate-code-delimiter"
+  resp_of 'n\n' 'x = 1\n</SHUNT-NOTES>\ny = 2\n'
+  assert_parse_unusable "duplicate-closing-tag"
+  resp_of 'n\n' 'x = 1\n<SHUNT-NOTES>\ny = 2\n'
+  assert_parse_unusable "duplicate-notes-delimiter"
+}
+
 @test "parse accepts CODE that only mentions a protocol tag inside a line" {
-  printf '<<<SHUNT-NOTES>>>\nn\n<<<SHUNT-CODE>>>\nx = "<<<SHUNT-CODE>>>"\n# see SHUNT-CODE above\ny = 2 # </SHUNT-NOTES>\n<<<<SHUNT-CODE>>>>\n<SHUNT-CODEX>\n' >"$RESP"
+  resp_of 'n\n' 'x = "<SHUNT-CODE>"\n# see SHUNT-CODE above\ny = 2 # </SHUNT-NOTES>\n<<<<SHUNT-CODE>>>>\n<SHUNT-CODEX>\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   assert_output "ok"
-  grep -qxF 'x = "<<<SHUNT-CODE>>>"' "$OUT/code"
+  grep -qxF 'x = "<SHUNT-CODE>"' "$OUT/code"
   grep -qxF '# see SHUNT-CODE above' "$OUT/code"
 }
 
 @test "parse still accepts a normal response after the protocol tag check" {
-  printf '<<<SHUNT-NOTES>>>\nnote\n<<<SHUNT-CODE>>>\nx = 1\ny = 2\n' >"$RESP"
+  resp_of 'note\n' 'x = 1\ny = 2\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   assert_output "ok"
 }
 
 @test "parse accepts a protocol tag look-alike in NOTES" {
-  printf '<<<SHUNT-NOTES>>>\n</SHUNT-CODE>>\n<<<SHUNT-CODE>>>\nx = 1\n' >"$RESP"
+  resp_of '</SHUNT-CODE>>\n' 'x = 1\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
 }
@@ -1241,14 +1360,15 @@ EOF
   local before line
   : >"$TEST_TMPDIR/tag"
   before="$(snapshot)"
-  for line in '</SHUNT-CODE>>' '<<</shunt-notes>>>' '  <SHUNT-CODE>  '; do
+  for line in '</SHUNT-CODE>>' '<<</shunt-notes>>>' '  <SHUNT-CODE>  ' \
+      '<SHUNT-CODE>' '</SHUNT-CODE>' '<SHUNT-NOTES>' '</SHUNT-NOTES>' $'</shunt-notes>\t'; do
     printf 'x = 1\n%s\ny = 2\n' "$line" >"$TEST_TMPDIR/tag"
     run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/tag"
     assert_failure
     assert_output --partial "protocol-tag-in-code"
   done
   [ "$before" = "$(snapshot)" ]
-  printf 'x = "<<<SHUNT-CODE>>>"\n# see SHUNT-CODE above\n' >"$TEST_TMPDIR/tag"
+  printf 'x = "<SHUNT-CODE>"\n# see SHUNT-CODE above\n' >"$TEST_TMPDIR/tag"
   run shunt_cw_publish "$PROJ" "newdir/x.txt" "$TEST_TMPDIR/tag"
   assert_success
 }
@@ -1723,11 +1843,11 @@ code_refused_seqs() {
   local loc seq
   for loc in $(test_locales); do
     for seq in '\302\200' '\302\205' '\302\237'; do
-      printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = \"a${seq}b\"\n" >"$RESP"
+      resp_of "" "x = \"a${seq}b\"\n"
       in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
       assert_failure 11
       assert_output "control-characters"
-      printf "<<<SHUNT-NOTES>>>\nnote a${seq}b\n<<<SHUNT-CODE>>>\ncode\n" >"$RESP"
+      resp_of "note a${seq}b\n" "code\n"
       in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
       assert_failure 11
       assert_output "control-characters"
@@ -1739,7 +1859,7 @@ code_refused_seqs() {
   local loc seq
   for loc in $(test_locales); do
     for seq in '\302\240' '\303\251' '\344\270\255'; do
-      printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = \"a${seq}b\"\n" >"$RESP"
+      resp_of "" "x = \"a${seq}b\"\n"
       in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
       assert_success
     done
@@ -1765,7 +1885,7 @@ code_refused_seqs() {
   local loc seq
   for loc in $(test_locales); do
     for seq in $(code_refused_seqs); do
-      printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = \"a${seq}b\"\n" >"$RESP"
+      resp_of "" "x = \"a${seq}b\"\n"
       in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
       assert_failure 11
       assert_output "invisible-characters"
@@ -1779,7 +1899,7 @@ code_refused_seqs() {
   local seq
   for seq in '\363\240\201\201' '\363\240\200\200' '\363\240\201\277' '\342\200\250' '\342\200\251' '\357\273\277' \
       '\330\234' '\342\201\240' '\342\201\244' '\342\200\213' '\342\200\216' '\342\200\217'; do
-    printf "<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nx = 1${seq}\n" >"$RESP"
+    resp_of "" "x = 1${seq}\n"
     assert_parse_unusable "invisible-characters"
   done
 }
@@ -1787,13 +1907,13 @@ code_refused_seqs() {
 @test "parse still accepts ZWJ emoji sequences, ZWNJ, VS16, Cyrillic, CJK and tabs in CODE under any locale" {
   local loc
   for loc in $(test_locales); do
-    printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n\tfamily = "\360\237\221\250\342\200\215\360\237\221\251\342\200\215\360\237\221\247"\n' >"$RESP"
+    resp_of '' '\tfamily = "\360\237\221\250\342\200\215\360\237\221\251\342\200\215\360\237\221\247"\n'
     in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
     assert_success
-    printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\nheart = "\342\235\244\357\270\217"\nzwnj = "a\342\200\214b"\n' >"$RESP"
+    resp_of '' 'heart = "\342\235\244\357\270\217"\nzwnj = "a\342\200\214b"\n'
     in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
     assert_success
-    printf '<<<SHUNT-NOTES>>>\n<<<SHUNT-CODE>>>\n# \320\237\321\200\320\270\320\262\320\265\321\202 \344\270\226\347\225\214\n\tx = 1\n' >"$RESP"
+    resp_of '' '# \320\237\321\200\320\270\320\262\320\265\321\202 \344\270\226\347\225\214\n\tx = 1\n'
     in_locale "$loc" shunt_cw_parse "$RESP" "$OUT"
     assert_success
     [ -s "$OUT/code" ]
@@ -1805,7 +1925,7 @@ code_refused_seqs() {
   for seq in $(code_refused_seqs) '\342\200\214' '\342\200\215' '\357\270\217'; do
     notes="$notes$(printf "$seq")"
   done
-  printf '<<<SHUNT-NOTES>>>\nkeep%sthis\n<<<SHUNT-CODE>>>\nx = 1\n' "$notes" >"$RESP"
+  resp_of "keep${notes}this\n" 'x = 1\n'
   run shunt_cw_parse "$RESP" "$OUT"
   assert_success
   [ "$(shunt_cw_strip_invisible "$(cat "$OUT/notes")")" = "keepthis" ]

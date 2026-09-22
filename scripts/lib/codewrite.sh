@@ -43,7 +43,7 @@
 # not a plain integer of at most 15 digits is ignored.
 SHUNT_CW_DEFAULT_MAX_CODE_BYTES=262144
 SHUNT_CW_DEFAULT_MAX_NOTES_BYTES=32768
-# Allowance for delimiters, fence lines and CRLF on top of the two caps when
+# Allowance for tag lines, fence lines and CRLF on top of the two caps when
 # bounding the raw response size before it is split.
 SHUNT_CW_RESPONSE_SLACK_BYTES=4096
 # PATH_MAX. A longer target is refused before anything is created.
@@ -53,8 +53,10 @@ SHUNT_CW_MAX_TARGET_BYTES=4096
 SHUNT_CW_EXIT_REFUSAL=10
 SHUNT_CW_EXIT_UNUSABLE=11
 
-SHUNT_CW_DELIM_NOTES='<<<SHUNT-NOTES>>>'
-SHUNT_CW_DELIM_CODE='<<<SHUNT-CODE>>>'
+SHUNT_CW_TAG_NOTES_OPEN='<SHUNT-NOTES>'
+SHUNT_CW_TAG_NOTES_CLOSE='</SHUNT-NOTES>'
+SHUNT_CW_TAG_CODE_OPEN='<SHUNT-CODE>'
+SHUNT_CW_TAG_CODE_CLOSE='</SHUNT-CODE>'
 
 # Scratch state shared between the internal helpers. Not part of the API.
 _SHUNT_CW_ERR=""
@@ -68,32 +70,50 @@ _SHUNT_CW_DIR=""
 _SHUNT_CW_TMP=""
 _SHUNT_CW_CREATED=()
 
-# Splits the response in one pass. Reads the two delimiter lines and the
-# limits from the environment, writes the notes and code files itself and
-# prints one reason token. Kept as data so that sourcing stays free of side
-# effects. Byte counts rely on the caller setting LC_ALL=C.
+# Splits the response in one pass. Reads the four tag lines and the limits
+# from the environment, writes the notes and code files itself and prints one
+# reason token. Kept as data so that sourcing stays free of side effects. Byte
+# counts rely on the caller setting LC_ALL=C.
+#
+# The section variable follows the tags: 0 before the first tag, 1 inside the
+# notes, 2 between the sections, 3 inside the code, 4 after the closing code
+# tag. Text outside 1 and 3 must be blank, and is only judged once the tags
+# are known to be complete and in order.
 _SHUNT_CW_AWK_PROGRAM='
 function blank(s) { return s ~ /^[ \t\r]*$/ }
 BEGIN {
   section = 0
-  d_notes = ENVIRON["CW_DELIM_NOTES"]
-  d_code = ENVIRON["CW_DELIM_CODE"]
+  t_notes_open = ENVIRON["CW_TAG_NOTES_OPEN"]
+  t_notes_close = ENVIRON["CW_TAG_NOTES_CLOSE"]
+  t_code_open = ENVIRON["CW_TAG_CODE_OPEN"]
+  t_code_close = ENVIRON["CW_TAG_CODE_CLOSE"]
 }
 {
   line = $0
   sub(/\r$/, "", line)
-  if (line == d_notes) { notes_count++; if (!notes_first) notes_first = NR; section = 1; next }
-  if (line == d_code) { code_count++; if (!code_first) code_first = NR; section = 2; next }
-  if (section == 0) { if (!blank($0)) pre_text = 1; next }
-  if (section == 1) { nn++; notes[nn] = $0 } else { nc++; code[nc] = $0 }
+  if (line == t_notes_open) { notes_open++; if (!notes_open_at) notes_open_at = NR; section = 1; next }
+  if (line == t_notes_close) { notes_close++; if (!notes_close_at) notes_close_at = NR; section = 2; next }
+  if (line == t_code_open) { code_open++; if (!code_open_at) code_open_at = NR; section = 3; next }
+  if (line == t_code_close) { code_close++; if (!code_close_at) code_close_at = NR; section = 4; next }
+  if (section == 1) { nn++; notes[nn] = $0; next }
+  if (section == 3) { nc++; code[nc] = $0; next }
+  if (!blank($0)) {
+    if (section == 0) pre_text = 1
+    else if (section == 2) mid_text = 1
+    else post_text = 1
+  }
 }
 END {
-  if (!notes_count) { print "missing-notes-delimiter"; exit }
-  if (!code_count) { print "missing-code-delimiter"; exit }
-  if (notes_count > 1) { print "duplicate-notes-delimiter"; exit }
-  if (code_count > 1) { print "duplicate-code-delimiter"; exit }
-  if (code_first < notes_first) { print "out-of-order"; exit }
+  if (!notes_open) { print "missing-notes-delimiter"; exit }
+  if (!code_open) { print "missing-code-delimiter"; exit }
+  if (!notes_close || !code_close) { print "missing-closing-tag"; exit }
+  if (notes_open > 1) { print "duplicate-notes-delimiter"; exit }
+  if (code_open > 1) { print "duplicate-code-delimiter"; exit }
+  if (notes_close > 1 || code_close > 1) { print "duplicate-closing-tag"; exit }
+  if (!(notes_open_at < notes_close_at && notes_close_at < code_open_at && code_open_at < code_close_at)) { print "out-of-order"; exit }
   if (pre_text) { print "text-before-delimiter"; exit }
+  if (mid_text) { print "text-between-sections"; exit }
+  if (post_text) { print "text-after-closing-tag"; exit }
 
   # Strip ONLY an outer fence: the first non-blank line opens it (3 or more
   # backticks, optional info string without backticks) and the last
@@ -325,19 +345,14 @@ _shunt_cw_has_lone_cr_or_ff() {
   return 1
 }
 
-# _shunt_cw_check_code_controls <code-file> [<response-file>]
+# _shunt_cw_check_code_controls <code-file>
 # Prints "control-characters" and fails when _shunt_cw_has_lone_cr_or_ff does
-# on the code. With a response file it also fails when that file ends in a
-# bare CR, because the parser writes every code line with a line feed and
-# would turn a final "abc<CR>" into a CRLF ending. Generated CODE is refused
-# for these, _shunt_cw_check_text keeps them for the NOTES part, which strips
-# them when printed.
+# on the code. Generated CODE is refused for these, _shunt_cw_check_text keeps
+# them for the NOTES part, which strips them when printed. The parser writes
+# every code line with a line feed and the closing CODE tag always follows the
+# last code line, so a CR at the end of a code line is a real CRLF ending.
 _shunt_cw_check_code_controls() {
   if _shunt_cw_has_lone_cr_or_ff "$1"; then
-    echo "control-characters"
-    return 1
-  fi
-  if [ -n "${2:-}" ] && [ "$(tail -c 1 -- "$2" | LC_ALL=C tr -cd '\r' | wc -c)" -eq 1 ]; then
     echo "control-characters"
     return 1
   fi
@@ -346,12 +361,15 @@ _shunt_cw_check_code_controls() {
 
 # _shunt_cw_check_protocol_tags <code-file>
 # Prints "protocol-tag-in-code" and fails when a line of the code, after
-# trimming spaces, tabs and CRs, is a look-alike of a protocol delimiter: 0 to
-# 3 "<", an optional "/", SHUNT-CODE or SHUNT-NOTES (any case), 0 to 3 ">".
-# The model got the protocol wrong (for example a stray closing tag after the
-# code), so the file would hold a line that is never valid content. Whole
-# lines only, a line that merely mentions a tag inside a string or a comment
-# is fine. A file that cannot be read counts as a hit.
+# trimming spaces, tabs and CRs, is a look-alike of a protocol tag: 0 to 3
+# "<", an optional "/", SHUNT-CODE or SHUNT-NOTES (any case), 0 to 3 ">". That
+# covers the four exact tags too, so a second "<SHUNT-CODE>" or a stray
+# "</SHUNT-NOTES>" in a file is refused, as are the mangled spellings a model
+# produces (a "</SHUNT-CODE>>" at the end of the code, or the old
+# "<<<SHUNT-CODE>>>" form). The model got the protocol wrong, so the file
+# would hold a line that is never valid content. Whole lines only, a line that
+# merely mentions a tag inside a string or a comment is fine. A file that
+# cannot be read counts as a hit.
 _shunt_cw_check_protocol_tags() {
   local rc=0 pattern
   pattern=$'^[ \t\r]*<{0,3}/?SHUNT-(CODE|NOTES)>{0,3}[ \t\r]*$'
@@ -838,10 +856,20 @@ shunt_cw_normalize_path() {
 # untrusted text from the model, the caller should label it as such when it
 # shows it to Claude.
 #
-# Protocol: whitespace, then a line "<<<SHUNT-NOTES>>>", the notes, a line
-# "<<<SHUNT-CODE>>>", the code. Delimiters are whole-line exact matches (one
-# trailing CR is tolerated, nothing else), exactly one of each, NOTES first.
-# Only an outer markdown fence around the whole CODE section is removed.
+# Protocol, every tag on a line of its own:
+#   <SHUNT-NOTES>
+#   the notes
+#   </SHUNT-NOTES>
+#   <SHUNT-CODE>
+#   the file content
+#   </SHUNT-CODE>
+# Tags are whole-line exact matches (one trailing CR is tolerated, nothing
+# else), exactly one of each, in that order. Only blank lines may come before
+# the first tag, between the two sections and after the closing CODE tag. A
+# reply cut off by a length limit lacks its closing tag, which is why every
+# section is closed: the end of the code is a line, not the end of the reply.
+# The code is the lines strictly between the CODE tags. Only an outer markdown
+# fence around the whole CODE section is removed.
 #
 # Prints one reason token on stdout, nothing else. Exit status:
 #   0   ok, both files written. Reason: ok
@@ -849,8 +877,9 @@ shunt_cw_normalize_path() {
 #       failure. Only <out-dir>/notes is meaningful. Reason: deliberate-refusal
 #   11  unusable response, a model failure (failover and breaker). No output
 #       files are left. Reasons: empty-response, missing-notes-delimiter,
-#       missing-code-delimiter, duplicate-notes-delimiter,
-#       duplicate-code-delimiter, out-of-order, text-before-delimiter,
+#       missing-code-delimiter, missing-closing-tag, duplicate-notes-delimiter,
+#       duplicate-code-delimiter, duplicate-closing-tag, out-of-order,
+#       text-before-delimiter, text-between-sections, text-after-closing-tag,
 #       empty-code, oversize, nul-bytes, control-characters, invalid-utf8,
 #       bidi-controls, invisible-characters, protocol-tag-in-code
 #   2   bad arguments or a missing tool, nothing about the response
@@ -885,7 +914,8 @@ shunt_cw_parse() {
   fi
 
   reason=$(LC_ALL=C \
-    CW_DELIM_NOTES="$SHUNT_CW_DELIM_NOTES" CW_DELIM_CODE="$SHUNT_CW_DELIM_CODE" \
+    CW_TAG_NOTES_OPEN="$SHUNT_CW_TAG_NOTES_OPEN" CW_TAG_NOTES_CLOSE="$SHUNT_CW_TAG_NOTES_CLOSE" \
+    CW_TAG_CODE_OPEN="$SHUNT_CW_TAG_CODE_OPEN" CW_TAG_CODE_CLOSE="$SHUNT_CW_TAG_CODE_CLOSE" \
     CW_MAX_NOTES="$max_notes" CW_MAX_CODE="$max_code" \
     CW_NOTES_OUT="$out_dir/notes" CW_CODE_OUT="$out_dir/code" \
     awk "$_SHUNT_CW_AWK_PROGRAM" "$response") || reason=""
@@ -894,7 +924,7 @@ shunt_cw_parse() {
   # refused in the code only, NOTES are stripped when printed. Nothing is left
   # behind for a refused answer.
   if [ "$reason" = "ok" ] \
-      && ! invisible=$(_shunt_cw_check_code_controls "$out_dir/code" "$response" \
+      && ! invisible=$(_shunt_cw_check_code_controls "$out_dir/code" \
         && _shunt_cw_check_invisible "$out_dir/code" \
         && _shunt_cw_check_protocol_tags "$out_dir/code"); then
     rm -f -- "$out_dir/code" "$out_dir/notes"
@@ -905,7 +935,10 @@ shunt_cw_parse() {
   case "$reason" in
     ok) status=0 ;;
     deliberate-refusal) status="$SHUNT_CW_EXIT_REFUSAL" ;;
-    missing-notes-delimiter|missing-code-delimiter|duplicate-notes-delimiter|duplicate-code-delimiter|out-of-order|text-before-delimiter|empty-code|oversize)
+    missing-notes-delimiter|missing-code-delimiter|missing-closing-tag \
+    |duplicate-notes-delimiter|duplicate-code-delimiter|duplicate-closing-tag \
+    |out-of-order|text-before-delimiter|text-between-sections \
+    |text-after-closing-tag|empty-code|oversize)
       status="$SHUNT_CW_EXIT_UNUSABLE" ;;
     *)
       rm -f -- "$out_dir/code" "$out_dir/notes"

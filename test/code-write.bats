@@ -6,8 +6,10 @@ load 'test_helper'
 # happen before any model call and must leave the circuit breaker alone.
 
 CODE_WRITE="$REPO_ROOT/scripts/code-write"
-NOTES_DELIM='<<<SHUNT-NOTES>>>'
-CODE_DELIM='<<<SHUNT-CODE>>>'
+NOTES_OPEN='<SHUNT-NOTES>'
+NOTES_CLOSE='</SHUNT-NOTES>'
+CODE_OPEN='<SHUNT-CODE>'
+CODE_CLOSE='</SHUNT-CODE>'
 
 setup() {
   shunt_test_setup
@@ -92,7 +94,7 @@ agent_of() {
 
 # response <notes> <code>: a well-formed model response on stdout.
 response() {
-  printf '%s\n%s\n%s\n%s\n' "$NOTES_DELIM" "$1" "$CODE_DELIM" "$2"
+  printf '%s\n%s\n%s\n%s\n%s\n%s\n' "$NOTES_OPEN" "$1" "$NOTES_CLOSE" "$CODE_OPEN" "$2" "$CODE_CLOSE"
 }
 
 # set_resp <id|default> <text>: what the stub answers for that model.
@@ -682,10 +684,11 @@ package src
   local bad
   for bad in \
       "just some chatter" \
-      "$(printf '%s\nn\n%s\n%s\nx\n%s\ny\n' "$NOTES_DELIM" "$CODE_DELIM" "$CODE_DELIM" "$CODE_DELIM")" \
+      "$(printf '%s\nn\n%s\n%s\nx\n%s\n%s\n' "$NOTES_OPEN" "$NOTES_CLOSE" "$CODE_OPEN" "$CODE_CLOSE" "$CODE_CLOSE")" \
       "$(response "" "")" \
-      "$(printf '%s\nn\nno code delimiter\n' "$NOTES_DELIM")" \
-      "$(printf '%s\nn\n%s\nnul\x01byte\n' "$NOTES_DELIM" "$CODE_DELIM")"; do
+      "$(printf '%s\nn\n%s\nno code section\n' "$NOTES_OPEN" "$NOTES_CLOSE")" \
+      "$(printf '%s\nn\n%s\n%s\nx := 1\n' "$NOTES_OPEN" "$NOTES_CLOSE" "$CODE_OPEN")" \
+      "$(printf '%s\nn\n%s\n%s\nnul\x01byte\n%s\n' "$NOTES_OPEN" "$NOTES_CLOSE" "$CODE_OPEN" "$CODE_CLOSE")"; do
     rm -rf "$STUB_DIR" "$SHUNT_BREAKER_STATE_FILE" src/out.go
     mkdir -p "$STUB_DIR"
     set_resp p/one "$bad"
@@ -701,7 +704,7 @@ package src
 
 @test "a stray protocol tag in the code fails over, counts against the breaker and writes nothing" {
   add_models p/one p/two
-  set_resp p/one "$(printf '%s\nn\n%s\nx := 1\n</SHUNT-CODE>>\n' "$NOTES_DELIM" "$CODE_DELIM")"
+  set_resp p/one "$(printf '%s\nn\n%s\n%s\nx := 1\n</SHUNT-CODE>>\n%s\n' "$NOTES_OPEN" "$NOTES_CLOSE" "$CODE_OPEN" "$CODE_CLOSE")"
   set_resp p/two "$(response ok "x := 2")"
   run "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target src/out.go
   assert_success
@@ -713,7 +716,7 @@ package src
 
 @test "a stray protocol tag in the code from the only model writes nothing" {
   add_models p/one
-  set_resp default "$(printf '%s\nn\n%s\nx := 1\n</SHUNT-CODE>>\n' "$NOTES_DELIM" "$CODE_DELIM")"
+  set_resp default "$(printf '%s\nn\n%s\n%s\nx := 1\n</SHUNT-CODE>>\n%s\n' "$NOTES_OPEN" "$NOTES_CLOSE" "$CODE_OPEN" "$CODE_CLOSE")"
   run "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target brand/out.go
   assert_failure
   [ ! -e brand ]

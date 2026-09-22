@@ -586,15 +586,17 @@ JSON
   echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
   shunt_models_materialize_agent "p/m"
   local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
-  grep -q '^<<<SHUNT-NOTES>>>$' "$agent_file"
-  grep -q '^<<<SHUNT-CODE>>>$' "$agent_file"
+  grep -q '^<SHUNT-NOTES>$' "$agent_file"
+  grep -q '^</SHUNT-NOTES>$' "$agent_file"
+  grep -q '^<SHUNT-CODE>$' "$agent_file"
+  grep -q '^</SHUNT-CODE>$' "$agent_file"
   grep -qi "exactly one" "$agent_file"
   grep -qi "only symbols" "$agent_file"
   grep -qi "not wrap" "$agent_file"
   grep -q "four backticks" "$agent_file"
 }
 
-@test "the code-writer agent prompt says each delimiter appears once and is never quoted" {
+@test "the code-writer agent prompt says each tag appears once and is never quoted" {
   echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
   shunt_models_materialize_agent "p/m"
   local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
@@ -602,25 +604,28 @@ JSON
   grep -q "never quoted" "$agent_file"
 }
 
-@test "the code-writer agent prompt says there is no closing delimiter or closing tag" {
+@test "the code-writer agent prompt shows the four tags and does not tell the model to omit the closing tag" {
   echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
   shunt_models_materialize_agent "p/m"
   local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
-  grep -q "no closing delimiter and no closing tag" "$agent_file"
-  grep -q "last line of the file" "$agent_file"
+  # The four tags in protocol order, each on a line of its own.
+  [ "$(grep -nE '^</?SHUNT-(NOTES|CODE)>$' "$agent_file" | head -4 | cut -d: -f2 | tr '\n' ' ')" = "<SHUNT-NOTES> </SHUNT-NOTES> <SHUNT-CODE> </SHUNT-CODE> " ]
+  grep -qi "nothing but blank lines" "$agent_file"
+  run grep -ci "no closing" "$agent_file"
+  assert_output "0"
+  run grep -c "<<<" "$agent_file"
+  assert_output "0"
 }
 
-@test "the code-writer agent prompt carries a full example reply with notes, delimiters and code" {
+@test "the code-writer agent prompt carries a full example reply with notes, tags and code" {
   echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"shunt-bulk-reader-p-m"}]}' >"$SHUNT_MODELS_FILE"
   shunt_models_materialize_agent "p/m"
   local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
   local example
   example=$(sed -n '/^Example of a complete, correct reply/,/^End of example\.$/p' "$agent_file")
   [ -n "$example" ]
-  # Notes line, then the code delimiter, then the code, in that order.
-  [ "$(echo "$example" | grep -n '^<<<SHUNT-NOTES>>>$' | cut -d: -f1)" -lt "$(echo "$example" | grep -n '^<<<SHUNT-CODE>>>$' | cut -d: -f1)" ]
-  [ "$(echo "$example" | grep -c '^<<<SHUNT-NOTES>>>$')" -eq 1 ]
-  [ "$(echo "$example" | grep -c '^<<<SHUNT-CODE>>>$')" -eq 1 ]
+  # All four tags once each, in protocol order, then the code inside.
+  [ "$(echo "$example" | grep -E '^</?SHUNT-(NOTES|CODE)>$' | tr '\n' ' ')" = "<SHUNT-NOTES> </SHUNT-NOTES> <SHUNT-CODE> </SHUNT-CODE> " ]
   echo "$example" | grep -q '^def add(a, b):$'
 }
 
