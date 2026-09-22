@@ -44,11 +44,24 @@
 # (gitignored) so parallel scenarios/kinds never collide on package name or
 # on duplicate Test... function names in one build.
 #
-# Mutation-testing (do the generated tests actually fail on a mechanically
-# mutated implementation, not just compile and pass vacuously) is explicitly
-# OUT OF SCOPE for this script - see docs/TODO.md's "Follow-up phase, not in
-# this plan: live eval" section for that deferred follow-up and its own
-# design pass.
+# A third scenario, `pricing`, runs LOCAL (not module) mode: it is a small,
+# dependency-free fixture (evals/fixtures/mutation/pricing.go, see that
+# directory's README.md) copied as-is into the run directory rather than
+# generated against a real published module, and the generated test lives
+# in the SAME package (package pricing), not an external _test package.
+# `pricing` also drives mutation testing: after its generated test compiles
+# and passes against the unmodified fixture (a green baseline), evals/
+# mutation-check.sh mechanically mutates the fixture a few times and reruns
+# the generated test against each mutant, recording how many mutants it
+# kills versus lets survive - a signal that the test asserts real behavior
+# rather than just existing. See evals/mutation-check.sh's own header for
+# the exact algorithm and JSON schema; its 7 fields land at the top level
+# of every result row (mutation_status/mutants_total/mutants_killed/
+# mutants_survived/mutants_invalid/mutants_survived_ids/
+# mutation_duration_ms), with mutation_status "n/a" for the non-mutation
+# cors/router scenarios, "skipped" when pricing's own baseline wasn't green
+# or mutation testing was disabled, "error" if mutation-check.sh itself
+# failed, and "ok" for a real result.
 #
 # Requires a reachable OpenCode provider (for the shunt side) and a logged-in
 # `claude` CLI (for the direct side). NOT part of the no-network evals/run.sh
@@ -68,6 +81,16 @@
 #                            exercise only the no-cost delegated path, e.g.
 #                            when validating the harness itself without
 #                            spending real API money.
+#   LIVE_EVAL_SCENARIOS      Space-separated subset of "cors router pricing"
+#                            to run (default: all three). Same filtering
+#                            idiom as LIVE_EVAL_KINDS.
+#   LIVE_EVAL_MUTATION       When "0", skips the mutation-check.sh call
+#                            entirely for the pricing scenario (default: 1).
+#                            Useful for a quick smoke run.
+#   MUTANTS_MAX              Forwarded to evals/mutation-check.sh (its own
+#                            default: 5). Max mutants tried per pricing run.
+#   MUTANT_TIMEOUT           Forwarded to evals/mutation-check.sh (its own
+#                            default: 60s). Per-mutant `go test -timeout`.
 
 set -uo pipefail
 
@@ -82,6 +105,12 @@ SHUNT_BASELINE_MODEL="${SHUNT_BASELINE_MODEL:-sonnet}"
 SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-300}"
 ITERATIONS="${ITERATIONS:-1}"
 LIVE_EVAL_KINDS="${LIVE_EVAL_KINDS:-direct shunt}"
+LIVE_EVAL_SCENARIOS="${LIVE_EVAL_SCENARIOS:-cors router pricing}"
+LIVE_EVAL_MUTATION="${LIVE_EVAL_MUTATION:-1}"
+# Not redefined here (mutation-check.sh has its own defaults) - only made
+# visible to it, since it runs as a separate process invocation below.
+[ -n "${MUTANTS_MAX:-}" ] && export MUTANTS_MAX
+[ -n "${MUTANT_TIMEOUT:-}" ] && export MUTANT_TIMEOUT
 
 case " $LIVE_EVAL_KINDS " in
   *" direct "*) command -v claude >/dev/null 2>&1 || { echo "live-eval-benchmark: 'claude' not found in PATH." >&2; exit 1; } ;;
@@ -97,14 +126,23 @@ case " $LIVE_EVAL_KINDS " in *" shunt "*) shunt_preflight ;; esac
 mkdir -p "$RESULTS_DIR" "$GOTEST_DIR/runs"
 : > "$RESULTS_JSONL"
 
-SCENARIOS=(cors router)
+SCENARIOS=(cors router pricing)
 total_cost_usd="0"
 any_failed=0
+
+# Globals compile_and_test fills in per call; initialized here (mirroring
+# compile_and_test's own first lines) so maybe_run_mutation_check can safely
+# read them under `set -u` even before compile_and_test has run once.
+BUILD_OK="false"
+TESTS_TOTAL="null"; TESTS_PASSED="null"; TESTS_FAILED="null"; TEST_DURATION_MS="null"
+# Global set by maybe_run_mutation_check for record_result to consume.
+mutation_json=""
 
 scenario_source_rel() {
   case "$1" in
     cors) echo "evals/fixtures/echo/cors.go" ;;
     router) echo "evals/fixtures/echo/router.go" ;;
+    pricing) echo "evals/fixtures/mutation/pricing.go" ;;
     *) echo "live-eval-benchmark: unknown scenario: $1" >&2; exit 1 ;;
   esac
 }
@@ -113,6 +151,7 @@ scenario_pkg() {
   case "$1" in
     cors) echo "middleware" ;;
     router) echo "echo" ;;
+    pricing) echo "pricing" ;;
     *) echo "live-eval-benchmark: unknown scenario: $1" >&2; exit 1 ;;
   esac
 }
@@ -121,7 +160,39 @@ scenario_import() {
   case "$1" in
     cors) echo "github.com/labstack/echo/v5/middleware" ;;
     router) echo "github.com/labstack/echo/v5" ;;
+    pricing) echo "" ;;
     *) echo "live-eval-benchmark: unknown scenario: $1" >&2; exit 1 ;;
+  esac
+}
+
+# scenario_mode <scenario>: "module" (generated as an external test package
+# against a real published module, evals/fixtures/echo/*) or "local" (fixture
+# copied as-is into the run dir, generated test in the SAME package, no
+# third-party import - see evals/fixtures/mutation/README.md).
+scenario_mode() {
+  case "$1" in
+    cors|router) echo "module" ;;
+    pricing) echo "local" ;;
+    *) echo "live-eval-benchmark: unknown scenario: $1" >&2; exit 1 ;;
+  esac
+}
+
+# scenario_reference <scenario>: the --reference file passed to
+# scripts/code-write for the shunt call.
+scenario_reference() {
+  case "$1" in
+    cors|router) echo "evals/fixtures/echo/cors_test.go" ;;
+    pricing) echo "evals/fixtures/mutation/pricing_reference_test.go" ;;
+    *) echo "live-eval-benchmark: unknown scenario: $1" >&2; exit 1 ;;
+  esac
+}
+
+# scenario_mutation <scenario>: "yes" if this scenario should drive
+# evals/mutation-check.sh after a green baseline, empty otherwise.
+scenario_mutation() {
+  case "$1" in
+    pricing) echo "yes" ;;
+    *) echo "" ;;
   esac
 }
 
@@ -135,6 +206,27 @@ Write a complete Go external test file for package $pkg, to be saved as
 "package ${pkg}_test" (an external test package), and it must import the
 real published module path "$import" (do not use a local or relative
 import, and do not redeclare any type from that package). Cover the
+exported API of the source file with table-driven and/or direct test
+functions using the standard "testing" package.
+Output ONLY raw Go source code. Do not wrap it in markdown code fences
+(no triple backticks), and do not add any explanation, commentary, or
+notes before or after the code.
+EOF
+}
+
+# scenario_instruction_local <pkg>
+# Instruction text for local-mode scenarios (see scenario_mode): the
+# generated test lives in the SAME package as the fixture, not an external
+# _test package, and must not import the fixture or a third-party module.
+scenario_instruction_local() {
+  local pkg="$1"
+  cat <<EOF
+Write a complete Go test file for package $pkg, to be saved as
+"${pkg}_test.go". The file's package declaration must be exactly
+"package ${pkg}" (the same package, not an external test package). The
+file under test, "${pkg}.go", is in the same directory and the same
+package - do not import it, and do not redeclare any of its exported
+identifiers. Only the Go standard library may be imported. Cover the
 exported API of the source file with table-driven and/or direct test
 functions using the standard "testing" package.
 Output ONLY raw Go source code. Do not wrap it in markdown code fences
@@ -185,18 +277,81 @@ compile_and_test() {
   TESTS_TOTAL=$((passed + failed))
 }
 
+# prepare_run_dir <scenario> <run-dir-name-under-evals/gotest/runs>
+# Removes any stale run dir first (so scripts/code-write's no-clobber target
+# check still sees a target that doesn't exist yet), then recreates it. For
+# local-mode scenarios, also copies the fixture source in under its package
+# name so it compiles alongside the generated test.
+prepare_run_dir() {
+  local scenario="$1" run_dir_name="$2"
+  local run_dir="$GOTEST_DIR/runs/$run_dir_name"
+  rm -rf "$run_dir"
+  mkdir -p "$run_dir"
+  if [ "$(scenario_mode "$scenario")" = "local" ]; then
+    cp "$REPO_ROOT/$(scenario_source_rel "$scenario")" "$run_dir/$(scenario_pkg "$scenario").go"
+  fi
+}
+
+# maybe_run_mutation_check <scenario> <run-dir-name> <outcome>
+# Sets global mutation_json (a compact JSON object, see evals/mutation-check.sh
+# header for the "ok"/"skipped" shape) to pass into record_result. Only
+# actually invokes evals/mutation-check.sh when this scenario opts into
+# mutation testing, it's enabled, and the baseline (this call's outcome plus
+# compile_and_test's globals, already set by the caller) is green - a
+# failing/vacuous baseline makes "kill count" meaningless.
+maybe_run_mutation_check() {
+  local scenario="$1" run_dir_name="$2" outcome="$3"
+
+  if [ "$(scenario_mutation "$scenario")" != "yes" ]; then
+    mutation_json=$(jq -n -c '{mutation_status: "n/a", mutants_total: null,
+      mutants_killed: null, mutants_survived: null, mutants_invalid: null,
+      mutants_survived_ids: null, mutation_duration_ms: null}')
+    return
+  fi
+
+  local baseline_green=1
+  [ "$LIVE_EVAL_MUTATION" != "0" ] || baseline_green=0
+  [ "$outcome" = "created" ] || baseline_green=0
+  [ "$BUILD_OK" = "true" ] || baseline_green=0
+  [ "$TESTS_TOTAL" != "null" ] && [ "$TESTS_TOTAL" -gt 0 ] || baseline_green=0
+  [ "$TESTS_FAILED" = "0" ] || baseline_green=0
+
+  if [ "$baseline_green" -ne 1 ]; then
+    mutation_json=$(jq -n -c '{mutation_status: "skipped", mutants_total: null,
+      mutants_killed: null, mutants_survived: null, mutants_invalid: null,
+      mutants_survived_ids: null, mutation_duration_ms: null}')
+    return
+  fi
+
+  local mc_stdout
+  mc_stdout=$(mktemp)
+  if "$EVALS_DIR/mutation-check.sh" "$GOTEST_DIR" "$run_dir_name" "$(scenario_pkg "$scenario").go" >"$mc_stdout"; then
+    mutation_json=$(cat "$mc_stdout")
+  else
+    mutation_json=$(jq -n -c '{mutation_status: "error", mutants_total: null,
+      mutants_killed: null, mutants_survived: null, mutants_invalid: null,
+      mutants_survived_ids: null, mutation_duration_ms: null}')
+  fi
+  rm -f "$mc_stdout"
+}
+
 # record_result <iter> <scenario> <kind> <outcome> <run-dir> <gen-duration-ms>
 #   <input-tok|null> <output-tok|null> <cache-read|null> <cache-write|null>
 #   <cost-usd|null> <delegate-input|null> <delegate-output|null>
+#   <mutation-json>
 # Every numeric arg must already be a valid JSON literal (a number or the
-# string "null"), never an empty string.
+# string "null"), never an empty string. <mutation-json> is a full compact
+# JSON object (see maybe_run_mutation_check) whose keys are merged into the
+# row as-is. Callers must run compile_and_test (when outcome is "created")
+# and maybe_run_mutation_check themselves before calling this, so BUILD_OK/
+# TESTS_TOTAL/etc reflect the same call this row describes.
 record_result() {
   local iter="$1" scenario="$2" kind="$3" outcome="$4" run_dir="$5" dur_ms="$6"
   local in_tok="$7" out_tok="$8" cread="$9" cwrite="${10}" cost="${11}" din="${12}" dout="${13}"
+  local mutation_json="${14}"
 
   local build_ok="null" tests_total="null" tests_passed="null" tests_failed="null" test_dur="null"
   if [ "$outcome" = "created" ]; then
-    compile_and_test "$run_dir"
     build_ok="$BUILD_OK"
     tests_total="$TESTS_TOTAL"
     tests_passed="$TESTS_PASSED"
@@ -214,13 +369,14 @@ record_result() {
     --argjson build_ok "$build_ok" --argjson tests_total "$tests_total" \
     --argjson tests_passed "$tests_passed" --argjson tests_failed "$tests_failed" \
     --argjson test_duration_ms "$test_dur" \
+    --argjson mutation "$mutation_json" \
     '{iteration: $iter, scenario: $scenario, kind: $kind, outcome: $outcome,
       duration_ms: $duration_ms, input_tokens: $input_tokens, output_tokens: $output_tokens,
       cache_read_tokens: $cache_read_tokens, cache_write_tokens: $cache_write_tokens,
       cost_usd: $cost_usd, delegate_input_tokens: $delegate_input_tokens,
       delegate_output_tokens: $delegate_output_tokens, build_ok: $build_ok,
       tests_total: $tests_total, tests_passed: $tests_passed, tests_failed: $tests_failed,
-      test_duration_ms: $test_duration_ms}' >>"$RESULTS_JSONL"
+      test_duration_ms: $test_duration_ms} + $mutation' >>"$RESULTS_JSONL"
 }
 
 run_direct_call() {
@@ -230,7 +386,11 @@ run_direct_call() {
   source_rel=$(scenario_source_rel "$scenario") || exit 1
   pkg=$(scenario_pkg "$scenario") || exit 1
   import=$(scenario_import "$scenario") || exit 1
-  instruction=$(scenario_instruction "$scenario" "$pkg" "$import")
+  if [ "$(scenario_mode "$scenario")" = "local" ]; then
+    instruction=$(scenario_instruction_local "$pkg")
+  else
+    instruction=$(scenario_instruction "$scenario" "$pkg" "$import")
+  fi
   prompt="=== $source_rel ===
 $(cat "$REPO_ROOT/$source_rel")
 
@@ -253,7 +413,8 @@ $instruction"
     echo "  direct FAILED (exit $status)" >&2
     any_failed=1
     rm -f "$out_json"
-    record_result "$iter" "$scenario" "direct" "failed" "$run_dir" 0 0 0 0 0 0 null null
+    maybe_run_mutation_check "$scenario" "$run_dir" "failed"
+    record_result "$iter" "$scenario" "direct" "failed" "$run_dir" 0 0 0 0 0 0 null null "$mutation_json"
     return
   fi
 
@@ -270,18 +431,21 @@ $instruction"
   if [ -z "$result" ]; then
     echo "  direct FAILED (empty result)" >&2
     any_failed=1
+    maybe_run_mutation_check "$scenario" "$run_dir" "failed"
     record_result "$iter" "$scenario" "direct" "failed" "$run_dir" "$dur_ms" \
-      "$in_tok" "$out_tok" "$cread" "$cwrite" "$cost" null null
+      "$in_tok" "$out_tok" "$cread" "$cwrite" "$cost" null null "$mutation_json"
     return
   fi
 
-  mkdir -p "$target_dir"
+  prepare_run_dir "$scenario" "$run_dir"
   printf '%s\n' "$result" >"$target_file"
   strip_code_fence "$target_file"
   outcome="created"
 
+  compile_and_test "$run_dir"
+  maybe_run_mutation_check "$scenario" "$run_dir" "$outcome"
   record_result "$iter" "$scenario" "direct" "$outcome" "$run_dir" "$dur_ms" \
-    "$in_tok" "$out_tok" "$cread" "$cwrite" "$cost" null null
+    "$in_tok" "$out_tok" "$cread" "$cwrite" "$cost" null null "$mutation_json"
 }
 
 run_shunt_call() {
@@ -291,11 +455,15 @@ run_shunt_call() {
   source_rel=$(scenario_source_rel "$scenario") || exit 1
   pkg=$(scenario_pkg "$scenario") || exit 1
   import=$(scenario_import "$scenario") || exit 1
-  instruction=$(scenario_instruction "$scenario" "$pkg" "$import")
+  if [ "$(scenario_mode "$scenario")" = "local" ]; then
+    instruction=$(scenario_instruction_local "$pkg")
+  else
+    instruction=$(scenario_instruction "$scenario" "$pkg" "$import")
+  fi
 
   run_dir="$scenario-shunt-$iter"
   target_file="$GOTEST_DIR/runs/$run_dir/${scenario}_test.go"
-  rm -rf "$GOTEST_DIR/runs/$run_dir"
+  prepare_run_dir "$scenario" "$run_dir"
 
   echo "[iter $iter/$ITERATIONS][$scenario] shunt (code-write)..." >&2
   local shunt_stderr shunt_stdout shunt_start_ms shunt_end_ms shunt_ms status
@@ -304,7 +472,7 @@ run_shunt_call() {
   shunt_start_ms=$(date +%s%3N)
   status=0
   "$REPO_ROOT/scripts/code-write" --kind test --spec "$instruction" \
-    --reference "$REPO_ROOT/evals/fixtures/echo/cors_test.go" \
+    --reference "$REPO_ROOT/$(scenario_reference "$scenario")" \
     --source "$REPO_ROOT/$source_rel" \
     --target "$target_file" >"$shunt_stdout" 2>"$shunt_stderr" || status=$?
   shunt_end_ms=$(date +%s%3N)
@@ -324,12 +492,18 @@ run_shunt_call() {
   dout=$(echo "$usage_line" | grep -o 'output=[0-9]*' | cut -d= -f2)
   rm -f "$shunt_stderr" "$shunt_stdout"
 
+  if [ "$outcome" = "created" ]; then
+    compile_and_test "$run_dir"
+  fi
+  maybe_run_mutation_check "$scenario" "$run_dir" "$outcome"
+
   record_result "$iter" "$scenario" "shunt" "$outcome" "$run_dir" "$shunt_ms" \
-    null null null null null "${din:-null}" "${dout:-null}"
+    null null null null null "${din:-null}" "${dout:-null}" "$mutation_json"
 }
 
 for ((it = 1; it <= ITERATIONS; it++)); do
   for scenario in "${SCENARIOS[@]}"; do
+    case " $LIVE_EVAL_SCENARIOS " in *" $scenario "*) : ;; *) continue ;; esac
     case " $LIVE_EVAL_KINDS " in *" direct "*) run_direct_call "$it" "$scenario" ;; esac
     case " $LIVE_EVAL_KINDS " in *" shunt "*) run_shunt_call "$it" "$scenario" ;; esac
   done
