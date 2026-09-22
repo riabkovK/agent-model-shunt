@@ -14,35 +14,45 @@ CLI, never by hand-editing either JSON file directly.
 
 ## No-argument dashboard
 
-When invoked with no specific request, show the model registry first
-(`scripts/shunt-models status`, or the legacy-mode message it prints if no
-registry exists yet), then ask what the user wants to do — add/remove/
-reorder/activate a model, or something else.
+When invoked with no specific request, show the full status in one pass,
+as two separate, clearly labeled blocks, then ask what the user wants to
+do — add/remove/reorder/activate/disable a model, tune the breaker, or
+something else.
 
-**Do not show circuit breaker details by default.** Most users don't know
-what a circuit breaker is and don't need to. After the model list, ask a
-single plain-language opt-in question, e.g.:
+1. **Model registry** (`scripts/shunt-models status`, or the legacy-mode
+   message it prints if no registry exists yet). For every model, not just
+   the active one, show: enabled/disabled, whether it's the active model,
+   its roles, and its thinking-mode state (on/off, and whether off is an
+   explicit stored setting — `thinking_off=set` — or just the unset
+   default — `thinking_off=none`). Don't omit a model just because its
+   thinking mode is off or it isn't active; the point of the dashboard is
+   that every model's state is visible at a glance, e.g. as one row per
+   model in a small table.
+2. **Circuit breaker**: settings and per-model state
+   (`scripts/shunt-breaker-config show`), shown right after the registry,
+   not gated behind an opt-in question. Include the threshold and cooldown
+   (each annotated with its default, see below) and every model's failure
+   counters for both `bulk-read` and `code-write`. If `show`'s output says
+   "not applicable" (no registry yet, legacy single-agent mode), say so
+   plainly instead of printing numbers that wouldn't mean anything yet.
 
-> Хотите настроить, что происходит, если одна из моделей перестаёт
-> отвечать (сколько раз пробовать и когда переключаться на другую)?
+## Language
 
-or in English:
-
-> Want to configure what happens when one of your models stops responding
-> (how many retries before switching, and when to try it again)?
-
-Only run `scripts/shunt-breaker-config show` and surface threshold/cooldown
-details after the user says yes to that question. If they say no, stop
-there — don't mention "circuit breaker" terminology at all unless they
-bring it up first.
+Present the whole dashboard, and every other reply from this skill, in the
+language the user is writing in, not the raw CLI's language. The
+underlying scripts always print English (`enabled`, `disabled`,
+`active`, `failures=`, `open=`), so translate/label values instead of
+pasting raw lines verbatim, e.g. "включена"/"отключена", "активна",
+"выключен", "не на паузе". Match the user's language for the whole
+reply, including any explanations, the same way as the rest of the
+conversation — this skill has no separate language setting of its own.
 
 ## Terminology
 
 Internally (code, tests, env vars) this is called a "circuit breaker" —
-that term is fine in explanations once the user has opted in, but don't
-lead with it. Prefer describing the *behavior* first: "how many failed
-attempts before shunt stops using a model for a while, and how long before
-it tries that model again."
+that term is fine once you're explaining what it does, but still lead with
+the *behavior*, not the name: "how many failed attempts before shunt stops
+using a model for a while, and how long before it tries that model again."
 
 ## Editing the model registry
 
@@ -223,7 +233,7 @@ scripts/shunt-models thinking <provider/model> off '{"reasoningEffort":"none"}'
 - Only set this when the user asks for it or when a model is measurably slow
   because it reasons. It is opt-in per model, never a global default.
 
-## Editing retry/failover behavior (circuit breaker), once opted in
+## Editing retry/failover behavior (circuit breaker)
 
 Drive `scripts/shunt-breaker-config`:
 
@@ -236,9 +246,9 @@ scripts/shunt-breaker-config reset                  # deletes the config file, r
 ```
 
 - `show`'s output always includes numeric `threshold=`/`cooldown_seconds=`
-  lines (useful for debugging) — when presenting this to the user after
-  their opt-in, it's fine to state the actual numbers, since they've
-  already asked to see them.
+  lines (useful for debugging) — these are part of the default dashboard
+  now, so always state the actual numbers, not just whether they're
+  customized.
 - If `show`'s output contains "not applicable" (no models registry
   configured yet — legacy single-agent mode), tell the user plainly that
   this doesn't apply yet because no delegate models are configured, and
