@@ -286,6 +286,7 @@ run_shunt_call() {
 
   run_dir="$scenario-shunt-$iter"
   target_file="$GOTEST_DIR/runs/$run_dir/${scenario}_test.go"
+  rm -rf "$GOTEST_DIR/runs/$run_dir"
 
   echo "[iter $iter/$ITERATIONS][$scenario] shunt (code-write)..." >&2
   local shunt_stderr shunt_stdout shunt_start_ms shunt_end_ms shunt_ms status

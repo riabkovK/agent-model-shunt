@@ -2,19 +2,40 @@
   "scenarios": {
     "cors": {
       "direct": {
-        "n": 0,
+        "n": 1,
         "outcomes": {
-          "created": 0,
+          "created": 1,
           "declined": 0,
           "failed": 0
         },
-        "duration_ms": null,
-        "output_tokens": null,
-        "input_tokens": null,
-        "build_ok_rate": null,
+        "duration_ms": {
+          "mean": 163841,
+          "min": 163841,
+          "max": 163841,
+          "n": 1
+        },
+        "output_tokens": {
+          "mean": 18175,
+          "min": 18175,
+          "max": 18175,
+          "n": 1
+        },
+        "input_tokens": {
+          "mean": 18,
+          "min": 18,
+          "max": 18,
+          "n": 1
+        },
+        "build_ok_rate": 0.0,
         "tests_pass_rate": null,
         "tests_total": 0,
-        "tests_passed": 0
+        "tests_passed": 0,
+        "cost_usd": {
+          "mean": 0.5424744,
+          "min": 0.5424744,
+          "max": 0.5424744,
+          "n": 1
+        }
       },
       "shunt": {
         "n": 1,
@@ -24,19 +45,88 @@
           "failed": 0
         },
         "duration_ms": {
-          "mean": 497269,
-          "min": 497269,
-          "max": 497269,
+          "mean": 159335,
+          "min": 159335,
+          "max": 159335,
           "n": 1
         },
         "output_tokens": null,
         "input_tokens": null,
-        "build_ok_rate": 1.0,
-        "tests_pass_rate": 0.8947368421052632,
-        "tests_total": 38,
-        "tests_passed": 34
+        "build_ok_rate": 0.0,
+        "tests_pass_rate": null,
+        "tests_total": 0,
+        "tests_passed": 0
       },
-      "shunt_vs_direct": {}
+      "shunt_vs_direct": {
+        "output_tokens_saved": 18175.0,
+        "output_tokens_saved_pct": 100.0,
+        "cost_usd_saved": 0.5424744,
+        "cost_usd_saved_pct": 100.0
+      }
+    },
+    "router": {
+      "direct": {
+        "n": 1,
+        "outcomes": {
+          "created": 1,
+          "declined": 0,
+          "failed": 0
+        },
+        "duration_ms": {
+          "mean": 140969,
+          "min": 140969,
+          "max": 140969,
+          "n": 1
+        },
+        "output_tokens": {
+          "mean": 17705,
+          "min": 17705,
+          "max": 17705,
+          "n": 1
+        },
+        "input_tokens": {
+          "mean": 28,
+          "min": 28,
+          "max": 28,
+          "n": 1
+        },
+        "build_ok_rate": 1.0,
+        "tests_pass_rate": 1.0,
+        "tests_total": 18,
+        "tests_passed": 18,
+        "cost_usd": {
+          "mean": 0.6753084,
+          "min": 0.6753084,
+          "max": 0.6753084,
+          "n": 1
+        }
+      },
+      "shunt": {
+        "n": 1,
+        "outcomes": {
+          "created": 0,
+          "declined": 1,
+          "failed": 0
+        },
+        "duration_ms": {
+          "mean": 397209,
+          "min": 397209,
+          "max": 397209,
+          "n": 1
+        },
+        "output_tokens": null,
+        "input_tokens": null,
+        "build_ok_rate": null,
+        "tests_pass_rate": null,
+        "tests_total": 0,
+        "tests_passed": 0
+      },
+      "shunt_vs_direct": {
+        "output_tokens_saved": 17705.0,
+        "output_tokens_saved_pct": 100.0,
+        "cost_usd_saved": 0.6753084,
+        "cost_usd_saved_pct": 100.0
+      }
     }
   }
 }
