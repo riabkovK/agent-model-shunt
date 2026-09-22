@@ -15,13 +15,21 @@
 #              into the same Claude session, so only the first scenario
 #              pays this project's system-prompt/CLAUDE.md priming cost.
 #              Represents a real interactive session reading several files.
-#   shunt      The same question delegated to scripts/bulk-read (OpenCode),
-#              independent of the other two variants.
+#   shunt      The same question delegated to scripts/bulk-read directly
+#              (no Claude session involved). context_tokens here is an
+#              ESTIMATE (chars/4 of the response), not a measured usage
+#              number, since no `claude -p` call happens in this variant.
+#   shunt-live The honest version of `shunt`: a real `claude -p` session
+#              that is told to delegate to scripts/bulk-read (via the Bash
+#              tool, with all other tools disabled) and answer from what it
+#              returns. context_tokens/cost here are measured the same way
+#              as no-resume/resume (from `.usage` in the JSON response), so
+#              this is the number that's actually comparable to them.
 #
-# Baseline (no-resume/resume) calls hit the real Claude API and spend real
-# money (see `cost_usd` per row and the total printed at the end). Run this
-# deliberately, not in a loop or a retry cycle - each `claude -p` call
-# counts against your account's usage.
+# Baseline (no-resume/resume/shunt-live) calls hit the real Claude API and
+# spend real money (see `cost_usd` per row and the total printed at the
+# end). Run this deliberately, not in a loop or a retry cycle - each
+# `claude -p` call counts against your account's usage.
 #
 # Requires a reachable OpenCode provider (for the shunt side) and a logged
 # in `claude` CLI (for the baseline side). NOT part of the no-network
@@ -49,6 +57,7 @@ SUMMARY_JSON="$RESULTS_DIR/baseline-benchmark-summary.json"
 
 SHUNT_BASELINE_MODEL="${SHUNT_BASELINE_MODEL:-sonnet}"
 SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-120}"
+SHUNT_LIVE_TIMEOUT="${SHUNT_LIVE_TIMEOUT:-600}"
 ITERATIONS="${ITERATIONS:-3}"
 
 command -v claude >/dev/null 2>&1 || { echo "baseline-benchmark: 'claude' not found in PATH." >&2; exit 1; }
@@ -137,6 +146,65 @@ run_baseline_call() {
   return 0
 }
 
+run_shunt_live_call() {
+  local iter="$1" name="$2" question="$3"
+  shift 3
+  local paths=("$@")
+
+  local rel_paths=()
+  local p
+  for p in "${paths[@]}"; do
+    rel_paths+=("${p#"$REPO_ROOT"/}")
+  done
+
+  local prompt
+  prompt="$question
+
+Files (relative to the repo root): ${rel_paths[*]}
+
+Answer by running: scripts/bulk-read --question \"<your question to it>\" --paths ${rel_paths[*]}
+Use only that command via Bash to read these files. Do not read them with any other tool or command.
+This command can take several minutes on large files. When you call it, set the Bash tool's timeout parameter to at least 600000 (10 minutes) so the call runs to completion instead of being moved to the background. Wait for it to finish and base your final answer only on what it returns."
+
+  echo "[iter $iter/$ITERATIONS][$name] shunt-live (claude -p, real delegate call)..." >&2
+  local live_json status
+  live_json=$(mktemp)
+  status=0
+  timeout "$SHUNT_LIVE_TIMEOUT" claude -p --output-format json --model "$SHUNT_BASELINE_MODEL" \
+    --tools "Bash" --allowedTools "Bash(scripts/bulk-read:*)" --permission-mode acceptEdits \
+    "$prompt" >"$live_json" 2>/dev/null || status=$?
+
+  if [ "$status" -ne 0 ] || [ ! -s "$live_json" ]; then
+    echo "  shunt-live FAILED (exit $status)" >&2
+    jq -n -c --arg iter "$iter" --arg scenario "$name" \
+      '{iteration: ($iter|tonumber), scenario: $scenario, kind: "shunt-live", failed: true}' >>"$RESULTS_JSONL"
+    rm -f "$live_json"
+    any_failed=1
+    return 1
+  fi
+
+  local in_tok out_tok cread cwrite cost ctx_tokens dur_ms
+  dur_ms=$(jq -r '.duration_ms // 0' "$live_json")
+  in_tok=$(jq -r '.usage.input_tokens // 0' "$live_json")
+  out_tok=$(jq -r '.usage.output_tokens // 0' "$live_json")
+  cread=$(jq -r '.usage.cache_read_input_tokens // 0' "$live_json")
+  cwrite=$(jq -r '.usage.cache_creation_input_tokens // 0' "$live_json")
+  cost=$(jq -r '.total_cost_usd // 0' "$live_json")
+  ctx_tokens=$((in_tok + cread + cwrite))
+  total_cost_usd=$(awk -v a="$total_cost_usd" -v b="$cost" 'BEGIN { printf "%.6f", a + b }')
+  rm -f "$live_json"
+
+  jq -n -c --arg iter "$iter" --arg scenario "$name" \
+    --argjson duration_ms "$dur_ms" --argjson context_tokens "$ctx_tokens" \
+    --argjson input_tokens "$in_tok" --argjson output_tokens "$out_tok" \
+    --argjson cache_read_tokens "$cread" --argjson cache_write_tokens "$cwrite" \
+    --argjson cost_usd "$cost" \
+    '{iteration: ($iter|tonumber), scenario: $scenario, kind: "shunt-live", duration_ms: $duration_ms,
+      context_tokens: $context_tokens, input_tokens: $input_tokens, output_tokens: $output_tokens,
+      cache_read_tokens: $cache_read_tokens, cache_write_tokens: $cache_write_tokens, cost_usd: $cost_usd}' \
+    >>"$RESULTS_JSONL"
+}
+
 run_shunt_call() {
   local iter="$1" name="$2" question="$3"
   shift 3
@@ -190,6 +258,8 @@ for ((it = 1; it <= ITERATIONS; it++)); do
     fi
 
     run_shunt_call "$it" "$name" "$question" "${paths[@]}"
+
+    run_shunt_live_call "$it" "$name" "$question" "${paths[@]}"
   done
 done
 
