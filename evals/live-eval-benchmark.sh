@@ -475,7 +475,7 @@ $instruction"
 # from skills/code-writer/SKILL.md itself (this harness has no Claude in the
 # loop to do it): delete the failed target, re-call code-write with the raw
 # go vet/go test failure output appended to --spec, up to
-# SHUNT_SELF_FIX_RETRIES times (scripts/lib/selffix.sh, same config as
+# SHUNT_CODE_WRITE_SELF_FIX_RETRIES times (scripts/lib/selffix.sh, same config as
 # scripts/shunt-codewrite-config). Records self_fix_attempted/
 # self_fix_succeeded/self_fix_retries_used alongside the usual fields so a
 # before/after cost comparison is possible once this is run live.
@@ -503,7 +503,7 @@ run_shunt_call() {
     if [ "$attempt" -eq 0 ]; then
       echo "[iter $iter/$ITERATIONS][$scenario] shunt (code-write)..." >&2
     else
-      echo "[iter $iter/$ITERATIONS][$scenario] shunt self-fix retry $attempt/$SHUNT_SELF_FIX_RETRIES..." >&2
+      echo "[iter $iter/$ITERATIONS][$scenario] shunt self-fix retry $attempt/$SHUNT_CODE_WRITE_SELF_FIX_RETRIES..." >&2
     fi
 
     local shunt_stderr shunt_stdout shunt_start_ms shunt_end_ms status
@@ -539,7 +539,7 @@ run_shunt_call() {
       break
     fi
 
-    [ "$attempt" -lt "$SHUNT_SELF_FIX_RETRIES" ] || break
+    [ "$attempt" -lt "$SHUNT_CODE_WRITE_SELF_FIX_RETRIES" ] || break
 
     attempt=$((attempt + 1))
     self_fix_attempted="true"

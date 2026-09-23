@@ -1,11 +1,12 @@
 #!/bin/bash
 # Write side of the shunt-owned self-fix loop config
-# (~/.config/agent-model-shunt/self-fix-config.json by default). Lets a user
-# tune how many times code-write's self-fix loop (orchestrated in
-# skills/code-writer/SKILL.md, not in codewrite.sh itself) retries a failing
-# generated file before falling back to Claude fixing it by hand, without
-# hand-editing JSON or exporting env vars. Driven by the /model-config
-# skill; never hand-edit self-fix-config.json directly.
+# (~/.config/agent-model-shunt/code-write-self-fix-config.json by default).
+# Lets a user tune how many times code-write's self-fix loop (orchestrated
+# in skills/code-writer/SKILL.md, not in codewrite.sh itself) retries a
+# failing generated file before falling back to Claude fixing it by hand,
+# without hand-editing JSON or exporting env vars. Driven by the
+# /model-config skill; never hand-edit code-write-self-fix-config.json
+# directly.
 #
 # Usage:
 #   shunt-codewrite-config show
@@ -24,8 +25,8 @@ source "$SCRIPT_DIR/lib/selffix.sh"
 # Prints the current config file JSON, or an empty object if it doesn't
 # exist yet.
 shunt_self_fix_config_read_or_empty() {
-  if [ -f "$SHUNT_SELF_FIX_CONFIG_FILE" ]; then
-    cat "$SHUNT_SELF_FIX_CONFIG_FILE"
+  if [ -f "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE" ]; then
+    cat "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE"
   else
     echo '{}'
   fi
@@ -35,18 +36,18 @@ shunt_self_fix_config_read_or_empty() {
 # Atomically replaces the config file with <json>, validating it first.
 shunt_self_fix_config_write() {
   local json="$1"
-  mkdir -p "$(dirname "$SHUNT_SELF_FIX_CONFIG_FILE")"
+  mkdir -p "$(dirname "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE")"
 
   local tmp_file
-  tmp_file=$(mktemp "$(dirname "$SHUNT_SELF_FIX_CONFIG_FILE")/.self-fix-config.json.XXXXXX")
+  tmp_file=$(mktemp "$(dirname "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE")/.code-write-self-fix-config.json.XXXXXX")
   echo "$json" | jq -e . >"$tmp_file" 2>/dev/null \
     || { rm -f "$tmp_file"; shunt_report_error "refusing to write an invalid self-fix config."; }
 
-  mv "$tmp_file" "$SHUNT_SELF_FIX_CONFIG_FILE"
+  mv "$tmp_file" "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE"
 }
 
 cmd_show() {
-  echo "self_fix_retries=$SHUNT_SELF_FIX_RETRIES (default: 1)"
+  echo "self_fix_retries=$SHUNT_CODE_WRITE_SELF_FIX_RETRIES (default: 1)"
 }
 
 cmd_set_self_fix_retries() {
@@ -70,7 +71,7 @@ cmd_set() {
 }
 
 cmd_reset() {
-  rm -f "$SHUNT_SELF_FIX_CONFIG_FILE"
+  rm -f "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE"
   echo "shunt: self-fix config reset to hardcoded defaults."
 }
 

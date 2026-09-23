@@ -218,8 +218,8 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SHUNT_SELF_FIX_CONFIG_FILE` | `~/.config/agent-model-shunt/self-fix-config.json` | Self-fix retry-count override, written by `scripts/shunt-codewrite-config`. |
-| `SHUNT_SELF_FIX_RETRIES` | `1` | Env override for how many times the self-fix loop re-calls `code-write` on a build/test failure; takes precedence over the config file. `0` disables automatic retry. |
+| `SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE` | `~/.config/agent-model-shunt/code-write-self-fix-config.json` | Self-fix retry-count override, written by `scripts/shunt-codewrite-config`. |
+| `SHUNT_CODE_WRITE_SELF_FIX_RETRIES` | `1` | Env override for how many times the self-fix loop re-calls `code-write` on a build/test failure; takes precedence over the config file. `0` disables automatic retry. |
 
 ## Configuration
 
