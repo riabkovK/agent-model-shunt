@@ -1,16 +1,18 @@
 ---
 name: model-config
-description: Dashboard and editor for the shunt-owned delegate model registry (which models are configured, which is active, which jobs each may do, per-model retry/failover behavior) and its retry settings. Use when the user wants to add/remove/reorder/disable/enable delegate models, switch the active one, limit a model to reading or writing (roles), turn a model's thinking mode on/off, or tune how shunt reacts to a model repeatedly failing.
+description: Dashboard and editor for the shunt-owned delegate model registry (which models are configured, which is active, which jobs each may do, per-model retry/failover behavior), its circuit-breaker retry settings, and the code-write self-fix loop's retry count. Use when the user wants to add/remove/reorder/disable/enable delegate models, switch the active one, limit a model to reading or writing (roles), turn a model's thinking mode on/off, tune how shunt reacts to a model repeatedly failing, or tune how many times code-write retries a failed generated file before falling back to Claude.
 ---
 
 # Model Config
 
-Single entry point for both halves of shunt's delegate-model configuration:
-the model registry (`scripts/shunt-models`, `~/.config/agent-model-shunt/models.json`)
-and the retry/failover behavior around a failing model (`scripts/shunt-breaker-config`,
+Single entry point for all of shunt's delegate-model configuration:
+the model registry (`scripts/shunt-models`, `~/.config/agent-model-shunt/models.json`),
+the retry/failover behavior around a failing model (`scripts/shunt-breaker-config`,
 `~/.config/agent-model-shunt/breaker-config.json`, internally called the
-"circuit breaker" — see Terminology below). Always drive both through their
-CLI, never by hand-editing either JSON file directly.
+"circuit breaker" — see Terminology below), and the code-write self-fix
+loop's retry count (`scripts/shunt-codewrite-config`,
+`~/.config/agent-model-shunt/self-fix-config.json`). Always drive all three
+through their CLI, never by hand-editing any of the JSON files directly.
 
 ## No-argument dashboard
 
@@ -35,6 +37,16 @@ something else.
    counters for both `bulk-read` and `code-write`. If `show`'s output says
    "not applicable" (no registry yet, legacy single-agent mode), say so
    plainly instead of printing numbers that wouldn't mean anything yet.
+3. **Code-write self-fix loop**: the retry count
+   (`scripts/shunt-codewrite-config show`), shown right after the circuit
+   breaker block, also not gated behind an opt-in question — same
+   "annotated with its default" treatment as the breaker's threshold and
+   cooldown, e.g. "Повторные попытки self-fix: 1 (по умолчанию 1)" /
+   "Self-fix retries: 1 (default: 1)". This setting is global, like the
+   breaker's, not per-model: show it once regardless of how many models
+   have the `code-write` role. If no model in the registry has that role
+   yet, still show the value (it takes effect the moment a model gains the
+   role) rather than omitting the block.
 
 ## Language
 
@@ -120,6 +132,27 @@ the roles to keep:
 - One selected: run `add <provider/model> <that-role>`.
 - Nothing selected: a model needs at least one role, so ask again instead of
   guessing.
+
+### Adding a model with the `code-write` role: offer the self-fix loop settings
+
+Whenever the roles just given to `add` (or a later `roles` call) include
+`code-write`, follow up with a plain yes/no question: "Хотите настроить
+параметры self-fix-цикла (сколько раз code-write пытается сам исправить
+неудачную сборку/тест, прежде чем передать это вам)?" / "Want to configure
+the self-fix loop's settings (how many times code-write retries a failed
+build/test itself before handing it back to you)?" Ask this once per `add`
+or `roles` call that grants the role, not on every dashboard view — the
+no-argument dashboard already shows the current value passively (see above).
+
+- No: do nothing further. The model uses whatever `self_fix_retries` value
+  is already configured (global, not per-model — see below).
+- Yes: show the current value from `scripts/shunt-codewrite-config show`,
+  then offer the retry count as a choice (e.g. `AskUserQuestion` with a few
+  common values like 0/1/2/3 plus free text), and apply it with
+  `scripts/shunt-codewrite-config set self-fix-retries <n>`. Make clear
+  before asking that this is a single global setting, not specific to the
+  model just added: changing it here changes it for every model with the
+  `code-write` role.
 
 Only ask when the user did not already name the roles in the request. If they
 did ("add X for reading only"), pass those roles and skip the question.
@@ -265,11 +298,40 @@ scripts/shunt-breaker-config reset                  # deletes the config file, r
   extreme-value preset on the same two-field schema, not a new state in
   the JSON or in `scripts/lib/breaker.sh`'s branching logic.
 
+## Editing the code-write self-fix loop's retry count
+
+Drive `scripts/shunt-codewrite-config`:
+
+```bash
+scripts/shunt-codewrite-config show                              # effective value
+scripts/shunt-codewrite-config set self-fix-retries <N>           # non-negative integer; 0 disables the loop
+scripts/shunt-codewrite-config reset                              # deletes the config file, restores the hardcoded default (1)
+```
+
+- This is a global setting, not per-model or per-role: it controls how many
+  times `skills/code-writer/SKILL.md`'s orchestration re-calls `code-write`
+  on a mechanical build/test failure, for any model with the `code-write`
+  role, before falling back to Claude fixing the file by hand.
+- Present the value annotated with its default, same convention as the
+  breaker: "Повторные попытки self-fix: 2 (по умолчанию 1)" / "Self-fix
+  retries: 2 (default: 1)".
+- `0` is a valid, deliberate value: it means the first generation is never
+  retried automatically, so any build/test failure goes straight to Claude.
+  It is not an error and needs no separate `disable` subcommand.
+- Validation (non-integer, negative) happens inside `shunt-codewrite-config`
+  itself — surface its error message rather than pre-validating in the
+  skill.
+- This setting never touches the circuit breaker's threshold/cooldown or
+  its per-model failure counters; the two are unrelated (see Terminology).
+
 ## Precedence, for context if the user asks how a value took effect
 
-Hardcoded default (3 failures / 300s) → `breaker-config.json` (if present)
-→ `SHUNT_BREAKER_THRESHOLD`/`SHUNT_BREAKER_COOLDOWN_SECONDS` env vars,
-which remain the top override for a single session or test run.
+Circuit breaker: hardcoded default (3 failures / 300s) → `breaker-config.json`
+(if present) → `SHUNT_BREAKER_THRESHOLD`/`SHUNT_BREAKER_COOLDOWN_SECONDS` env
+vars, which remain the top override for a single session or test run.
+
+Self-fix retry count: hardcoded default (1) → `self-fix-config.json` (if
+present) → `SHUNT_SELF_FIX_RETRIES` env var, same override relationship.
 
 ## When NOT to use this skill
 

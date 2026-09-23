@@ -1,0 +1,86 @@
+#!/bin/bash
+# Write side of the shunt-owned self-fix loop config
+# (~/.config/agent-model-shunt/self-fix-config.json by default). Lets a user
+# tune how many times code-write's self-fix loop (orchestrated in
+# skills/code-writer/SKILL.md, not in codewrite.sh itself) retries a failing
+# generated file before falling back to Claude fixing it by hand, without
+# hand-editing JSON or exporting env vars. Driven by the /model-config
+# skill; never hand-edit self-fix-config.json directly.
+#
+# Usage:
+#   shunt-codewrite-config show
+#   shunt-codewrite-config set self-fix-retries <non-negative integer>
+#   shunt-codewrite-config reset
+
+set -euo pipefail
+
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=lib/opencode.sh
+source "$SCRIPT_DIR/lib/opencode.sh"
+# shellcheck source=lib/selffix.sh
+source "$SCRIPT_DIR/lib/selffix.sh"
+
+# shunt_self_fix_config_read_or_empty
+# Prints the current config file JSON, or an empty object if it doesn't
+# exist yet.
+shunt_self_fix_config_read_or_empty() {
+  if [ -f "$SHUNT_SELF_FIX_CONFIG_FILE" ]; then
+    cat "$SHUNT_SELF_FIX_CONFIG_FILE"
+  else
+    echo '{}'
+  fi
+}
+
+# shunt_self_fix_config_write <json>
+# Atomically replaces the config file with <json>, validating it first.
+shunt_self_fix_config_write() {
+  local json="$1"
+  mkdir -p "$(dirname "$SHUNT_SELF_FIX_CONFIG_FILE")"
+
+  local tmp_file
+  tmp_file=$(mktemp "$(dirname "$SHUNT_SELF_FIX_CONFIG_FILE")/.self-fix-config.json.XXXXXX")
+  echo "$json" | jq -e . >"$tmp_file" 2>/dev/null \
+    || { rm -f "$tmp_file"; shunt_report_error "refusing to write an invalid self-fix config."; }
+
+  mv "$tmp_file" "$SHUNT_SELF_FIX_CONFIG_FILE"
+}
+
+cmd_show() {
+  echo "self_fix_retries=$SHUNT_SELF_FIX_RETRIES (default: 1)"
+}
+
+cmd_set_self_fix_retries() {
+  local value="${1:-}"
+  case "$value" in
+    ''|*[!0-9]*) shunt_report_error "self-fix-retries must be a non-negative integer." ;;
+  esac
+
+  local updated
+  updated=$(shunt_self_fix_config_read_or_empty | jq --argjson r "$value" '.self_fix_retries = $r')
+  shunt_self_fix_config_write "$updated"
+  echo "shunt: self-fix retry count set to $value."
+}
+
+cmd_set() {
+  local field="${1:-}" value="${2:-}"
+  case "$field" in
+    self-fix-retries) cmd_set_self_fix_retries "$value" ;;
+    *) shunt_report_error "usage: shunt-codewrite-config set self-fix-retries <value>" ;;
+  esac
+}
+
+cmd_reset() {
+  rm -f "$SHUNT_SELF_FIX_CONFIG_FILE"
+  echo "shunt: self-fix config reset to hardcoded defaults."
+}
+
+subcommand="${1:-}"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-codewrite-config <show|set|reset> [args...]"
+shift
+
+case "$subcommand" in
+  show) cmd_show "$@" ;;
+  set) cmd_set "$@" ;;
+  reset) cmd_reset "$@" ;;
+  *) shunt_report_error "unknown subcommand: $subcommand" ;;
+esac

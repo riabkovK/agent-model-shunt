@@ -121,6 +121,8 @@ command -v python3 >/dev/null 2>&1 || { echo "live-eval-benchmark: 'python3' not
 
 # shellcheck source=../scripts/lib/opencode.sh
 source "$REPO_ROOT/scripts/lib/opencode.sh"
+# shellcheck source=../scripts/lib/selffix.sh
+source "$REPO_ROOT/scripts/lib/selffix.sh"
 case " $LIVE_EVAL_KINDS " in *" shunt "*) shunt_preflight ;; esac
 
 mkdir -p "$RESULTS_DIR" "$GOTEST_DIR/runs"
@@ -135,8 +137,15 @@ any_failed=0
 # read them under `set -u` even before compile_and_test has run once.
 BUILD_OK="false"
 TESTS_TOTAL="null"; TESTS_PASSED="null"; TESTS_FAILED="null"; TEST_DURATION_MS="null"
+BUILD_OUTPUT=""; TEST_OUTPUT=""
 # Global set by maybe_run_mutation_check for record_result to consume.
 mutation_json=""
+# self_fix_json for the "direct" kind, which never goes through the self-fix
+# loop (that loop only exists around scripts/code-write): a fixed constant,
+# not computed per call, so every direct row has the same explicit
+# "not applicable" shape instead of nulls that could be mistaken for "ran
+# and found nothing".
+NA_SELF_FIX_JSON='{"self_fix_attempted": false, "self_fix_succeeded": null, "self_fix_retries_used": 0}'
 
 scenario_source_rel() {
   case "$1" in
@@ -251,15 +260,24 @@ strip_code_fence() {
 
 # compile_and_test <run-dir-name-under-evals/gotest/runs>
 # Sets globals BUILD_OK (JSON true/false), TESTS_TOTAL/TESTS_PASSED/
-# TESTS_FAILED/TEST_DURATION_MS (JSON numbers, or "null" when build failed).
+# TESTS_FAILED/TEST_DURATION_MS (JSON numbers, or "null" when build failed),
+# and BUILD_OUTPUT/TEST_OUTPUT (raw text, empty on success) - the self-fix
+# loop in run_shunt_call appends whichever of these is non-empty to its
+# retry --spec, verbatim, per skills/code-writer/SKILL.md.
 compile_and_test() {
   local run_dir="$1"
   BUILD_OK="false"
   TESTS_TOTAL="null"; TESTS_PASSED="null"; TESTS_FAILED="null"; TEST_DURATION_MS="null"
+  BUILD_OUTPUT=""; TEST_OUTPUT=""
 
-  if ! (cd "$GOTEST_DIR" && go vet "./runs/$run_dir/...") >/dev/null 2>&1; then
+  local vet_out
+  vet_out=$(mktemp)
+  if ! (cd "$GOTEST_DIR" && go vet "./runs/$run_dir/...") >"$vet_out" 2>&1; then
+    BUILD_OUTPUT=$(cat "$vet_out")
+    rm -f "$vet_out"
     return
   fi
+  rm -f "$vet_out"
   BUILD_OK="true"
 
   local test_json t_start t_end passed failed
@@ -271,6 +289,9 @@ compile_and_test() {
 
   passed=$(jq -s '[.[] | select(.Test != null and .Action=="pass")] | length' "$test_json")
   failed=$(jq -s '[.[] | select(.Test != null and .Action=="fail")] | length' "$test_json")
+  if [ "$failed" -gt 0 ]; then
+    TEST_OUTPUT=$(jq -s -r '[.[] | select(.Action=="output") | .Output] | join("")' "$test_json")
+  fi
   rm -f "$test_json"
   TESTS_PASSED="$passed"
   TESTS_FAILED="$failed"
@@ -338,17 +359,18 @@ maybe_run_mutation_check() {
 # record_result <iter> <scenario> <kind> <outcome> <run-dir> <gen-duration-ms>
 #   <input-tok|null> <output-tok|null> <cache-read|null> <cache-write|null>
 #   <cost-usd|null> <delegate-input|null> <delegate-output|null>
-#   <mutation-json>
+#   <mutation-json> <self-fix-json>
 # Every numeric arg must already be a valid JSON literal (a number or the
-# string "null"), never an empty string. <mutation-json> is a full compact
-# JSON object (see maybe_run_mutation_check) whose keys are merged into the
-# row as-is. Callers must run compile_and_test (when outcome is "created")
-# and maybe_run_mutation_check themselves before calling this, so BUILD_OK/
+# string "null"), never an empty string. <mutation-json> and <self-fix-json>
+# are full compact JSON objects (see maybe_run_mutation_check and
+# run_shunt_call/NA_SELF_FIX_JSON) whose keys are merged into the row as-is.
+# Callers must run compile_and_test (when outcome is "created") and
+# maybe_run_mutation_check themselves before calling this, so BUILD_OK/
 # TESTS_TOTAL/etc reflect the same call this row describes.
 record_result() {
   local iter="$1" scenario="$2" kind="$3" outcome="$4" run_dir="$5" dur_ms="$6"
   local in_tok="$7" out_tok="$8" cread="$9" cwrite="${10}" cost="${11}" din="${12}" dout="${13}"
-  local mutation_json="${14}"
+  local mutation_json="${14}" self_fix_json="${15}"
 
   local build_ok="null" tests_total="null" tests_passed="null" tests_failed="null" test_dur="null"
   if [ "$outcome" = "created" ]; then
@@ -369,14 +391,14 @@ record_result() {
     --argjson build_ok "$build_ok" --argjson tests_total "$tests_total" \
     --argjson tests_passed "$tests_passed" --argjson tests_failed "$tests_failed" \
     --argjson test_duration_ms "$test_dur" \
-    --argjson mutation "$mutation_json" \
+    --argjson mutation "$mutation_json" --argjson self_fix "$self_fix_json" \
     '{iteration: $iter, scenario: $scenario, kind: $kind, outcome: $outcome,
       duration_ms: $duration_ms, input_tokens: $input_tokens, output_tokens: $output_tokens,
       cache_read_tokens: $cache_read_tokens, cache_write_tokens: $cache_write_tokens,
       cost_usd: $cost_usd, delegate_input_tokens: $delegate_input_tokens,
       delegate_output_tokens: $delegate_output_tokens, build_ok: $build_ok,
       tests_total: $tests_total, tests_passed: $tests_passed, tests_failed: $tests_failed,
-      test_duration_ms: $test_duration_ms} + $mutation' >>"$RESULTS_JSONL"
+      test_duration_ms: $test_duration_ms} + $mutation + $self_fix' >>"$RESULTS_JSONL"
 }
 
 run_direct_call() {
@@ -414,7 +436,7 @@ $instruction"
     any_failed=1
     rm -f "$out_json"
     maybe_run_mutation_check "$scenario" "$run_dir" "failed"
-    record_result "$iter" "$scenario" "direct" "failed" "$run_dir" 0 0 0 0 0 0 null null "$mutation_json"
+    record_result "$iter" "$scenario" "direct" "failed" "$run_dir" 0 0 0 0 0 0 null null "$mutation_json" "$NA_SELF_FIX_JSON"
     return
   fi
 
@@ -433,7 +455,7 @@ $instruction"
     any_failed=1
     maybe_run_mutation_check "$scenario" "$run_dir" "failed"
     record_result "$iter" "$scenario" "direct" "failed" "$run_dir" "$dur_ms" \
-      "$in_tok" "$out_tok" "$cread" "$cwrite" "$cost" null null "$mutation_json"
+      "$in_tok" "$out_tok" "$cread" "$cwrite" "$cost" null null "$mutation_json" "$NA_SELF_FIX_JSON"
     return
   fi
 
@@ -445,60 +467,99 @@ $instruction"
   compile_and_test "$run_dir"
   maybe_run_mutation_check "$scenario" "$run_dir" "$outcome"
   record_result "$iter" "$scenario" "direct" "$outcome" "$run_dir" "$dur_ms" \
-    "$in_tok" "$out_tok" "$cread" "$cwrite" "$cost" null null "$mutation_json"
+    "$in_tok" "$out_tok" "$cread" "$cwrite" "$cost" null null "$mutation_json" "$NA_SELF_FIX_JSON"
 }
 
+# run_shunt_call <iter> <scenario>
+# Calls code-write, then, on a build/test failure, drives the self-fix loop
+# from skills/code-writer/SKILL.md itself (this harness has no Claude in the
+# loop to do it): delete the failed target, re-call code-write with the raw
+# go vet/go test failure output appended to --spec, up to
+# SHUNT_SELF_FIX_RETRIES times (scripts/lib/selffix.sh, same config as
+# scripts/shunt-codewrite-config). Records self_fix_attempted/
+# self_fix_succeeded/self_fix_retries_used alongside the usual fields so a
+# before/after cost comparison is possible once this is run live.
 run_shunt_call() {
   local iter="$1" scenario="$2"
-  local source_rel pkg import instruction run_dir target_file
+  local source_rel pkg import base_instruction spec run_dir target_file
 
   source_rel=$(scenario_source_rel "$scenario") || exit 1
   pkg=$(scenario_pkg "$scenario") || exit 1
   import=$(scenario_import "$scenario") || exit 1
   if [ "$(scenario_mode "$scenario")" = "local" ]; then
-    instruction=$(scenario_instruction_local "$pkg")
+    base_instruction=$(scenario_instruction_local "$pkg")
   else
-    instruction=$(scenario_instruction "$scenario" "$pkg" "$import")
+    base_instruction=$(scenario_instruction "$scenario" "$pkg" "$import")
   fi
+  spec="$base_instruction"
 
   run_dir="$scenario-shunt-$iter"
   target_file="$GOTEST_DIR/runs/$run_dir/${scenario}_test.go"
   prepare_run_dir "$scenario" "$run_dir"
 
-  echo "[iter $iter/$ITERATIONS][$scenario] shunt (code-write)..." >&2
-  local shunt_stderr shunt_stdout shunt_start_ms shunt_end_ms shunt_ms status
-  shunt_stderr=$(mktemp)
-  shunt_stdout=$(mktemp)
-  shunt_start_ms=$(date +%s%3N)
-  status=0
-  "$REPO_ROOT/scripts/code-write" --kind test --spec "$instruction" \
-    --reference "$REPO_ROOT/$(scenario_reference "$scenario")" \
-    --source "$REPO_ROOT/$source_rel" \
-    --target "$target_file" >"$shunt_stdout" 2>"$shunt_stderr" || status=$?
-  shunt_end_ms=$(date +%s%3N)
-  shunt_ms=$((shunt_end_ms - shunt_start_ms))
+  local attempt=0 outcome shunt_ms din dout
+  local self_fix_attempted="false" self_fix_succeeded="false"
+  while :; do
+    if [ "$attempt" -eq 0 ]; then
+      echo "[iter $iter/$ITERATIONS][$scenario] shunt (code-write)..." >&2
+    else
+      echo "[iter $iter/$ITERATIONS][$scenario] shunt self-fix retry $attempt/$SHUNT_SELF_FIX_RETRIES..." >&2
+    fi
 
-  local outcome
-  case "$status" in
-    0) outcome="created" ;;
-    3) outcome="declined" ;;
-    *) outcome="failed"; any_failed=1 ;;
-  esac
-  echo "  shunt $outcome after ${shunt_ms}ms" >&2
+    local shunt_stderr shunt_stdout shunt_start_ms shunt_end_ms status
+    shunt_stderr=$(mktemp)
+    shunt_stdout=$(mktemp)
+    shunt_start_ms=$(date +%s%3N)
+    status=0
+    "$REPO_ROOT/scripts/code-write" --kind test --spec "$spec" \
+      --reference "$REPO_ROOT/$(scenario_reference "$scenario")" \
+      --source "$REPO_ROOT/$source_rel" \
+      --target "$target_file" >"$shunt_stdout" 2>"$shunt_stderr" || status=$?
+    shunt_end_ms=$(date +%s%3N)
+    shunt_ms=$((shunt_end_ms - shunt_start_ms))
 
-  local usage_line din dout
-  usage_line=$(grep -o 'usage:.*' "$shunt_stderr" | sed 's/^usage: //')
-  din=$(echo "$usage_line" | grep -o 'input=[0-9]*' | cut -d= -f2)
-  dout=$(echo "$usage_line" | grep -o 'output=[0-9]*' | cut -d= -f2)
-  rm -f "$shunt_stderr" "$shunt_stdout"
+    case "$status" in
+      0) outcome="created" ;;
+      3) outcome="declined" ;;
+      *) outcome="failed"; any_failed=1 ;;
+    esac
+    echo "  shunt $outcome after ${shunt_ms}ms" >&2
 
-  if [ "$outcome" = "created" ]; then
+    local usage_line
+    usage_line=$(grep -o 'usage:.*' "$shunt_stderr" | sed 's/^usage: //')
+    din=$(echo "$usage_line" | grep -o 'input=[0-9]*' | cut -d= -f2)
+    dout=$(echo "$usage_line" | grep -o 'output=[0-9]*' | cut -d= -f2)
+    rm -f "$shunt_stderr" "$shunt_stdout"
+
+    [ "$outcome" = "created" ] || break
+
     compile_and_test "$run_dir"
-  fi
+    if [ "$BUILD_OK" = "true" ] && [ "$TESTS_FAILED" = "0" ] && [ "$TESTS_TOTAL" != "null" ] && [ "$TESTS_TOTAL" -gt 0 ]; then
+      [ "$attempt" -gt 0 ] && self_fix_succeeded="true"
+      break
+    fi
+
+    [ "$attempt" -lt "$SHUNT_SELF_FIX_RETRIES" ] || break
+
+    attempt=$((attempt + 1))
+    self_fix_attempted="true"
+    spec="$base_instruction
+
+Your previous attempt failed verification. Raw build/test output:
+${BUILD_OUTPUT}${TEST_OUTPUT}"
+    rm -f "$target_file"
+  done
+
   maybe_run_mutation_check "$scenario" "$run_dir" "$outcome"
 
+  local self_fix_json
+  self_fix_json=$(jq -n -c --argjson attempted "$self_fix_attempted" --argjson succeeded "$self_fix_succeeded" \
+    --argjson retries "$attempt" \
+    '{self_fix_attempted: $attempted, self_fix_succeeded: (if $attempted then $succeeded else null end),
+      self_fix_retries_used: $retries}')
+
   record_result "$iter" "$scenario" "shunt" "$outcome" "$run_dir" "$shunt_ms" \
-    null null null null null "${din:-null}" "${dout:-null}" "$mutation_json"
+    null null null null null "${din:-null}" "${dout:-null}" "$mutation_json" "$self_fix_json"
 }
 
 for ((it = 1; it <= ITERATIONS; it++)); do

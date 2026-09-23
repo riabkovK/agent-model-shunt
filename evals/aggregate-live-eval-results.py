@@ -63,6 +63,17 @@ def main():
                 for mid in (r.get("mutants_survived_ids") or [])
             })
 
+            # Self-fix loop stats (see skills/code-writer/SKILL.md): only
+            # "shunt" rows ever have self_fix_attempted true, but .get()
+            # makes this safe for "direct" rows and for rows recorded before
+            # this field existed - both just read as "never attempted".
+            self_fix_rows = [r for r in group if r.get("self_fix_attempted")]
+            self_fix_attempts = len(self_fix_rows)
+            self_fix_successes = sum(1 for r in self_fix_rows if r.get("self_fix_succeeded"))
+            self_fix_retries = [
+                r["self_fix_retries_used"] for r in self_fix_rows if r.get("self_fix_retries_used") is not None
+            ]
+
             entry = {
                 "n": len(group),
                 "outcomes": {o: sum(1 for r in group if r["outcome"] == o) for o in ("created", "declined", "failed")},
@@ -79,6 +90,12 @@ def main():
                     "mutation_score": rate(mut_killed, mut_total),
                     "survived_ids": survived_ids,
                     "rows_with_data": len(mutation_rows),
+                },
+                "self_fix": {
+                    "attempts": self_fix_attempts,
+                    "successes": self_fix_successes,
+                    "success_rate": rate(self_fix_successes, self_fix_attempts),
+                    "retries_used": mean_min_max(self_fix_retries),
                 },
             }
             if costs:
@@ -127,6 +144,10 @@ def main():
             dur = e.get("duration_ms")
             dur_s = f"{dur['mean']:.0f} / {dur['min']:.0f} / {dur['max']:.0f}" if dur else "n/a"
             print(f"{sc:<12}{kind:<8}{e['n']:>3}  {oc_s:<36} {build_s:<9}{tests_s:<18}{mut_s:<18}{dur_s}")
+            sf = e.get("self_fix", {})
+            if sf.get("attempts"):
+                sf_rate = f"{sf['success_rate']*100:.0f}%" if sf["success_rate"] is not None else "n/a"
+                print(f"{'':<12}{'':<8}  self-fix: attempts={sf['attempts']} successes={sf['successes']} success_rate={sf_rate}")
         diff = summary["scenarios"][sc].get("shunt_vs_direct", {})
         if diff:
             parts = []
