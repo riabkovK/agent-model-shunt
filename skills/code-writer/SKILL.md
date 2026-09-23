@@ -10,10 +10,31 @@ model (via OpenCode), so Claude's own output tokens are not spent on
 predictable generation the delegate can produce just as well. Claude
 reviews the result afterwards; review costs only input tokens.
 
-> This file currently documents the call contract and the self-fix loop.
-> Broader "when to delegate" decision criteria, the mandatory review
-> checklist in full, and the project's ADRs for this feature land in a
-> follow-up commit.
+## When to delegate
+
+Decide this BEFORE writing the file yourself, not after drafting it and
+throwing the draft away. Reach for `code-write` when the file is:
+
+- **New** — an existing file is out of scope; `code-write` refuses any
+  `--target` that already exists (file, directory, or symlink). Use
+  `Edit`/`Write` directly for anything that already exists.
+- **Predictable generation** — a test, a config file, a stub, or
+  docstring-heavy boilerplate whose shape is mostly determined by
+  `--reference`/`--source`/`--rules`, not by novel design decisions only
+  Claude can make. The value is saving Claude's own OUTPUT tokens on work a
+  cheaper model can produce just as well; review afterwards costs only
+  input tokens.
+- **Verifiable, or small enough to read.** Either there is a mechanical
+  build/test command to check the result (see "The self-fix loop" below),
+  or the file is small enough that reading it directly in the mandatory
+  review is not itself expensive. A large, unverifiable, novel file is a
+  worse fit: nothing catches a wrong result cheaply.
+
+Do not delegate: edits to existing files, files requiring genuine design
+judgment (architecture, novel algorithms, security-sensitive logic), or
+anything where a hallucinated symbol or silently wrong content would be
+expensive to catch after the fact and there is neither a build/test command
+nor a quick read to catch it.
 
 ## How to call it
 
@@ -101,4 +122,20 @@ the breaker, self-fix retries never do.
   through `/model-config`, never by hand-editing
   `~/.config/agent-model-shunt/self-fix-config.json`.
 - See the project README for the delegate model setup shared with
-  `bulk-reader` (`/model-config`, `scripts/shunt-models`).
+  `bulk-reader` (`/model-config`, `scripts/shunt-models`). A model needs the
+  `code-write` role (`scripts/shunt-models roles`) to be a candidate here.
+
+## Design decisions
+
+See these ADRs for the reasoning behind the contract and safety checks
+above, not just what they are:
+
+- [ADR 0015](../../docs/adr/0015-code-write-create-only-and-tag-protocol.md) —
+  why the script writes to disk instead of the model, create-only, and the
+  `SHUNT-NOTES`/`SHUNT-CODE` tag protocol.
+- [ADR 0016](../../docs/adr/0016-code-write-roles-and-candidate-order.md) —
+  why `code-write` shares `models.json` via roles instead of its own
+  registry, and the candidate/failover order.
+- [ADR 0017](../../docs/adr/0017-code-write-boundaries-and-toctou.md) — the
+  path validation, denylist, atomic publish, and the accepted TOCTOU and
+  fence-stripping trade-offs.
