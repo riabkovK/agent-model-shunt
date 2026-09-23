@@ -1,83 +1,5 @@
 {
   "scenarios": {
-    "cors": {
-      "direct": {
-        "n": 1,
-        "outcomes": {
-          "created": 1,
-          "declined": 0,
-          "failed": 0
-        },
-        "duration_ms": {
-          "mean": 148635,
-          "min": 148635,
-          "max": 148635,
-          "n": 1
-        },
-        "output_tokens": {
-          "mean": 21423,
-          "min": 21423,
-          "max": 21423,
-          "n": 1
-        },
-        "input_tokens": {
-          "mean": 2,
-          "min": 2,
-          "max": 2,
-          "n": 1
-        },
-        "build_ok_rate": 1.0,
-        "tests_pass_rate": 1.0,
-        "tests_total": 31,
-        "tests_passed": 31,
-        "mutation": {
-          "mutants_total": 0,
-          "mutants_killed": 0,
-          "mutation_score": null,
-          "survived_ids": [],
-          "rows_with_data": 0
-        },
-        "cost_usd": {
-          "mean": 0.369818,
-          "min": 0.369818,
-          "max": 0.369818,
-          "n": 1
-        }
-      },
-      "shunt": {
-        "n": 1,
-        "outcomes": {
-          "created": 1,
-          "declined": 0,
-          "failed": 0
-        },
-        "duration_ms": {
-          "mean": 223000,
-          "min": 223000,
-          "max": 223000,
-          "n": 1
-        },
-        "output_tokens": null,
-        "input_tokens": null,
-        "build_ok_rate": 0.0,
-        "tests_pass_rate": null,
-        "tests_total": 0,
-        "tests_passed": 0,
-        "mutation": {
-          "mutants_total": 0,
-          "mutants_killed": 0,
-          "mutation_score": null,
-          "survived_ids": [],
-          "rows_with_data": 0
-        }
-      },
-      "shunt_vs_direct": {
-        "output_tokens_saved": 21423.0,
-        "output_tokens_saved_pct": 100.0,
-        "cost_usd_saved": 0.369818,
-        "cost_usd_saved_pct": 100.0
-      }
-    },
     "pricing": {
       "direct": {
         "n": 1,
@@ -87,93 +9,15 @@
           "failed": 0
         },
         "duration_ms": {
-          "mean": 36005,
-          "min": 36005,
-          "max": 36005,
+          "mean": 15380,
+          "min": 15380,
+          "max": 15380,
           "n": 1
         },
         "output_tokens": {
-          "mean": 4393,
-          "min": 4393,
-          "max": 4393,
-          "n": 1
-        },
-        "input_tokens": {
-          "mean": 2,
-          "min": 2,
-          "max": 2,
-          "n": 1
-        },
-        "build_ok_rate": 0.0,
-        "tests_pass_rate": null,
-        "tests_total": 0,
-        "tests_passed": 0,
-        "mutation": {
-          "mutants_total": 0,
-          "mutants_killed": 0,
-          "mutation_score": null,
-          "survived_ids": [],
-          "rows_with_data": 0
-        },
-        "cost_usd": {
-          "mean": 0.10174620000000001,
-          "min": 0.10174620000000001,
-          "max": 0.10174620000000001,
-          "n": 1
-        }
-      },
-      "shunt": {
-        "n": 1,
-        "outcomes": {
-          "created": 1,
-          "declined": 0,
-          "failed": 0
-        },
-        "duration_ms": {
-          "mean": 247151,
-          "min": 247151,
-          "max": 247151,
-          "n": 1
-        },
-        "output_tokens": null,
-        "input_tokens": null,
-        "build_ok_rate": 0.0,
-        "tests_pass_rate": null,
-        "tests_total": 0,
-        "tests_passed": 0,
-        "mutation": {
-          "mutants_total": 0,
-          "mutants_killed": 0,
-          "mutation_score": null,
-          "survived_ids": [],
-          "rows_with_data": 0
-        }
-      },
-      "shunt_vs_direct": {
-        "output_tokens_saved": 4393.0,
-        "output_tokens_saved_pct": 100.0,
-        "cost_usd_saved": 0.10174620000000001,
-        "cost_usd_saved_pct": 100.0
-      }
-    },
-    "router": {
-      "direct": {
-        "n": 1,
-        "outcomes": {
-          "created": 1,
-          "declined": 0,
-          "failed": 0
-        },
-        "duration_ms": {
-          "mean": 149495,
-          "min": 149495,
-          "max": 149495,
-          "n": 1
-        },
-        "output_tokens": {
-          "mean": 18728,
-          "min": 18728,
-          "max": 18728,
+          "mean": 2368,
+          "min": 2368,
+          "max": 2368,
           "n": 1
         },
         "input_tokens": {
@@ -183,9 +27,9 @@
           "n": 1
         },
         "build_ok_rate": 1.0,
-        "tests_pass_rate": 1.0,
-        "tests_total": 22,
-        "tests_passed": 22,
+        "tests_pass_rate": 0.9333333333333333,
+        "tests_total": 30,
+        "tests_passed": 28,
         "mutation": {
           "mutants_total": 0,
           "mutants_killed": 0,
@@ -193,10 +37,16 @@
           "survived_ids": [],
           "rows_with_data": 0
         },
+        "self_fix": {
+          "attempts": 0,
+          "successes": 0,
+          "success_rate": null,
+          "retries_used": null
+        },
         "cost_usd": {
-          "mean": 0.2980442,
-          "min": 0.2980442,
-          "max": 0.2980442,
+          "mean": 0.0326796,
+          "min": 0.0326796,
+          "max": 0.0326796,
           "n": 1
         }
       },
@@ -208,29 +58,35 @@
           "failed": 0
         },
         "duration_ms": {
-          "mean": 116139,
-          "min": 116139,
-          "max": 116139,
+          "mean": 73393,
+          "min": 73393,
+          "max": 73393,
           "n": 1
         },
         "output_tokens": null,
         "input_tokens": null,
-        "build_ok_rate": 0.0,
-        "tests_pass_rate": null,
-        "tests_total": 0,
-        "tests_passed": 0,
+        "build_ok_rate": 1.0,
+        "tests_pass_rate": 1.0,
+        "tests_total": 35,
+        "tests_passed": 35,
         "mutation": {
-          "mutants_total": 0,
-          "mutants_killed": 0,
-          "mutation_score": null,
+          "mutants_total": 5,
+          "mutants_killed": 5,
+          "mutation_score": 1.0,
           "survived_ids": [],
-          "rows_with_data": 0
+          "rows_with_data": 1
+        },
+        "self_fix": {
+          "attempts": 0,
+          "successes": 0,
+          "success_rate": null,
+          "retries_used": null
         }
       },
       "shunt_vs_direct": {
-        "output_tokens_saved": 18728.0,
+        "output_tokens_saved": 2368.0,
         "output_tokens_saved_pct": 100.0,
-        "cost_usd_saved": 0.2980442,
+        "cost_usd_saved": 0.0326796,
         "cost_usd_saved_pct": 100.0
       }
     }
