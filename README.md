@@ -177,11 +177,7 @@ hand-editing the files below:
 If no registry file exists, shunt stays in the legacy single-agent mode
 described in [Setup](#setup) above.
 
-## Code-writer: delegated generation of new files (experimental)
-
-> Marked experimental: this feature has not yet had a live-eval pass
-> comparable to `bulk-read`'s (see [Evals](#evals) below) run against a real
-> provider to measure its actual token/time savings.
+## Code-writer: delegated generation of new files
 
 Where `bulk-read` delegates a large *read*, `code-writer` delegates
 generating a single brand-new file — a test, a config file, a stub, or
@@ -396,9 +392,8 @@ adversarial ones, and zero unsupported claims.
 
 MVP scope was `bulk-read` only (large-file reads); see
 [ADR 0006](docs/adr/0006-mvp-scope-bulk-read-only.md). `code-write`
-(delegated generation of new files, as in shunt) is now implemented, marked
-experimental pending a live-eval pass — see
-[Code-writer](#code-writer-delegated-generation-of-new-files-experimental)
+(delegated generation of new files, as in shunt) is now implemented — see
+[Code-writer](#code-writer-delegated-generation-of-new-files)
 above and [ADRs 0015-0017](docs/adr/README.md).
 
 This plugin wraps the `opencode` CLI as a subprocess for MVP; a direct HTTP
