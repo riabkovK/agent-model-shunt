@@ -74,7 +74,7 @@ call_claude() {
   local out status
   out=$(mktemp)
   status=0
-  timeout "$SHUNT_BASELINE_TIMEOUT" claude -p --output-format json --model "$SHUNT_BASELINE_MODEL" \
+  timeout "$SHUNT_BASELINE_TIMEOUT" claude -p --safe-mode --output-format json --model "$SHUNT_BASELINE_MODEL" \
     "$prompt" >"$out" 2>/dev/null || status=$?
 
   if [ "$status" -ne 0 ] || [ ! -s "$out" ]; then

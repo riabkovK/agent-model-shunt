@@ -404,7 +404,7 @@ $instruction"
   local out_json status
   out_json=$(mktemp)
   status=0
-  timeout "$SHUNT_BASELINE_TIMEOUT" claude -p --output-format json --model "$SHUNT_BASELINE_MODEL" \
+  timeout "$SHUNT_BASELINE_TIMEOUT" claude -p --safe-mode --output-format json --model "$SHUNT_BASELINE_MODEL" \
     --tools="" "$prompt" >"$out_json" 2>/dev/null || status=$?
 
   local dur_ms=0 in_tok=0 out_tok=0 cread=0 cwrite=0 cost=0 outcome="failed" result
