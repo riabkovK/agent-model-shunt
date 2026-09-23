@@ -11,7 +11,7 @@ the retry/failover behavior around a failing model (`scripts/shunt-breaker-confi
 `~/.config/agent-model-shunt/breaker-config.json`, internally called the
 "circuit breaker" — see Terminology below), and the code-write self-fix
 loop's retry count (`scripts/shunt-codewrite-config`,
-`~/.config/agent-model-shunt/self-fix-config.json`). Always drive all three
+`~/.config/agent-model-shunt/code-write-self-fix-config.json`). Always drive all three
 through their CLI, never by hand-editing any of the JSON files directly.
 
 ## No-argument dashboard
@@ -330,8 +330,8 @@ Circuit breaker: hardcoded default (3 failures / 300s) → `breaker-config.json`
 (if present) → `SHUNT_BREAKER_THRESHOLD`/`SHUNT_BREAKER_COOLDOWN_SECONDS` env
 vars, which remain the top override for a single session or test run.
 
-Self-fix retry count: hardcoded default (1) → `self-fix-config.json` (if
-present) → `SHUNT_SELF_FIX_RETRIES` env var, same override relationship.
+Self-fix retry count: hardcoded default (1) → `code-write-self-fix-config.json`
+(if present) → `SHUNT_CODE_WRITE_SELF_FIX_RETRIES` env var, same override relationship.
 
 ## When NOT to use this skill
 

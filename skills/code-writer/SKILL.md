@@ -120,7 +120,7 @@ the breaker, self-fix retries never do.
 
 - `scripts/shunt-codewrite-config` — the self-fix retry count. Drive it
   through `/model-config`, never by hand-editing
-  `~/.config/agent-model-shunt/self-fix-config.json`.
+  `~/.config/agent-model-shunt/code-write-self-fix-config.json`.
 - See the project README for the delegate model setup shared with
   `bulk-reader` (`/model-config`, `scripts/shunt-models`). A model needs the
   `code-write` role (`scripts/shunt-models roles`) to be a candidate here.

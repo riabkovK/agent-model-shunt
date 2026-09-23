@@ -175,13 +175,10 @@ hand-editing the files below:
   (see the `/model-config` skill).
 
 If no registry file exists, shunt stays in the legacy single-agent mode
-described in [Setup](#setup) above.
+described in [Setup](#setup) above. See [Management skills](#management-skills)
+for `/model-config` and the other skills that manage shunt itself.
 
-## Code-writer: delegated generation of new files (experimental)
-
-> Marked experimental: this feature has not yet had a live-eval pass
-> comparable to `bulk-read`'s (see [Evals](#evals) below) run against a real
-> provider to measure its actual token/time savings.
+## Code-writer: delegated generation of new files
 
 Where `bulk-read` delegates a large *read*, `code-writer` delegates
 generating a single brand-new file — a test, a config file, a stub, or
@@ -222,8 +219,8 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SHUNT_SELF_FIX_CONFIG_FILE` | `~/.config/agent-model-shunt/self-fix-config.json` | Self-fix retry-count override, written by `scripts/shunt-codewrite-config`. |
-| `SHUNT_SELF_FIX_RETRIES` | `1` | Env override for how many times the self-fix loop re-calls `code-write` on a build/test failure; takes precedence over the config file. `0` disables automatic retry. |
+| `SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE` | `~/.config/agent-model-shunt/code-write-self-fix-config.json` | Self-fix retry-count override, written by `scripts/shunt-codewrite-config`. |
+| `SHUNT_CODE_WRITE_SELF_FIX_RETRIES` | `1` | Env override for how many times the self-fix loop re-calls `code-write` on a build/test failure; takes precedence over the config file. `0` disables automatic retry. |
 
 ## Configuration
 
@@ -244,6 +241,24 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 | `SHUNT_BREAKER_CONFIG_FILE` | `~/.config/agent-model-shunt/breaker-config.json` | Threshold/cooldown overrides, written by `scripts/shunt-breaker-config`. |
 | `SHUNT_BREAKER_THRESHOLD` | `3` | Env override for consecutive failures before a model's breaker opens; takes precedence over the config file. |
 | `SHUNT_BREAKER_COOLDOWN_SECONDS` | `300` | Env override for how long a model stays paused once its breaker opens; takes precedence over the config file. |
+
+## Management skills
+
+`/bulk-reader` and `/code-writer` (documented above) do the actual
+delegation. These four skills manage shunt itself: the model registry,
+the hooks, and delegate-spend visibility.
+
+- **`/model-config`**: dashboard and editor for the model registry, the
+  circuit breaker, and the code-write self-fix retry count. Configuring
+  delegate models is easiest done through this skill, never by
+  hand-editing `models.json`, `breaker-config.json`, or
+  `code-write-self-fix-config.json` directly.
+- **`/toggle-debug-log`**: turns the `SHUNT_DEBUG_LOG` usage-tracking env
+  var on/off. Needed before `/usage-report` has anything to summarize.
+- **`/toggle-hooks`**: turns the `PreToolUse` hooks (`check-file-size`,
+  `check-bash-read`) on/off, for A/B testing delegated vs. direct reads.
+- **`/usage-report`**: summarizes actual delegate spend (tokens/cost) and
+  the estimated Claude-context tokens avoided by delegating.
 
 ## Evals
 
@@ -394,15 +409,8 @@ adversarial ones, and zero unsupported claims.
 
 ## Scope
 
-MVP scope was `bulk-read` only (large-file reads); see
-[ADR 0006](docs/adr/0006-mvp-scope-bulk-read-only.md). `code-write`
-(delegated generation of new files, as in shunt) is now implemented, marked
-experimental pending a live-eval pass — see
-[Code-writer](#code-writer-delegated-generation-of-new-files-experimental)
-above and [ADRs 0015-0017](docs/adr/README.md).
-
-This plugin wraps the `opencode` CLI as a subprocess for MVP; a direct HTTP
-client against your provider is a planned future phase. See
+This plugin wraps the `opencode` CLI as a subprocess; a direct HTTP client
+against your provider is a planned future phase. See
 [ADR 0002](docs/adr/0002-wrap-opencode-cli-not-http-client.md).
 
 ## License

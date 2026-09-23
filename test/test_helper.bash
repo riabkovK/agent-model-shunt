@@ -17,7 +17,7 @@ shunt_test_setup() {
   export SHUNT_ISOLATED_CONFIG_DIR="$TEST_TMPDIR/isolated-config"
   export SHUNT_BREAKER_STATE_FILE="$TEST_TMPDIR/breaker-state.json"
   export SHUNT_BREAKER_CONFIG_FILE="$TEST_TMPDIR/breaker-config.json"
-  export SHUNT_SELF_FIX_CONFIG_FILE="$TEST_TMPDIR/self-fix-config.json"
+  export SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE="$TEST_TMPDIR/code-write-self-fix-config.json"
   mkdir -p "$SHUNT_OPENCODE_CONFIG_HOME"
 }
 
