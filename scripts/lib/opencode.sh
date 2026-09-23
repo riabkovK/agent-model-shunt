@@ -6,7 +6,6 @@
 # Meant to be sourced by scripts/bulk-read and scripts/code-write.
 
 SHUNT_OPENCODE_BIN="${SHUNT_OPENCODE_BIN:-opencode}"
-SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-300}"
 SHUNT_BULK_READER_AGENT="${SHUNT_BULK_READER_AGENT:-bulk-reader}"
 SHUNT_OPENCODE_CONFIG_HOME="${SHUNT_OPENCODE_CONFIG_HOME:-$HOME/.config/opencode}"
 SHUNT_ISOLATED_CONFIG_DIR="${SHUNT_ISOLATED_CONFIG_DIR:-$HOME/.cache/agent-model-shunt/opencode-config}"
@@ -19,6 +18,8 @@ _SHUNT_OPENCODE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$_SHUNT_OPENCODE_LIB_DIR/models.sh"
 # shellcheck source=breaker.sh
 source "$_SHUNT_OPENCODE_LIB_DIR/breaker.sh"
+# shellcheck source=transport.sh
+source "$_SHUNT_OPENCODE_LIB_DIR/transport.sh"
 unset _SHUNT_OPENCODE_LIB_DIR
 
 shunt_report_error() {
@@ -100,60 +101,16 @@ shunt_prepare_isolated_config() {
   echo "$iso_root"
 }
 
-# Exit statuses of shunt_try_invoke that name the failure, so the failover loop
-# can say why a model failed. Any other non-zero status (1) means the agent or
-# its config could not be prepared, which shunt_prepare_isolated_config has
-# already explained on stderr.
-SHUNT_TRY_INVOKE_TIMEOUT=124
-SHUNT_TRY_INVOKE_ERROR=2
-SHUNT_TRY_INVOKE_EMPTY=3
-
 # shunt_try_invoke <agent> <question> [file...]
-# Runs `opencode run --agent <agent> "<question>" -f <file> ... --format json`
-# against an isolated OpenCode config (see shunt_prepare_isolated_config) and
-# prints the path to a temp file holding the raw JSONL stdout. Unlike
+# Runs one delegated call through the transport layer (see transport.sh) and
+# prints the path to a temp file holding the normalized response. Unlike
 # shunt_invoke, never exits the process on failure (agent not found,
-# opencode error, timeout, empty output): returns non-zero (see the
-# SHUNT_TRY_INVOKE_* statuses above) and cleans up after itself, so
+# transport error, timeout, empty output): returns non-zero (see the
+# SHUNT_TRY_INVOKE_* statuses in transport.sh) and cleans up after itself, so
 # shunt_invoke_with_failover can try the next candidate model instead of the
 # whole delegated call dying on one bad model.
 shunt_try_invoke() {
-  local agent="$1"
-  local question="$2"
-  shift 2
-  local files=("$@")
-
-  local file_args=()
-  local f
-  for f in "${files[@]}"; do
-    # A relative path that starts with a dash would be parsed as an option.
-    case "$f" in -*) f="./$f" ;; esac
-    file_args+=(-f "$f")
-  done
-
-  local iso_config
-  iso_config=$(shunt_prepare_isolated_config "$agent") || return 1
-
-  local out status
-  out=$(shunt_tmpfile)
-  status=0
-  # </dev/null: opencode reads stdin, and this runs inside shunt_invoke_with_failover's
-  # `while read ... <<<"$candidates"` loop, where it would swallow the remaining candidates.
-  XDG_CONFIG_HOME="$iso_config" timeout "${SHUNT_TIMEOUT_SECONDS}" \
-    "$SHUNT_OPENCODE_BIN" run --agent "$agent" "$question" "${file_args[@]}" --format json \
-    </dev/null >"$out" 2>/dev/null || status=$?
-
-  if [ "$status" -ne 0 ] || [ ! -s "$out" ]; then
-    rm -f "$out"
-    if [ "$status" -eq 124 ]; then
-      return "$SHUNT_TRY_INVOKE_TIMEOUT"
-    elif [ "$status" -ne 0 ]; then
-      return "$SHUNT_TRY_INVOKE_ERROR"
-    fi
-    return "$SHUNT_TRY_INVOKE_EMPTY"
-  fi
-
-  echo "$out"
+  shunt_transport_invoke "$@"
 }
 
 # _shunt_note_failure <model-id> <try-invoke-status>
@@ -301,43 +258,41 @@ shunt_invoke_role_with_failover() {
   shunt_report_error "all delegate models in the registry failed for this call."
 }
 
-# shunt_extract_text <jsonl-file>
-# Prints the final assistant text event from an `opencode run --format json` transcript.
+# shunt_extract_text <response-file>
+# Prints the answer text of a normalized response (see transport.sh).
 shunt_extract_text() {
-  local jsonl="$1"
+  local resp="$1"
   local text
-  text=$(jq -s -r '[.[] | select(.type=="text")] | last | .part.text // empty' "$jsonl" 2>/dev/null || true)
+  text=$(jq -r '.text // empty' "$resp" 2>/dev/null || true)
 
   if [ -z "$text" ]; then
-    shunt_report_error "could not extract assistant text from opencode output (raw transcript kept at $jsonl for inspection)."
+    shunt_report_error "could not extract assistant text from the delegate response (normalized response kept at $resp for inspection)."
   fi
 
   echo "$text"
 }
 
-# shunt_extract_usage <jsonl-file>
+# shunt_extract_usage <response-file>
 # Prints a one-line "input=N output=N cost=N" usage summary, or nothing if unavailable.
 shunt_extract_usage() {
-  local jsonl="$1"
-  jq -s -r '
-    [.[] | select(.type=="step_finish")] | last | .part |
-    if . == null then empty else
-      "input=" + (.tokens.input // 0 | tostring) +
-      " output=" + (.tokens.output // 0 | tostring) +
-      " cost=" + (.cost // 0 | tostring)
+  local resp="$1"
+  jq -r '
+    if .usage == null then empty else
+    "input=" + (.usage.input // 0 | tostring) +
+    " output=" + (.usage.output // 0 | tostring) +
+    " cost=" + (.cost // 0 | tostring)
     end
-  ' "$jsonl" 2>/dev/null || true
+  ' "$resp" 2>/dev/null || true
 }
 
-# shunt_extract_finish_reason <jsonl-file>
-# Prints the finish reason of the last step_finish event ("stop" for a normal
-# end of the answer, "length" when it was cut off by the token limit), or
-# nothing when the transcript has no step_finish event. shunt_extract_usage
-# does not expose it, so a caller that must know whether the answer is
-# complete asks here.
+# shunt_extract_finish_reason <response-file>
+# Prints the finish reason of a normalized response ("stop" for a normal end of
+# the answer, "length" when it was cut off by the token limit), or nothing when
+# the transport reported none. shunt_extract_usage does not expose it, so a
+# caller that must know whether the answer is complete asks here.
 shunt_extract_finish_reason() {
-  local jsonl="$1"
-  jq -s -r '[.[] | select(.type=="step_finish")] | last | .part.reason // empty' "$jsonl" 2>/dev/null || true
+  local resp="$1"
+  jq -r '.finish_reason // empty' "$resp" 2>/dev/null || true
 }
 
 # shunt_debug_log_enabled
@@ -363,13 +318,13 @@ _shunt_log_files_json() {
   echo "$files_json"
 }
 
-# _shunt_log_append <agent> <jsonl-file> <question> <files-json> <avoided> <extra-json>
+# _shunt_log_append <agent> <response-file> <question> <files-json> <avoided> <extra-json>
 # Appends one JSON line to SHUNT_DEBUG_LOG_PATH: the fields every entry has
 # (timestamp, agent, files, question_chars, the delegate's real usage read
-# from <jsonl-file>, avoided_tokens_estimate) merged with <extra-json>. Never
+# from <response-file>, avoided_tokens_estimate) merged with <extra-json>. Never
 # fails the caller.
 _shunt_log_append() {
-  local agent="$1" jsonl="$2" question="$3" files_json="$4" avoided="$5" extra="$6"
+  local agent="$1" resp="$2" question="$3" files_json="$4" avoided="$5" extra="$6"
 
   mkdir -p "$(dirname "$SHUNT_DEBUG_LOG_PATH")" 2>/dev/null || return 0
 
@@ -380,11 +335,9 @@ _shunt_log_append() {
     --argjson qchars "${#question}" \
     --argjson avoided "$avoided" \
     --argjson extra "$extra" \
-    --slurpfile usage <(jq -s -r '
-      [.[] | select(.type=="step_finish")] | last | .part |
-      if . == null then {input:0,output:0,cost:0}
-      else {input: (.tokens.input // 0), output: (.tokens.output // 0), cost: (.cost // 0)} end
-    ' "$jsonl" 2>/dev/null || echo '{"input":0,"output":0,"cost":0}') \
+    --slurpfile usage <(jq -c '
+      {input: (.usage.input // 0), output: (.usage.output // 0), cost: (.cost // 0)}
+    ' "$resp" 2>/dev/null || echo '{"input":0,"output":0,"cost":0}') \
     '{
       timestamp: $ts,
       agent: $agent,
@@ -397,36 +350,35 @@ _shunt_log_append() {
     } + $extra' >>"$SHUNT_DEBUG_LOG_PATH" 2>/dev/null || true
 }
 
-# shunt_log_usage <agent> <jsonl-file> <question> <file...>
+# shunt_log_usage <agent> <response-file> <question> <file...>
 # Logs a bulk-read call: which delegate call this was, its real usage (from
-# <jsonl-file>, the same `opencode run --format json` transcript
-# shunt_extract_usage reads), and a chars/4 estimate (evals/benchmark.sh's own
+# <response-file>, the same normalized response shunt_extract_usage reads), and a chars/4 estimate (evals/benchmark.sh's own
 # documented heuristic) of the tokens Claude's context avoided by not reading
 # <file...> directly. Never fails the caller: logging errors are swallowed
 # since this is a debug aid, not part of the delegation path.
 shunt_log_usage() {
-  local agent="$1" jsonl="$2" question="$3"
+  local agent="$1" resp="$2" question="$3"
   shift 3
 
   local files_json avoided
   files_json=$(_shunt_log_files_json "$@")
   avoided=$(echo "$files_json" | jq '[.[] | ((.bytes + 3) / 4 | floor)] | add // 0')
-  _shunt_log_append "$agent" "$jsonl" "$question" "$files_json" "$avoided" '{"tool":"bulk-read"}'
+  _shunt_log_append "$agent" "$resp" "$question" "$files_json" "$avoided" '{"tool":"bulk-read"}'
 }
 
-# shunt_log_code_write <agent> <jsonl-file> <spec> <generated-bytes> <file...>
+# shunt_log_code_write <agent> <response-file> <spec> <generated-bytes> <file...>
 # Logs a code-write call. What delegating saves here is Claude's OUTPUT, the
 # file it did not have to write, so avoided_tokens_estimate (the input-side
 # figure of bulk-read) stays 0 and avoided_output_tokens_estimate is a chars/4
 # estimate over <generated-bytes>. <file...> are the attached inputs, logged
 # for reference only. Never fails the caller.
 shunt_log_code_write() {
-  local agent="$1" jsonl="$2" spec="$3" generated_bytes="$4"
+  local agent="$1" resp="$2" spec="$3" generated_bytes="$4"
   shift 4
 
   local files_json extra
   files_json=$(_shunt_log_files_json "$@")
   extra=$(jq -n -c --argjson b "$generated_bytes" \
     '{tool: "code-write", generated_bytes: $b, avoided_output_tokens_estimate: (($b + 3) / 4 | floor)}')
-  _shunt_log_append "$agent" "$jsonl" "$spec" "$files_json" 0 "$extra"
+  _shunt_log_append "$agent" "$resp" "$spec" "$files_json" 0 "$extra"
 }

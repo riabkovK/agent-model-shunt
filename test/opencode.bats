@@ -274,19 +274,16 @@ accept_abort() {
   return 2
 }
 
-@test "shunt_extract_finish_reason prints the last step_finish reason" {
-  printf '%s\n' \
-    '{"type":"step_finish","part":{"reason":"tool-calls"}}' \
-    '{"type":"text","part":{"text":"hi"}}' \
-    '{"type":"step_finish","part":{"reason":"length"}}' >"$TEST_TMPDIR/t.jsonl"
-  run shunt_extract_finish_reason "$TEST_TMPDIR/t.jsonl"
+@test "shunt_extract_finish_reason prints the finish reason of a normalized response" {
+  echo '{"text":"hi","finish_reason":"length","usage":{"input":1,"output":2}}' >"$TEST_TMPDIR/t.json"
+  run shunt_extract_finish_reason "$TEST_TMPDIR/t.json"
   assert_success
   assert_output "length"
 }
 
-@test "shunt_extract_finish_reason prints nothing without a step_finish event" {
-  echo '{"type":"text","part":{"text":"hi"}}' >"$TEST_TMPDIR/t.jsonl"
-  run shunt_extract_finish_reason "$TEST_TMPDIR/t.jsonl"
+@test "shunt_extract_finish_reason prints nothing when the finish reason is empty" {
+  echo '{"text":"hi","finish_reason":"","usage":{"input":0,"output":0}}' >"$TEST_TMPDIR/t.json"
+  run shunt_extract_finish_reason "$TEST_TMPDIR/t.json"
   assert_success
   assert_output ""
 }
@@ -514,9 +511,9 @@ write_failing_opencode() {
 
 @test "shunt_log_usage tags bulk-read entries and shunt_log_code_write tags code-write entries" {
   export SHUNT_DEBUG_LOG_PATH="$TEST_TMPDIR/usage.jsonl"
-  local f="$TEST_TMPDIR/in.txt" j="$TEST_TMPDIR/t.jsonl"
+  local f="$TEST_TMPDIR/in.txt" j="$TEST_TMPDIR/t.json"
   printf 'abcdefgh\n' >"$f"
-  echo '{"type":"step_finish","part":{"reason":"stop","cost":0.1,"tokens":{"input":7,"output":3}}}' >"$j"
+  echo '{"text":"a","finish_reason":"stop","usage":{"input":7,"output":3},"cost":0.1}' >"$j"
 
   shunt_log_usage "p/one" "$j" "q" "$f"
   shunt_log_code_write "p/two" "$j" "spec" 400 "$f"
