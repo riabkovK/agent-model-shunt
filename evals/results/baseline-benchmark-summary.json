@@ -3,210 +3,312 @@
     "multi-file-cross-read": {
       "no-resume": {
         "context_tokens": {
-          "mean": 83089,
-          "min": 83089,
-          "max": 83089,
-          "n": 3
+          "mean": 85301,
+          "min": 85301,
+          "max": 85301,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 20087,
-          "min": 18573,
-          "max": 20981,
-          "n": 3
+          "mean": 7458,
+          "min": 7458,
+          "max": 7458,
+          "n": 1
         },
         "cost_usd": {
-          "mean": 0.2964878666666667,
-          "min": 0.29518120000000003,
-          "max": 0.29852120000000004,
-          "n": 3
+          "mean": 0.2659648,
+          "min": 0.2659648,
+          "max": 0.2659648,
+          "n": 1
         }
       },
       "resume": {
         "context_tokens": {
-          "mean": 118375,
-          "min": 117464,
-          "max": 118961,
-          "n": 3
+          "mean": 120534,
+          "min": 120534,
+          "max": 120534,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 21666,
-          "min": 19398,
-          "max": 24129,
-          "n": 3
+          "mean": 20234,
+          "min": 20234,
+          "max": 20234,
+          "n": 1
         },
         "cost_usd": {
-          "mean": 0.17112353333333333,
-          "min": 0.1683612,
-          "max": 0.1760464,
-          "n": 3
+          "mean": 0.5063284,
+          "min": 0.5063284,
+          "max": 0.5063284,
+          "n": 1
         }
       },
       "shunt": {
         "context_tokens": {
-          "mean": 502,
-          "min": 422,
-          "max": 629,
-          "n": 3
+          "mean": 495,
+          "min": 495,
+          "max": 495,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 74777.33333333333,
-          "min": 57232,
-          "max": 84353,
-          "n": 3
+          "mean": 202655,
+          "min": 202655,
+          "max": 202655,
+          "n": 1
+        }
+      },
+      "shunt-live": {
+        "context_tokens": {
+          "mean": 115376,
+          "min": 115376,
+          "max": 115376,
+          "n": 1
+        },
+        "duration_ms": {
+          "mean": 169656,
+          "min": 169656,
+          "max": 169656,
+          "n": 1
+        },
+        "cost_usd": {
+          "mean": 0.0900504,
+          "min": 0.0900504,
+          "max": 0.0900504,
+          "n": 1
         }
       },
       "shunt_vs": {
         "no-resume": {
-          "tokens_saved": 82587,
-          "tokens_saved_pct": 99.39582856936538,
-          "time_added_ms": 54690.33333333333,
-          "time_added_pct": 272.2673038947246
+          "tokens_saved": 84806,
+          "tokens_saved_pct": 99.4197019964596,
+          "time_added_ms": 195197,
+          "time_added_pct": 2617.2834540091176
         },
         "resume": {
-          "tokens_saved": 117873,
-          "tokens_saved_pct": 99.57592397043294,
-          "time_added_ms": 53111.33333333333,
-          "time_added_pct": 245.13677343918272
+          "tokens_saved": 120039,
+          "tokens_saved_pct": 99.58932749265767,
+          "time_added_ms": 182421,
+          "time_added_pct": 901.5567856083819
+        }
+      },
+      "shunt_live_vs": {
+        "no-resume": {
+          "tokens_saved": -30075,
+          "tokens_saved_pct": -35.257499912076064,
+          "time_added_ms": 162198,
+          "time_added_pct": 2174.818986323411
+        },
+        "resume": {
+          "tokens_saved": 5158,
+          "tokens_saved_pct": 4.279290490649941,
+          "time_added_ms": 149422,
+          "time_added_pct": 738.4699021449046
         }
       }
     },
     "single-large-file": {
       "no-resume": {
         "context_tokens": {
-          "mean": 69676,
-          "min": 69347,
-          "max": 70334,
-          "n": 3
+          "mean": 72445,
+          "min": 72445,
+          "max": 72445,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 25365.666666666668,
-          "min": 19910,
-          "max": 34629,
-          "n": 3
+          "mean": 23615,
+          "min": 23615,
+          "max": 23615,
+          "n": 1
         },
         "cost_usd": {
-          "mean": 0.2457258,
-          "min": 0.23068619999999998,
-          "max": 0.275435,
-          "n": 3
+          "mean": 0.2567316,
+          "min": 0.2567316,
+          "max": 0.2567316,
+          "n": 1
         }
       },
       "resume": {
         "context_tokens": {
-          "mean": 69208,
-          "min": 69208,
-          "max": 69208,
-          "n": 3
+          "mean": 71453,
+          "min": 71453,
+          "max": 71453,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 26876.666666666668,
-          "min": 20964,
-          "max": 34475,
-          "n": 3
+          "mean": 22354,
+          "min": 22354,
+          "max": 22354,
+          "n": 1
         },
         "cost_usd": {
-          "mean": 0.23985019999999999,
-          "min": 0.2321002,
-          "max": 0.2486002,
-          "n": 3
+          "mean": 0.2307428,
+          "min": 0.2307428,
+          "max": 0.2307428,
+          "n": 1
         }
       },
       "shunt": {
         "context_tokens": {
-          "mean": 1716,
-          "min": 1638,
-          "max": 1843,
-          "n": 3
+          "mean": 1946,
+          "min": 1946,
+          "max": 1946,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 114667,
-          "min": 86416,
-          "max": 161949,
-          "n": 3
+          "mean": 148611,
+          "min": 148611,
+          "max": 148611,
+          "n": 1
+        }
+      },
+      "shunt-live": {
+        "context_tokens": {
+          "mean": 113830,
+          "min": 113830,
+          "max": 113830,
+          "n": 1
+        },
+        "duration_ms": {
+          "mean": 154696,
+          "min": 154696,
+          "max": 154696,
+          "n": 1
+        },
+        "cost_usd": {
+          "mean": 0.19767639999999997,
+          "min": 0.19767639999999997,
+          "max": 0.19767639999999997,
+          "n": 1
         }
       },
       "shunt_vs": {
         "no-resume": {
-          "tokens_saved": 67960,
-          "tokens_saved_pct": 97.53717205350479,
-          "time_added_ms": 89301.33333333333,
-          "time_added_pct": 352.05592861742247
+          "tokens_saved": 70499,
+          "tokens_saved_pct": 97.31382428048865,
+          "time_added_ms": 124996,
+          "time_added_pct": 529.3076434469617
         },
         "resume": {
-          "tokens_saved": 67492,
-          "tokens_saved_pct": 97.52051785920702,
-          "time_added_ms": 87790.33333333333,
-          "time_added_pct": 326.64144859233534
+          "tokens_saved": 69507,
+          "tokens_saved_pct": 97.27653142625222,
+          "time_added_ms": 126257,
+          "time_added_pct": 564.8071933434732
+        }
+      },
+      "shunt_live_vs": {
+        "no-resume": {
+          "tokens_saved": -41385,
+          "tokens_saved_pct": -57.126095658775625,
+          "time_added_ms": 131081,
+          "time_added_pct": 555.0751640906203
+        },
+        "resume": {
+          "tokens_saved": -42377,
+          "tokens_saved_pct": -59.3075168292444,
+          "time_added_ms": 132342,
+          "time_added_pct": 592.0282723449942
         }
       }
     },
     "source-plus-test": {
       "no-resume": {
         "context_tokens": {
-          "mean": 67817,
-          "min": 67817,
-          "max": 67817,
-          "n": 3
+          "mean": 70104,
+          "min": 70104,
+          "max": 70104,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 14016.666666666666,
-          "min": 10302,
-          "max": 16873,
-          "n": 3
+          "mean": 11068,
+          "min": 11068,
+          "max": 11068,
+          "n": 1
         },
         "cost_usd": {
-          "mean": 0.2134762,
-          "min": 0.20935120000000002,
-          "max": 0.2159562,
-          "n": 3
+          "mean": 0.2062668,
+          "min": 0.2062668,
+          "max": 0.2062668,
+          "n": 1
         }
       },
       "resume": {
         "context_tokens": {
-          "mean": 87143,
-          "min": 86368,
-          "max": 88017,
-          "n": 3
+          "mean": 88869,
+          "min": 88869,
+          "max": 88869,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 13697.333333333334,
-          "min": 11697,
-          "max": 17110,
-          "n": 3
+          "mean": 16709,
+          "min": 16709,
+          "max": 16709,
+          "n": 1
         },
         "cost_usd": {
-          "mean": 0.1007952,
-          "min": 0.09633520000000001,
-          "max": 0.1046392,
-          "n": 3
+          "mean": 0.334241,
+          "min": 0.334241,
+          "max": 0.334241,
+          "n": 1
         }
       },
       "shunt": {
         "context_tokens": {
-          "mean": 547.3333333333334,
-          "min": 508,
-          "max": 615,
-          "n": 3
+          "mean": 1037,
+          "min": 1037,
+          "max": 1037,
+          "n": 1
         },
         "duration_ms": {
-          "mean": 53728,
-          "min": 41317,
-          "max": 60375,
-          "n": 3
+          "mean": 147732,
+          "min": 147732,
+          "max": 147732,
+          "n": 1
+        }
+      },
+      "shunt-live": {
+        "context_tokens": {
+          "mean": 113794,
+          "min": 113794,
+          "max": 113794,
+          "n": 1
+        },
+        "duration_ms": {
+          "mean": 63526,
+          "min": 63526,
+          "max": 63526,
+          "n": 1
+        },
+        "cost_usd": {
+          "mean": 0.0894486,
+          "min": 0.0894486,
+          "max": 0.0894486,
+          "n": 1
         }
       },
       "shunt_vs": {
         "no-resume": {
-          "tokens_saved": 67269.66666666667,
-          "tokens_saved_pct": 99.19292606082055,
-          "time_added_ms": 39711.333333333336,
-          "time_added_pct": 283.31510107015464
+          "tokens_saved": 69067,
+          "tokens_saved_pct": 98.52076914298756,
+          "time_added_ms": 136664,
+          "time_added_pct": 1234.7668955547524
         },
         "resume": {
-          "tokens_saved": 86595.66666666667,
-          "tokens_saved_pct": 99.37191359795585,
-          "time_added_ms": 40030.666666666664,
-          "time_added_pct": 292.2515331451377
+          "tokens_saved": 87832,
+          "tokens_saved_pct": 98.8331139092372,
+          "time_added_ms": 131023,
+          "time_added_pct": 784.1462684780657
+        }
+      },
+      "shunt_live_vs": {
+        "no-resume": {
+          "tokens_saved": -43690,
+          "tokens_saved_pct": -62.321693483966676,
+          "time_added_ms": 52458,
+          "time_added_pct": 473.96096855800505
+        },
+        "resume": {
+          "tokens_saved": -24925,
+          "tokens_saved_pct": -28.046900493985525,
+          "time_added_ms": 46817,
+          "time_added_pct": 280.1903165958465
         }
       }
     }

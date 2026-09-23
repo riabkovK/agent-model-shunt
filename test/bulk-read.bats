@@ -85,6 +85,28 @@ FAKE
   assert_output --partial "no enabled delegate models"
 }
 
+@test "bulk-read skips a model restricted to code-write and uses one that has bulk-read" {
+  shunt_write_provider "p"
+  "$REPO_ROOT/scripts/shunt-models" add p/writer >/dev/null
+  "$REPO_ROOT/scripts/shunt-models" add p/reader >/dev/null
+  "$REPO_ROOT/scripts/shunt-models" roles p/writer code-write >/dev/null
+  "$REPO_ROOT/scripts/shunt-models" activate p/writer >/dev/null
+
+  run "$REPO_ROOT/scripts/bulk-read" --question "q" --paths "$SAMPLE"
+  assert_success
+  [ "$(logged_agent)" = "p/reader" ]
+}
+
+@test "bulk-read fails clearly when no enabled model has the bulk-read role" {
+  shunt_write_provider "p"
+  "$REPO_ROOT/scripts/shunt-models" add p/writer >/dev/null
+  "$REPO_ROOT/scripts/shunt-models" roles p/writer code-write >/dev/null
+
+  run "$REPO_ROOT/scripts/bulk-read" --question "q" --paths "$SAMPLE"
+  assert_failure
+  assert_output --partial "with the bulk-read role"
+}
+
 @test "bulk-read still works in legacy single-agent mode" {
   mkdir -p "$SHUNT_OPENCODE_CONFIG_HOME/agents"
   printf -- '---\nmodel: p/legacy\n---\nlegacy agent\n' \

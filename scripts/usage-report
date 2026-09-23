@@ -1,12 +1,15 @@
 #!/bin/bash
 # Summarizes scripts/lib/opencode.sh's debug usage log (SHUNT_DEBUG_LOG_PATH,
 # default ~/.cache/agent-model-shunt/usage.jsonl): every real (non-benchmark)
-# scripts/bulk-read call made while SHUNT_DEBUG_LOG was enabled.
+# scripts/bulk-read and scripts/code-write call made while SHUNT_DEBUG_LOG was
+# enabled. Entries without a `tool` field predate code-write and are bulk-read.
 #
 # This only covers the delegate side (real tokens/cost OpenCode reports) and
-# a chars/4 estimate of the Claude-context tokens each call avoided (same
-# heuristic evals/benchmark.sh uses) - it cannot see Claude's own actual
-# spend, which Claude Code tracks itself (see `/cost` in-session).
+# a chars/4 estimate of what each call kept off Claude's side (same heuristic
+# evals/benchmark.sh uses): context tokens not spent reading files for
+# bulk-read, output tokens not spent writing the file for code-write. It
+# cannot see Claude's own actual spend, which Claude Code tracks itself (see
+# `/cost` in-session).
 #
 # Usage: scripts/usage-report [path-to-jsonl]
 
@@ -26,12 +29,25 @@ jq -s '
     delegate_output_tokens: (map(.delegate_output_tokens) | add),
     delegate_cost_usd: (map(.delegate_cost_usd) | add),
     avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add),
-    by_agent: (
-      group_by(.agent) | map({
-        agent: .[0].agent,
+    avoided_output_tokens_estimate: (map(.avoided_output_tokens_estimate // 0) | add),
+    by_tool: (
+      group_by(.tool // "bulk-read") | map({
+        tool: (.[0].tool // "bulk-read"),
         calls: length,
         delegate_cost_usd: (map(.delegate_cost_usd) | add),
-        avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add)
+        avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add),
+        avoided_output_tokens_estimate: (map(.avoided_output_tokens_estimate // 0) | add),
+        generated_bytes: (map(.generated_bytes // 0) | add)
+      })
+    ),
+    by_agent: (
+      group_by([(.tool // "bulk-read"), .agent]) | map({
+        agent: .[0].agent,
+        tool: (.[0].tool // "bulk-read"),
+        calls: length,
+        delegate_cost_usd: (map(.delegate_cost_usd) | add),
+        avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add),
+        avoided_output_tokens_estimate: (map(.avoided_output_tokens_estimate // 0) | add)
       })
     )
   }
@@ -39,4 +55,5 @@ jq -s '
 
 echo "" >&2
 echo "shunt: avoided_tokens_estimate is a chars/4 estimate of context Claude did not spend reading these files directly." >&2
+echo "shunt: avoided_output_tokens_estimate is a chars/4 estimate of the output Claude did not spend writing files that code-write generated." >&2
 echo "shunt: this does not include Claude's own actual token/dollar spend for the session - check that with Claude Code's own /cost." >&2

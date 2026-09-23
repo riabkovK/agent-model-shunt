@@ -177,6 +177,54 @@ hand-editing the files below:
 If no registry file exists, shunt stays in the legacy single-agent mode
 described in [Setup](#setup) above.
 
+## Code-writer: delegated generation of new files (experimental)
+
+> Marked experimental: this feature has not yet had a live-eval pass
+> comparable to `bulk-read`'s (see [Evals](#evals) below) run against a real
+> provider to measure its actual token/time savings.
+
+Where `bulk-read` delegates a large *read*, `code-writer` delegates
+generating a single brand-new file — a test, a config file, a stub, or
+docstring-heavy boilerplate — so Claude doesn't spend its own output tokens
+on predictable generation. Claude reviews the result afterwards, which
+costs only input tokens. See `skills/code-writer/SKILL.md` for the full
+"when to delegate" guidance, the call contract, the mandatory
+post-generation review, and the self-fix loop.
+
+```bash
+scripts/code-write --kind test|generic --spec "<what to generate>" \
+  --reference <file>... [--source <file>...] [--rules <file>...] \
+  [--allow-outside] --target <new file>
+```
+
+- `--target` must not exist yet: `code-write` is create-only, never edits an
+  existing file. See [ADR 0015](docs/adr/0015-code-write-create-only-and-tag-protocol.md).
+- `--kind test` requires `--source` (the code under test); `--kind generic`
+  makes it optional. Built-in, non-disableable test-writing rules
+  (`prompts/test-rules.md`) are always injected for `--kind test`.
+- The delegate model has every tool disabled, including `read` — it only
+  ever returns text under a fixed tag protocol
+  (`<SHUNT-NOTES>`/`<SHUNT-CODE>`), which the script validates before
+  writing anything. Path validation and a denylist (`.git`, `.claude`,
+  `.env*`, `CLAUDE.md`, and more) run before the model is ever called; see
+  [ADR 0017](docs/adr/0017-code-write-boundaries-and-toctou.md) for the full
+  list and the accepted TOCTOU trade-off.
+- A model needs the `code-write` role to be a candidate for this script —
+  add it with `scripts/shunt-models roles <provider/model> code-write` (or
+  leave `roles` unset, which grants every role). It shares the same
+  registry, priority order, and circuit breaker as `bulk-read`, tracked
+  separately per role. See [ADR 0016](docs/adr/0016-code-write-roles-and-candidate-order.md).
+- On a build/test failure after generation, the skill retries the delegate
+  itself (appending the raw failure output to `--spec`) before falling back
+  to Claude fixing the file by hand. The retry count is configurable
+  (`scripts/shunt-codewrite-config`, default 1, global) — drive it through
+  `/model-config`.
+
+| Variable | Default | Purpose |
+|---|---|---|
+| `SHUNT_SELF_FIX_CONFIG_FILE` | `~/.config/agent-model-shunt/self-fix-config.json` | Self-fix retry-count override, written by `scripts/shunt-codewrite-config`. |
+| `SHUNT_SELF_FIX_RETRIES` | `1` | Env override for how many times the self-fix loop re-calls `code-write` on a build/test failure; takes precedence over the config file. `0` disables automatic retry. |
+
 ## Configuration
 
 | Variable | Default | Purpose |
@@ -302,7 +350,7 @@ repo to view it rendered).
 | Variable | Default | Purpose |
 |---|---|---|
 | `SHUNT_BASELINE_MODEL` | `sonnet` | Model alias passed to `claude -p --model` for the baseline side of `evals/baseline-benchmark.sh`. |
-| `SHUNT_BASELINE_TIMEOUT` | `120` | Timeout (seconds) for each baseline `claude -p` call. |
+| `SHUNT_BASELINE_TIMEOUT` | `300` | Timeout (seconds) for each baseline `claude -p` call. |
 | `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 2` (no-resume + resume). |
 
 ### Fidelity: does delegating lose information or hallucinate?
@@ -346,9 +394,12 @@ adversarial ones, and zero unsupported claims.
 
 ## Scope
 
-MVP scope is `bulk-read` only (large-file reads). `code-write` (delegated
-boilerplate generation, as in shunt) is a planned future phase, not
-implemented here. See [ADR 0006](docs/adr/0006-mvp-scope-bulk-read-only.md).
+MVP scope was `bulk-read` only (large-file reads); see
+[ADR 0006](docs/adr/0006-mvp-scope-bulk-read-only.md). `code-write`
+(delegated generation of new files, as in shunt) is now implemented, marked
+experimental pending a live-eval pass — see
+[Code-writer](#code-writer-delegated-generation-of-new-files-experimental)
+above and [ADRs 0015-0017](docs/adr/README.md).
 
 This plugin wraps the `opencode` CLI as a subprocess for MVP; a direct HTTP
 client against your provider is a planned future phase. See

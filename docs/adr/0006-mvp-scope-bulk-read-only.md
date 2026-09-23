@@ -2,7 +2,10 @@
 
 ## Status
 
-Accepted
+Accepted (partially superseded: `code-write` is now implemented, see
+[ADR 0015](0015-code-write-create-only-and-tag-protocol.md),
+[ADR 0016](0016-code-write-roles-and-candidate-order.md) and
+[ADR 0017](0017-code-write-boundaries-and-toctou.md))
 
 ## Context
 

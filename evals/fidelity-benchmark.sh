@@ -35,7 +35,7 @@
 #   ITERATIONS              Repeats per question (default: 1). Total claude -p
 #                            calls = ITERATIONS * questions * 2 (direct + final).
 #   SHUNT_BASELINE_MODEL     Model alias for `claude -p --model` (default: sonnet).
-#   SHUNT_BASELINE_TIMEOUT   Timeout in seconds per claude -p call (default: 120).
+#   SHUNT_BASELINE_TIMEOUT   Timeout in seconds per claude -p call (default: 300).
 
 set -uo pipefail
 
@@ -47,7 +47,7 @@ RESULTS_JSONL="$RESULTS_DIR/fidelity-benchmark.jsonl"
 SUMMARY_JSON="$RESULTS_DIR/fidelity-benchmark-summary.json"
 
 SHUNT_BASELINE_MODEL="${SHUNT_BASELINE_MODEL:-sonnet}"
-SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-120}"
+SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-300}"
 ITERATIONS="${ITERATIONS:-1}"
 
 command -v claude >/dev/null 2>&1 || { echo "fidelity-benchmark: 'claude' not found in PATH." >&2; exit 1; }
@@ -74,7 +74,7 @@ call_claude() {
   local out status
   out=$(mktemp)
   status=0
-  timeout "$SHUNT_BASELINE_TIMEOUT" claude -p --output-format json --model "$SHUNT_BASELINE_MODEL" \
+  timeout "$SHUNT_BASELINE_TIMEOUT" claude -p --safe-mode --output-format json --model "$SHUNT_BASELINE_MODEL" \
     "$prompt" >"$out" 2>/dev/null || status=$?
 
   if [ "$status" -ne 0 ] || [ ! -s "$out" ]; then
