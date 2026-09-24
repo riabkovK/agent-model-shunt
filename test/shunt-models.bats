@@ -268,6 +268,53 @@ teardown() {
   assert_failure
 }
 
+@test "request-body sets and clears request_body" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" request-body "p/one" '{"temperature":0.2}'
+  assert_success
+  run jq -c '.models[0].request_body' "$SHUNT_MODELS_FILE"
+  assert_output '{"temperature":0.2}'
+  run "$SHUNT_MODELS_BIN" request-body "p/one" --clear
+  assert_success
+  run jq -r '.models[0] | has("request_body")' "$SHUNT_MODELS_FILE"
+  assert_output "false"
+}
+
+@test "request-body --role sets one role, keeps the others and drops the key when empty" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" request-body "p/one" --role bulk-read '{"reasoning_effort":"none"}'
+  assert_success
+  run "$SHUNT_MODELS_BIN" request-body "p/one" --role code-write '{"temperature":0.1}'
+  assert_success
+  run jq -c '.models[0].role_request_body' "$SHUNT_MODELS_FILE"
+  assert_output '{"bulk-read":{"reasoning_effort":"none"},"code-write":{"temperature":0.1}}'
+  run "$SHUNT_MODELS_BIN" request-body "p/one" --role bulk-read --clear
+  assert_success
+  run jq -c '.models[0].role_request_body' "$SHUNT_MODELS_FILE"
+  assert_output '{"code-write":{"temperature":0.1}}'
+  run "$SHUNT_MODELS_BIN" request-body "p/one" --role code-write --clear
+  assert_success
+  run jq -r '.models[0] | has("role_request_body")' "$SHUNT_MODELS_FILE"
+  assert_output "false"
+}
+
+@test "request-body rejects non-object JSON, an unknown role and an unknown model" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/one"
+  run "$SHUNT_MODELS_BIN" request-body "p/one" '[1]'
+  assert_failure
+  run "$SHUNT_MODELS_BIN" request-body "p/one" 'nope'
+  assert_failure
+  run "$SHUNT_MODELS_BIN" request-body "p/one" --role thinker '{"a":1}'
+  assert_failure
+  run "$SHUNT_MODELS_BIN" request-body "p/zzz" '{"a":1}'
+  assert_failure
+  run jq -r '.models[0] | has("request_body") or has("role_request_body")' "$SHUNT_MODELS_FILE"
+  assert_output "false"
+}
+
 @test "thinking on with options sets the flag and merges options into the agent file" {
   shunt_write_provider "p"
   "$SHUNT_MODELS_BIN" add "p/one"

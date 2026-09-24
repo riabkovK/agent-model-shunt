@@ -126,6 +126,54 @@ ok_body() {
   [ "$(jq -r '.model' "$FAKE_CURL_SENT")" = "m1" ]
 }
 
+# write_registry_role <request_body-json> <role_request_body-json>
+write_registry_role() {
+  jq -n --argjson rb "$1" --argjson rrb "$2" '{version:1,models:[
+    {id:"acme/m1",agent:"shunt-bulk-reader-acme-m1",enabled:true,request_body:$rb,role_request_body:$rrb}]}' >"$SHUNT_MODELS_FILE"
+}
+
+@test "role_request_body of the bulk-read role wins over request_body and keeps the other keys" {
+  write_registry_role '{"temperature":0.2,"reasoning_effort":"high"}' '{"bulk-read":{"reasoning_effort":"none"},"code-write":{"temperature":0.9}}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "none" ]
+  [ "$(jq -r '.temperature' "$FAKE_CURL_SENT")" = "0.2" ]
+}
+
+@test "role_request_body of the code-write role applies to the code-writer agent only" {
+  write_registry_role '{"temperature":0.2}' '{"bulk-read":{"reasoning_effort":"none"},"code-write":{"temperature":0.9}}'
+  run shunt_transport_invoke "shunt-code-writer-acme-m1" "q"
+  assert_success
+  [ "$(jq -r '.temperature' "$FAKE_CURL_SENT")" = "0.9" ]
+  [ "$(jq -r 'has("reasoning_effort")' "$FAKE_CURL_SENT")" = "false" ]
+}
+
+@test "role_request_body without an entry for the role leaves request_body as is" {
+  write_registry_role '{"temperature":0.2}' '{"code-write":{"temperature":0.9}}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.temperature' "$FAKE_CURL_SENT")" = "0.2" ]
+}
+
+@test "role_request_body cannot replace the model or messages" {
+  write_registry_role '{}' '{"bulk-read":{"model":"evil","messages":[]}}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.model' "$FAKE_CURL_SENT")" = "m1" ]
+  [ "$(jq -r '.messages | length' "$FAKE_CURL_SENT")" = "2" ]
+}
+
+@test "a role_request_body that is not an object of objects is a config error" {
+  write_registry_role '{}' '{"bulk-read":"none"}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_failure
+  assert_output --partial "role_request_body must be a JSON object of JSON objects"
+  write_registry_role '{}' '[1]'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_failure
+  assert_output --partial "role_request_body must be a JSON object of JSON objects"
+}
+
 @test "request_body cannot replace the model or messages" {
   write_registry '{"model":"evil","messages":[]}'
   run shunt_transport_invoke "$AGENT" "q"

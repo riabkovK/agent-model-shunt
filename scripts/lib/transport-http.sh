@@ -110,30 +110,31 @@ _shunt_http_check_base_url() {
 # system prompt and the request body. Empty _SHUNT_HTTP_AGENT means unresolved.
 _SHUNT_HTTP_AGENT="" _SHUNT_HTTP_ID="" _SHUNT_HTTP_ROLE="" _SHUNT_HTTP_REQUEST_BODY=""
 # Optional registry fields of the same entry, empty when absent.
-_SHUNT_HTTP_CONTEXT_TOKENS="" _SHUNT_HTTP_OVERSIZE_POLICY=""
+_SHUNT_HTTP_CONTEXT_TOKENS="" _SHUNT_HTTP_OVERSIZE_POLICY="" _SHUNT_HTTP_ROLE_REQUEST_BODY=""
 
 # _shunt_http_clear
 # Forgets the resolved entry so a later call reads the registry afresh.
 _shunt_http_clear() {
   _SHUNT_HTTP_AGENT="" _SHUNT_HTTP_ID="" _SHUNT_HTTP_ROLE="" _SHUNT_HTTP_REQUEST_BODY=""
-  _SHUNT_HTTP_CONTEXT_TOKENS="" _SHUNT_HTTP_OVERSIZE_POLICY=""
+  _SHUNT_HTTP_CONTEXT_TOKENS="" _SHUNT_HTTP_OVERSIZE_POLICY="" _SHUNT_HTTP_ROLE_REQUEST_BODY=""
   _SHUNT_HTTP_KEY="" _SHUNT_HTTP_HDR_ARGS=() _SHUNT_HTTP_AUTH_READY=0
 }
 
 # _shunt_http_resolve <agent>
 # One registry read: finds the model whose bulk-reader or code-writer agent is
 # <agent> and sets _SHUNT_HTTP_ID, _SHUNT_HTTP_ROLE (bulk-reader|code-writer),
-# _SHUNT_HTTP_REQUEST_BODY (compact JSON, {} when unset), and the optional
+# _SHUNT_HTTP_REQUEST_BODY and _SHUNT_HTTP_ROLE_REQUEST_BODY (compact JSON, {}
+# when unset, merged and validated later by _shunt_http_setup), and the optional
 # _SHUNT_HTTP_CONTEXT_TOKENS and _SHUNT_HTTP_OVERSIZE_POLICY (empty when
 # absent). Fields are split on the unit separator, a non-whitespace delimiter,
 # so empty fields keep their column. Must run in the current shell, not in
 # $(...). Fails, leaving nothing resolved, when the
 # registry is missing or has no such model.
 _shunt_http_resolve() {
-  local agent="$1" id a rb ct op
+  local agent="$1" id a rb rrb ct op
   _shunt_http_clear
   shunt_models_available || return 1
-  while IFS=$'\x1f' read -r id a rb ct op; do
+  while IFS=$'\x1f' read -r id a rb rrb ct op; do
     if [ "$agent" = "$a" ]; then
       _SHUNT_HTTP_ROLE=bulk-reader
     elif [ "$agent" = "$(shunt_models_code_writer_agent_for "$id")" ]; then
@@ -142,9 +143,10 @@ _shunt_http_resolve() {
       continue
     fi
     _SHUNT_HTTP_AGENT="$agent" _SHUNT_HTTP_ID="$id" _SHUNT_HTTP_REQUEST_BODY="$rb"
+    _SHUNT_HTTP_ROLE_REQUEST_BODY="$rrb"
     _SHUNT_HTTP_CONTEXT_TOKENS="$ct" _SHUNT_HTTP_OVERSIZE_POLICY="$op"
     return 0
-  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.context_tokens // "") | tostring), (.oversize_policy // "")] | join("\u001f")' "$SHUNT_MODELS_FILE")
+  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | tostring), (.oversize_policy // "")] | join("\u001f")' "$SHUNT_MODELS_FILE")
   return 1
 }
 
@@ -259,6 +261,13 @@ _shunt_http_setup() {
   _shunt_http_check_base_url "$_SHUNT_HTTP_PROVIDER" "$_SHUNT_HTTP_BASE_URL" _SHUNT_HTTP_BASE_URL || return 1
   jq -e 'type == "object"' <<<"$_SHUNT_HTTP_REQUEST_BODY" >/dev/null 2>&1 \
     || { echo "shunt: model '$id': request_body must be a JSON object." >&2; return 1; }
+  jq -e 'type == "object" and all(.[]; type == "object")' <<<"$_SHUNT_HTTP_ROLE_REQUEST_BODY" >/dev/null 2>&1 \
+    || { echo "shunt: model '$id': role_request_body must be a JSON object of JSON objects." >&2; return 1; }
+  # Effective body: request_body, then the role's keys on top (shallow merge).
+  local role_key=bulk-read
+  [ "$_SHUNT_HTTP_ROLE" = code-writer ] && role_key=code-write
+  _SHUNT_HTTP_REQUEST_BODY=$(jq -c --arg role "$role_key" --argjson rrb "$_SHUNT_HTTP_ROLE_REQUEST_BODY" \
+    '. + ($rrb[$role] // {})' <<<"$_SHUNT_HTTP_REQUEST_BODY") || return 1
   _shunt_http_system_prompt "$_SHUNT_HTTP_ROLE" _SHUNT_HTTP_SYSTEM || return 1
   _shunt_http_new_tmp _SHUNT_HTTP_BODY_FILE && _shunt_http_new_tmp _SHUNT_HTTP_RESP_FILE \
     && _shunt_http_new_tmp _SHUNT_HTTP_ERR_FILE || return 1

@@ -17,6 +17,9 @@
 #     off: options-json (a flat object) sets explicit off options, e.g.
 #          '{"reasoningEffort":"none"}', rendered into the agent files while
 #          thinking is off. Omitted: stored off options stay. '{}' clears them.
+#   shunt-models request-body <provider/model> [--role <bulk-read|code-write>] <json-object|--clear>
+#     Sets or clears the model's request_body (extra fields of every HTTP request),
+#     or with --role only that role's role_request_body entry, merged on top of it.
 #   shunt-models roles <provider/model> <role>[,<role>...]
 #   shunt-models set-context <provider/model> <tokens>
 #   shunt-models detect-context <provider/model> [--write]
@@ -287,6 +290,48 @@ cmd_thinking() {
   echo "shunt: thinking for '$id' set to $state."
 }
 
+# cmd_request_body <id> [--role <role>] <json-object|--clear>
+# Sets or clears request_body, or role_request_body[<role>] with --role. An
+# emptied role_request_body is dropped from the entry.
+cmd_request_body() {
+  local id="${1:-}" role="" value
+  local usage="usage: shunt-models request-body <provider/model> [--role <${SHUNT_MODELS_ROLES[0]}|${SHUNT_MODELS_ROLES[1]}>] <json-object|--clear>"
+  [ -n "$id" ] || shunt_report_error "$usage"
+  shift
+  if [ "${1:-}" = "--role" ]; then
+    role="${2:-}"
+    [ -n "$role" ] || shunt_report_error "$usage"
+    shift 2
+  fi
+  value="${1:-}"
+  [ -n "$value" ] && [ "$#" -eq 1 ] || shunt_report_error "$usage"
+  if [ -n "$role" ]; then
+    printf '%s\n' "${SHUNT_MODELS_ROLES[@]}" | grep -qxF -- "$role" \
+      || shunt_report_error "unknown role '$role' (roles: ${SHUNT_MODELS_ROLES[*]})."
+  fi
+  local body="null"
+  if [ "$value" != "--clear" ]; then
+    echo "$value" | jq -e 'type == "object"' >/dev/null 2>&1 \
+      || shunt_report_error "request body must be a JSON object: $value"
+    body=$(echo "$value" | jq -c .)
+  fi
+  shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
+  local current updated
+  current=$(cat "$SHUNT_MODELS_FILE")
+  echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null \
+    || shunt_report_error "model '$id' is not in the registry."
+  updated=$(echo "$current" | jq --arg id "$id" --arg role "$role" --argjson body "$body" '
+    .models |= map(if .id != $id then . elif $role == "" then
+        (if $body == null then del(.request_body) else .request_body = $body end)
+      else
+        (if $body == null then del(.role_request_body[$role]) else .role_request_body[$role] = $body end)
+        | (if (.role_request_body // {}) == {} then del(.role_request_body) else . end)
+      end)
+  ') || shunt_report_error "could not update the registry entry for '$id'."
+  shunt_models_write "$updated"
+  echo "shunt: request body for '$id'${role:+ (role $role)} $([ "$body" = null ] && echo cleared || echo set)."
+}
+
 # cmd_roles <id> <role>[,<role>...]
 # Sets the model's `roles` (bulk-read, code-write). Order is kept and
 # duplicates dropped. Rewrites the registry, then re-materializes the model's
@@ -492,7 +537,7 @@ cmd_key_set() {
 }
 
 subcommand="${1:-}"
-[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|roles|set-context|detect-context|sync|key> [args...]"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|request-body|roles|set-context|detect-context|sync|key> [args...]"
 shift
 
 case "$subcommand" in
@@ -503,6 +548,7 @@ case "$subcommand" in
   enable) cmd_set_enabled true "$@" ;;
   disable) cmd_set_enabled false "$@" ;;
   thinking) cmd_thinking "$@" ;;
+  request-body) cmd_request_body "$@" ;;
   roles) cmd_roles "$@" ;;
   set-context) cmd_set_context "$@" ;;
   detect-context) cmd_detect_context "$@" ;;

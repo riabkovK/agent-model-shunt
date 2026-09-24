@@ -205,6 +205,23 @@ scripts/shunt-models roles <provider/model> bulk-read,code-write   # both
   model's own line. Counters recorded before this split are the `bulk-read`
   ones, so nothing needs migrating, and `remove` clears both.
 
+## Extra request fields, per model and per role (HTTP transport)
+
+```bash
+scripts/shunt-models request-body <provider/model> '<json-object>'
+scripts/shunt-models request-body <provider/model> --role <bulk-read|code-write> '<json-object>'
+scripts/shunt-models request-body <provider/model> [--role <role>] --clear
+```
+
+Without `--role` this sets `request_body`, extra fields of every HTTP request.
+With `--role` it sets `role_request_body[<role>]`, whose keys win over
+`request_body` for that role only (shallow merge). `model` and `messages`
+can never be overridden. On Ollama's `/v1` endpoint, thinking off is
+`{"reasoning_effort":"none"}`. Measured for bulk-read: same recall, 16s
+instead of 45s. So for an Ollama model, offer
+`request-body <id> --role bulk-read '{"reasoning_effort":"none"}'`. Code-write
+thinking is not measured, so do not change its default.
+
 ## Thinking/extended-reasoning, per model (off by default)
 
 Delegate models that support a "thinking" mode have it off by default —
