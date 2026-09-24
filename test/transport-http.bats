@@ -505,7 +505,9 @@ big_question() {
   write_sized_registry null '"fail"'
   run shunt_transport_invoke "$AGENT" "$(big_question 20000)"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
-  assert_output --partial "model acme/m1 has no context_tokens, set it via model-config"
+  assert_output --partial "model acme/m1 has no context_tokens"
+  assert_output --partial "shunt-models detect-context acme/m1 --write"
+  assert_output --partial "shunt-models set-context acme/m1 <tokens>"
   [ ! -f "$FAKE_CURL_ARGV" ]
 }
 

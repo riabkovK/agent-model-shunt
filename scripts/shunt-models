@@ -18,6 +18,9 @@
 #          '{"reasoningEffort":"none"}', rendered into the agent files while
 #          thinking is off. Omitted: stored off options stay. '{}' clears them.
 #   shunt-models roles <provider/model> <role>[,<role>...]
+#   shunt-models set-context <provider/model> <tokens>
+#   shunt-models detect-context <provider/model> [--write]
+#     Asks the provider for the context window (never guessed). --write stores it.
 #   shunt-models sync
 #   shunt-models key set <provider>      (hidden prompt, or one line on piped stdin)
 #   shunt-models key status <provider>   (yes/no and key type, never the value)
@@ -31,6 +34,8 @@ source "$SCRIPT_DIR/lib/opencode.sh"
 source "$SCRIPT_DIR/lib/models.sh"
 # shellcheck source=lib/providers.sh
 source "$SCRIPT_DIR/lib/providers.sh"
+# shellcheck source=lib/context-detect.sh
+source "$SCRIPT_DIR/lib/context-detect.sh"
 
 # shunt_models_read_or_empty
 # Prints the current registry JSON, or an empty-but-valid-shaped registry
@@ -318,6 +323,50 @@ cmd_roles() {
   problem=$(shunt_models_validate) || echo "shunt: warning, the registry is still invalid: $problem" >&2
 }
 
+# Longest context_tokens accepted, in digits (keeps the value exact in jq).
+SHUNT_CONTEXT_MAX_DIGITS=12
+
+# shunt_models_store_context <provider/model> <tokens>
+# Stores <tokens> as the model's context_tokens through the atomic registry
+# write. Like cmd_roles it does not need a valid registry to begin with.
+shunt_models_store_context() {
+  local id="$1" tokens="$2" current updated
+  [[ "$tokens" =~ ^[1-9][0-9]{0,$((SHUNT_CONTEXT_MAX_DIGITS - 1))}$ ]] \
+    || shunt_report_error "tokens must be a positive integer of at most $SHUNT_CONTEXT_MAX_DIGITS digits."
+  [ -f "$SHUNT_MODELS_FILE" ] || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
+  jq -e '.models | type == "array"' "$SHUNT_MODELS_FILE" >/dev/null 2>&1 \
+    || shunt_report_error "$SHUNT_MODELS_FILE is not a valid models registry."
+  current=$(cat "$SHUNT_MODELS_FILE")
+  echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null \
+    || shunt_report_error "model '$id' is not in the registry."
+  updated=$(echo "$current" | jq --arg id "$id" --argjson t "$tokens" \
+    '.models |= map(if .id == $id then .context_tokens = $t else . end)')
+  shunt_models_write "$updated"
+  echo "shunt: context_tokens for '$id' set to $tokens."
+}
+
+# set-context <provider/model> <tokens>
+cmd_set_context() {
+  local id="${1:-}" tokens="${2:-}"
+  [ -n "$id" ] && [ -n "$tokens" ] || shunt_report_error "usage: shunt-models set-context <provider/model> <tokens>"
+  shunt_models_store_context "$id" "$tokens"
+}
+
+# detect-context <provider/model> [--write]
+# Asks the provider for the model's context window. Prints it, and with --write
+# stores it. Nothing is ever written when the provider does not report one.
+cmd_detect_context() {
+  local id="${1:-}" write="${2:-}" tokens
+  [ -n "$id" ] && { [ -z "$write" ] || [ "$write" = --write ]; } \
+    || shunt_report_error "usage: shunt-models detect-context <provider/model> [--write]"
+  tokens=$(shunt_models_detect_context "$id") || tokens=""
+  [ -n "$tokens" ] || shunt_report_error "could not detect the context window of '$id' from its provider. Enter it yourself: shunt-models set-context $id <tokens>"
+  if [ "$write" = --write ]; then
+    shunt_models_store_context "$id" "$tokens"
+  fi
+  echo "$tokens"
+}
+
 cmd_list() {
   shunt_models_available || { shunt_models_unavailable_notice; return 0; }
   local active
@@ -443,7 +492,7 @@ cmd_key_set() {
 }
 
 subcommand="${1:-}"
-[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|roles|sync|key> [args...]"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|roles|set-context|detect-context|sync|key> [args...]"
 shift
 
 case "$subcommand" in
@@ -455,6 +504,8 @@ case "$subcommand" in
   disable) cmd_set_enabled false "$@" ;;
   thinking) cmd_thinking "$@" ;;
   roles) cmd_roles "$@" ;;
+  set-context) cmd_set_context "$@" ;;
+  detect-context) cmd_detect_context "$@" ;;
   list) cmd_list "$@" ;;
   status) cmd_status "$@" ;;
   sync) cmd_sync "$@" ;;

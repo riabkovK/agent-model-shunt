@@ -201,7 +201,7 @@ _shunt_http_guard_size() {
   local tokens=$(( ($1 + SHUNT_HTTP_BYTES_PER_TOKEN - 1) / SHUNT_HTTP_BYTES_PER_TOKEN )) budget
   if [ -z "$ct" ]; then
     [ "$tokens" -le "$SHUNT_HTTP_UNKNOWN_CONTEXT_MAX_TOKENS" ] && return 0
-    echo "shunt: model $id has no context_tokens, set it via model-config (config problem, no request sent)." >&2
+    echo "shunt: model $id has no context_tokens. Run: shunt-models detect-context $id --write, or shunt-models set-context $id <tokens> (config problem, no request sent)." >&2
     return "$SHUNT_TRY_INVOKE_ERROR"
   fi
   budget=$(( ct * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 ))
