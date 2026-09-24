@@ -7,8 +7,9 @@
 #    "cost": number}          # cost only when the provider reported it
 #
 # The extractors and the debug log in opencode.sh read only this format, so a
-# new transport (e.g. a direct HTTP client) only has to produce it. `opencode`
-# (the OpenCode CLI) is the only transport today and the default.
+# new transport only has to produce it. `opencode` (the OpenCode CLI) is the
+# default, `http` (transport-http.sh) posts straight to an OpenAI-compatible
+# API. The transport is chosen per provider, see shunt_transport_for_agent.
 #
 # Meant to be sourced by scripts/lib/opencode.sh, which supplies
 # shunt_prepare_isolated_config, shunt_tmpfile and shunt_report_error.
@@ -17,11 +18,21 @@ SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-300}"
 
 # Exit statuses of shunt_transport_invoke that name the failure, so the failover
 # loop can say why a model failed. Any other non-zero status (1) means the agent
-# or its config could not be prepared, which shunt_prepare_isolated_config has
-# already explained on stderr.
+# or its config could not be prepared, which shunt_prepare_isolated_config (or
+# the http transport) has already explained on stderr.
 SHUNT_TRY_INVOKE_TIMEOUT=124
 SHUNT_TRY_INVOKE_ERROR=2
 SHUNT_TRY_INVOKE_EMPTY=3
+# The provider rejected the key (HTTP 401/403). Not the model's fault, so the
+# failover loop moves on to the next candidate without a breaker failure.
+SHUNT_TRY_INVOKE_AUTH=4
+
+_SHUNT_TRANSPORT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=providers.sh
+source "$_SHUNT_TRANSPORT_LIB_DIR/providers.sh"
+# shellcheck source=transport-http.sh
+source "$_SHUNT_TRANSPORT_LIB_DIR/transport-http.sh"
+unset _SHUNT_TRANSPORT_LIB_DIR
 
 # shunt_run_with_timeout <command> [args...]
 # Runs the command under SHUNT_TIMEOUT_SECONDS and returns its status, 124 when
@@ -102,12 +113,47 @@ _shunt_transport_opencode() {
 # normalized response file. Returns the SHUNT_TRY_INVOKE_* statuses on a failed
 # call, and 1 for an unknown transport.
 shunt_transport_invoke() {
-  local transport="${SHUNT_TRANSPORT:-opencode}"
+  local transport status=0
+  # The one registry lookup of this call. The http transport reuses it, and it
+  # is forgotten afterwards so the next call sees registry edits.
+  _shunt_http_resolve "$1" || true
+  transport=$(_shunt_transport_of_resolved) || { _shunt_http_clear; return 1; }
   case "$transport" in
-    opencode) _shunt_transport_opencode "$@" ;;
+    opencode) _shunt_transport_opencode "$@" || status=$? ;;
+    http) _shunt_transport_http "$@" || status=$? ;;
     *)
-      echo "shunt: unknown transport '$transport' (supported: opencode)." >&2
-      return 1
+      echo "shunt: unknown transport '$transport' (supported: opencode, http)." >&2
+      status=1
       ;;
   esac
+  _shunt_http_clear
+  return "$status"
+}
+
+# _shunt_transport_of_resolved
+# Prints the transport of the agent last resolved by _shunt_http_resolve: the
+# SHUNT_TRANSPORT override when set (tests), otherwise models.json model ->
+# provider (the id part before the first "/") -> providers.json transport. An
+# unresolved agent (missing registry or model) or a provider without an entry
+# means the implicit "opencode". Fails when providers.json is invalid.
+_shunt_transport_of_resolved() {
+  if [ -n "${SHUNT_TRANSPORT:-}" ]; then
+    echo "$SHUNT_TRANSPORT"
+    return 0
+  fi
+  [ -n "$_SHUNT_HTTP_ID" ] || { echo opencode; return 0; }
+  shunt_provider_transport "${_SHUNT_HTTP_ID%%/*}"
+}
+
+# shunt_transport_for_agent <agent>
+# Prints the transport for the agent's model, see _shunt_transport_of_resolved.
+# For callers outside a delegated call (preflight checks): it does its own
+# lookup and leaves nothing resolved behind.
+shunt_transport_for_agent() {
+  local transport status=0
+  _shunt_http_resolve "$1" || true
+  transport=$(_shunt_transport_of_resolved) || status=$?
+  _shunt_http_clear
+  [ "$status" -ne 0 ] || echo "$transport"
+  return "$status"
 }

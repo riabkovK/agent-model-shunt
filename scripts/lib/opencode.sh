@@ -125,6 +125,7 @@ _shunt_note_failure() {
     "$SHUNT_TRY_INVOKE_TIMEOUT") reason="timed out after ${SHUNT_TIMEOUT_SECONDS}s" ;;
     "$SHUNT_TRY_INVOKE_ERROR") reason="opencode error" ;;
     "$SHUNT_TRY_INVOKE_EMPTY") reason="empty output" ;;
+    "$SHUNT_TRY_INVOKE_AUTH") reason="auth failed" ;;
     *) return 0 ;;
   esac
   echo "shunt: $id failed: $reason" >&2
@@ -248,6 +249,9 @@ shunt_invoke_role_with_failover() {
       esac
     else
       _shunt_note_failure "$id" "$try_status"
+      # A rejected key says nothing about the model: try the next candidate
+      # without counting a breaker failure.
+      [ "$try_status" -ne "$SHUNT_TRY_INVOKE_AUTH" ] || continue
     fi
     _shunt_breaker_record failure "$key"
   done <<<"$candidates"
