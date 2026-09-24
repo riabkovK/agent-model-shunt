@@ -80,7 +80,31 @@ shunt_models_validate() {
     return 1
   fi
 
+  local sizing_error
+  sizing_error=$(_shunt_models_sizing_error)
+  if [ -n "$sizing_error" ]; then
+    echo "shunt: models registry at $SHUNT_MODELS_FILE: $sizing_error"
+    return 1
+  fi
+
   return 0
+}
+
+# _shunt_models_sizing_error
+# Prints a one-line reason for the first model whose optional context_tokens
+# (positive integer) or oversize_policy ("map_reduce" or "fail", absent means
+# map_reduce) is malformed, or why the registry could not be read.
+_shunt_models_sizing_error() {
+  jq -r '
+    [.models[] | . as $m
+      | if has("context_tokens") and ((.context_tokens | type) != "number"
+            or .context_tokens < 1 or .context_tokens != (.context_tokens | floor))
+        then "model \"\($m.id)\" has invalid context_tokens: must be a positive integer."
+        elif has("oversize_policy") and (.oversize_policy | IN("map_reduce", "fail") | not)
+        then "model \"\($m.id)\" has invalid oversize_policy: must be \"map_reduce\" or \"fail\"."
+        else empty end
+    ] | first // empty
+  ' "$SHUNT_MODELS_FILE" 2>/dev/null || echo "cannot read context_tokens and oversize_policy."
 }
 
 # shunt_models_role_known <role>

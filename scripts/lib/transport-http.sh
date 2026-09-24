@@ -19,6 +19,15 @@
 # the Authorization header cannot be replayed to another host.
 
 SHUNT_HTTP_EXCERPT_CHARS=300
+# Oversize guard: tokens are estimated as ceil(bytes / SHUNT_HTTP_BYTES_PER_TOKEN)
+# and must fit in SHUNT_HTTP_CONTEXT_BUDGET_PERCENT of the model's context_tokens.
+# A model without context_tokens is only trusted with requests up to
+# SHUNT_HTTP_UNKNOWN_CONTEXT_MAX_TOKENS.
+SHUNT_HTTP_BYTES_PER_TOKEN=3
+SHUNT_HTTP_CONTEXT_BUDGET_PERCENT=60
+SHUNT_HTTP_UNKNOWN_CONTEXT_MAX_TOKENS=4000
+# What an absent oversize_policy means.
+SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY=map_reduce
 _SHUNT_HTTP_TMP=()
 
 # _shunt_http_cleanup
@@ -85,24 +94,30 @@ _shunt_http_check_base_url() {
 # by _shunt_http_resolve and shared by the dispatcher (transport choice), the
 # system prompt and the request body. Empty _SHUNT_HTTP_AGENT means unresolved.
 _SHUNT_HTTP_AGENT="" _SHUNT_HTTP_ID="" _SHUNT_HTTP_ROLE="" _SHUNT_HTTP_REQUEST_BODY=""
+# Optional registry fields of the same entry, empty when absent.
+_SHUNT_HTTP_CONTEXT_TOKENS="" _SHUNT_HTTP_OVERSIZE_POLICY=""
 
 # _shunt_http_clear
 # Forgets the resolved entry so a later call reads the registry afresh.
 _shunt_http_clear() {
   _SHUNT_HTTP_AGENT="" _SHUNT_HTTP_ID="" _SHUNT_HTTP_ROLE="" _SHUNT_HTTP_REQUEST_BODY=""
+  _SHUNT_HTTP_CONTEXT_TOKENS="" _SHUNT_HTTP_OVERSIZE_POLICY=""
 }
 
 # _shunt_http_resolve <agent>
 # One registry read: finds the model whose bulk-reader or code-writer agent is
-# <agent> and sets _SHUNT_HTTP_ID, _SHUNT_HTTP_ROLE (bulk-reader|code-writer)
-# and _SHUNT_HTTP_REQUEST_BODY (compact JSON, {} when unset). Must run in the
-# current shell, not in $(...). Fails, leaving nothing resolved, when the
+# <agent> and sets _SHUNT_HTTP_ID, _SHUNT_HTTP_ROLE (bulk-reader|code-writer),
+# _SHUNT_HTTP_REQUEST_BODY (compact JSON, {} when unset), and the optional
+# _SHUNT_HTTP_CONTEXT_TOKENS and _SHUNT_HTTP_OVERSIZE_POLICY (empty when
+# absent). Fields are split on the unit separator, a non-whitespace delimiter,
+# so empty fields keep their column. Must run in the current shell, not in
+# $(...). Fails, leaving nothing resolved, when the
 # registry is missing or has no such model.
 _shunt_http_resolve() {
-  local agent="$1" id a rb
+  local agent="$1" id a rb ct op
   _shunt_http_clear
   shunt_models_available || return 1
-  while IFS=$'\t' read -r id a rb; do
+  while IFS=$'\x1f' read -r id a rb ct op; do
     if [ "$agent" = "$a" ]; then
       _SHUNT_HTTP_ROLE=bulk-reader
     elif [ "$agent" = "$(shunt_models_code_writer_agent_for "$id")" ]; then
@@ -111,8 +126,9 @@ _shunt_http_resolve() {
       continue
     fi
     _SHUNT_HTTP_AGENT="$agent" _SHUNT_HTTP_ID="$id" _SHUNT_HTTP_REQUEST_BODY="$rb"
+    _SHUNT_HTTP_CONTEXT_TOKENS="$ct" _SHUNT_HTTP_OVERSIZE_POLICY="$op"
     return 0
-  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson)] | @tsv' "$SHUNT_MODELS_FILE")
+  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.context_tokens // "") | tostring), (.oversize_policy // "")] | join("\u001f")' "$SHUNT_MODELS_FILE")
   return 1
 }
 
@@ -140,6 +156,32 @@ _shunt_http_build_prompt() {
     [ -f "$f" ] && [ -r "$f" ] || { echo "shunt: cannot read attached file '$f'." >&2; return 1; }
     { printf '\n--- file: %s ---\n' "$f"; cat -- "$f"; printf '\n--- end of file ---\n'; } >>"$out"
   done
+}
+
+# _shunt_http_guard_size <bytes>
+# Checks the estimated request size against the resolved model's context budget.
+# Returns 0 when the request may be sent. Otherwise explains on stderr and
+# returns SHUNT_TRY_INVOKE_ERROR (a model or config failure, nothing is sent).
+# An absent oversize_policy means SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY. Code-write
+# always fails when too big, before the policy is looked at.
+_shunt_http_guard_size() {
+  local id="$_SHUNT_HTTP_ID" ct="$_SHUNT_HTTP_CONTEXT_TOKENS" policy="$_SHUNT_HTTP_OVERSIZE_POLICY"
+  local tokens=$(( ($1 + SHUNT_HTTP_BYTES_PER_TOKEN - 1) / SHUNT_HTTP_BYTES_PER_TOKEN )) budget
+  if [ -z "$ct" ]; then
+    [ "$tokens" -le "$SHUNT_HTTP_UNKNOWN_CONTEXT_MAX_TOKENS" ] && return 0
+    echo "shunt: model $id has no context_tokens, set it via model-config (config problem, no request sent)." >&2
+    return "$SHUNT_TRY_INVOKE_ERROR"
+  fi
+  budget=$(( ct * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 ))
+  [ "$tokens" -le "$budget" ] && return 0
+  echo "shunt: model $id: input is too large for the model (about $tokens tokens, budget $budget), no request sent." >&2
+  [ "$_SHUNT_HTTP_ROLE" = code-writer ] && return "$SHUNT_TRY_INVOKE_ERROR"
+  case "${policy:-$SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY}" in
+    fail) ;;
+    map_reduce) echo "shunt: map_reduce chunking is not implemented yet." >&2 ;;
+    *) echo "shunt: model $id has an invalid oversize_policy (config problem)." >&2 ;;
+  esac
+  return "$SHUNT_TRY_INVOKE_ERROR"
 }
 
 # _shunt_http_normalize <response-file>
@@ -181,6 +223,7 @@ _shunt_http_call() {
   _shunt_http_new_tmp prompt_file && _shunt_http_new_tmp body_file \
     && _shunt_http_new_tmp resp_file && _shunt_http_new_tmp err_file || return 1
   _shunt_http_build_prompt "$prompt_file" "$question" "$@" || return 1
+  _shunt_http_guard_size $(( $(printf '%s' "$system_prompt" | wc -c) + $(wc -c <"$prompt_file") )) || return $?
   # The registered request_body goes first so it can never replace model or messages.
   jq -n -c --arg model "${id#*/}" --rawfile prompt "$prompt_file" --arg system "$system_prompt" --argjson rb "$request_body" \
     '$rb + {model: $model, messages: [{role: "system", content: $system}, {role: "user", content: $prompt}]}' >"$body_file" || return 1

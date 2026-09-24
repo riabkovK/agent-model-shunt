@@ -411,3 +411,110 @@ count_registry_lookups() {
   shunt_transport_invoke "$AGENT" "q"
   [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "none" ]
 }
+
+# Oversize guard. write_sized_registry <context_tokens|null> <oversize_policy|null>
+# rewrites the registry with the two optional fields. big_question <chars> prints
+# a question of that many bytes.
+write_sized_registry() {
+  jq -n --argjson ct "$1" --argjson op "$2" '{version:1,models:[
+    {id:"acme/m1",agent:"shunt-bulk-reader-acme-m1",enabled:true}
+      + (if $ct == null then {} else {context_tokens:$ct} end)
+      + (if $op == null then {} else {oversize_policy:$op} end)]}' >"$SHUNT_MODELS_FILE"
+}
+
+big_question() {
+  head -c "$1" /dev/zero | tr '\0' 'x'
+}
+
+@test "guard: a request within 60 percent of context_tokens is sent" {
+  write_sized_registry 100000 '"fail"'
+  run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
+  assert_success
+  [ -f "$FAKE_CURL_SENT" ]
+}
+
+@test "guard: too big with oversize_policy fail returns ERROR and sends nothing" {
+  write_sized_registry 1000 '"fail"'
+  run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  assert_output --partial "acme/m1"
+  assert_output --partial "too large"
+  assert_output --partial "budget 600"
+  [ ! -f "$FAKE_CURL_ARGV" ]
+}
+
+@test "guard: too big with no oversize_policy behaves like map_reduce" {
+  write_sized_registry 1000 null
+  run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  assert_output --partial "too large"
+  assert_output --partial "map_reduce chunking is not implemented yet"
+  [ ! -f "$FAKE_CURL_ARGV" ]
+}
+
+@test "guard: explicit fail does not mention map_reduce chunking" {
+  write_sized_registry 1000 '"fail"'
+  run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  refute_output --partial "not implemented"
+}
+
+@test "resolve: an entry without an agent keeps its later columns" {
+  jq -n '{version:1,models:[{id:"acme/m1",enabled:true,context_tokens:1000,
+    request_body:{reasoning_effort:"low"},oversize_policy:"fail"}]}' >"$SHUNT_MODELS_FILE"
+  _shunt_http_resolve "shunt-code-writer-acme-m1"
+  [ "$_SHUNT_HTTP_ID" = "acme/m1" ]
+  [ "$_SHUNT_HTTP_ROLE" = code-writer ]
+  [ "$_SHUNT_HTTP_REQUEST_BODY" = '{"reasoning_effort":"low"}' ]
+  [ "$_SHUNT_HTTP_CONTEXT_TOKENS" = 1000 ]
+  [ "$_SHUNT_HTTP_OVERSIZE_POLICY" = fail ]
+}
+
+@test "guard: too big with map_reduce says chunking is not implemented and sends nothing" {
+  write_sized_registry 1000 '"map_reduce"'
+  run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  assert_output --partial "map_reduce chunking is not implemented yet"
+  [ ! -f "$FAKE_CURL_ARGV" ]
+}
+
+@test "guard: the code-writer role always fails when too big, even with map_reduce" {
+  write_sized_registry 1000 '"map_reduce"'
+  run shunt_transport_invoke "shunt-code-writer-acme-m1" "$(big_question 6000)"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  assert_output --partial "too large"
+  refute_output --partial "not implemented"
+  [ ! -f "$FAKE_CURL_ARGV" ]
+}
+
+@test "guard: no context_tokens and a small request is sent" {
+  write_sized_registry null null
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ -f "$FAKE_CURL_SENT" ]
+}
+
+@test "guard: no context_tokens and a big request fails with the config message" {
+  write_sized_registry null '"fail"'
+  run shunt_transport_invoke "$AGENT" "$(big_question 20000)"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  assert_output --partial "model acme/m1 has no context_tokens, set it via model-config"
+  [ ! -f "$FAKE_CURL_ARGV" ]
+}
+
+@test "guard: an unknown oversize_policy at runtime is a config failure and sends nothing" {
+  # Validation rejects such a registry, so exercise the guard on resolved state.
+  _SHUNT_HTTP_ID="acme/m1" _SHUNT_HTTP_ROLE=bulk-reader
+  _SHUNT_HTTP_CONTEXT_TOKENS=1000 _SHUNT_HTTP_OVERSIZE_POLICY=bogus
+  run _shunt_http_guard_size 6000
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  assert_output --partial "invalid oversize_policy"
+  [ ! -f "$FAKE_CURL_ARGV" ]
+}
+
+@test "guard: the size check does not add a registry lookup" {
+  write_sized_registry 1000 '"fail"'
+  count_registry_lookups
+  shunt_transport_invoke "$AGENT" "$(big_question 6000)" || true
+  [ "$(wc -l <"$LOOKUPS_FILE")" -eq 1 ]
+}
