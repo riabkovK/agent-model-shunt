@@ -92,6 +92,19 @@ registry_untouched() { [ "$(cat "$SHUNT_MODELS_FILE")" = "$BEFORE" ]; }
   grep -q -- '-X POST' "$FAKE_CURL_ARGV"
 }
 
+@test "detect: ollama num_ctx in parameters wins over the architecture maximum" {
+  route api_show '{"parameters":"stop \"<x>\"\nnum_ctx                        131072\ntemperature 1","model_info":{"qwen3.context_length":262144}}'
+  run detect acme/m1
+  assert_success
+  assert_output 131072
+}
+
+@test "detect: ollama without num_ctx uses the model_info maximum" {
+  route api_show '{"parameters":"stop \"<x>\"","model_info":{"qwen3.context_length":262144}}'
+  run detect acme/m1
+  assert_output 262144
+}
+
 @test "detect: field precedence follows the documented order" {
   route v1_models_m1 '{"max_input_tokens":1,"context_window":3,"max_model_len":2,"context_length":4}'
   run detect acme/m1

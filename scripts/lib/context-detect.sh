@@ -6,8 +6,10 @@
 # from built-in knowledge. Sources, in order:
 #   1. GET <base_url>/models/<model>
 #   2. GET <base_url>/models, the entry whose id is <model>
-#   3. Ollama: POST <base_url without /v1>/api/show, a model_info key ending in
-#      .context_length
+#   3. Ollama: POST <base_url without /v1>/api/show. The runtime window is
+#      `num_ctx` in the `parameters` text, preferred because it is what the
+#      server really allows. A model_info key ending in .context_length is only
+#      the architecture maximum, used when num_ctx is not set.
 # Every failure (network, non-2xx, bad JSON) just means "not found". The key
 # only ever lives in a 0600 header file handed to curl as -H @file.
 
@@ -89,6 +91,8 @@ _shunt_detect_run() {
   api_base="${base%/v1}"
   body=$(jq -n -c --arg m "$model" '{model: $m}')
   if _shunt_detect_get "$api_base/api/show" "$resp" "$body"; then
+    value=$(jq -r '(.parameters | strings | [scan("(?:^|\\n)num_ctx[ \\t]+([0-9]+)")[0] | tonumber | select(. > 0)] | first) // empty' "$resp" 2>/dev/null)
+    [ -z "$value" ] || { echo "$value"; return 0; }
     value=$(jq -r '[.model_info | objects | to_entries[] | select(.key | endswith(".context_length")) | .value
       | select(type == "number" and . > 0 and . == floor)] | first // empty' "$resp" 2>/dev/null)
     [ -z "$value" ] || { echo "$value"; return 0; }
