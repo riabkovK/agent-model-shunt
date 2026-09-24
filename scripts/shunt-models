@@ -19,6 +19,8 @@
 #          thinking is off. Omitted: stored off options stay. '{}' clears them.
 #   shunt-models roles <provider/model> <role>[,<role>...]
 #   shunt-models sync
+#   shunt-models key set <provider>      (hidden prompt, or one line on piped stdin)
+#   shunt-models key status <provider>   (yes/no and key type, never the value)
 
 set -euo pipefail
 
@@ -27,6 +29,8 @@ SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$SCRIPT_DIR/lib/opencode.sh"
 # shellcheck source=lib/models.sh
 source "$SCRIPT_DIR/lib/models.sh"
+# shellcheck source=lib/providers.sh
+source "$SCRIPT_DIR/lib/providers.sh"
 
 # shunt_models_read_or_empty
 # Prints the current registry JSON, or an empty-but-valid-shaped registry
@@ -384,8 +388,62 @@ cmd_sync() {
   done
 }
 
+# shunt_read_key
+# Prints one key line read from the tty without echo (prompt on stderr), or
+# from stdin when it is not a tty (tests, pipes).
+shunt_read_key() {
+  local key
+  if [ -t 0 ]; then
+    IFS= read -r -s -p "API key (input hidden): " key
+    echo >&2
+  else
+    IFS= read -r key || true
+  fi
+  printf '%s\n' "$key"
+}
+
+# cmd_key set|status <provider>
+cmd_key() {
+  local action="${1:-}" provider="${2:-}"
+  [ -n "$provider" ] || shunt_report_error "usage: shunt-models key <set|status> <provider>"
+  [ -f "$SHUNT_PROVIDERS_FILE" ] && jq -e --arg p "$provider" '.providers[$p]' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1 \
+    || shunt_report_error "provider '$provider' is not in $SHUNT_PROVIDERS_FILE."
+  local type
+  type=$(shunt_provider_key_type "$provider") || exit 1
+  case "$action" in
+    set) cmd_key_set "$provider" "$type" ;;
+    status)
+      if [ "$type" = none ]; then
+        echo "shunt: provider '$provider': yes (type none, no key needed)"
+      elif shunt_provider_key_resolve "$provider" >/dev/null 2>&1; then
+        echo "shunt: provider '$provider': yes (type $type)"
+      else
+        echo "shunt: provider '$provider': no (type $type)"
+      fi ;;
+    *) shunt_report_error "usage: shunt-models key <set|status> <provider>" ;;
+  esac
+}
+
+cmd_key_set() {
+  local provider="$1" type="$2" key
+  case "$type" in
+    env) shunt_report_error "provider '$provider' uses an env key: export the variable named in its key.ref instead." ;;
+    none) shunt_report_error "provider '$provider' has key type none, there is no key to set." ;;
+    keyring) [ -n "$(shunt_keyring_backend)" ] || shunt_report_error "no keyring backend found (secret-tool, security, kwallet-query). Use an env key type instead." ;;
+  esac
+  key=$(shunt_read_key)
+  [ -n "$key" ] || shunt_report_error "empty key, nothing stored."
+  if [ "$type" = keyring ]; then
+    printf '%s\n' "$key" | shunt_keyring_store "$provider" || exit 1
+  else
+    printf '%s\n' "$key" | shunt_provider_plaintext_store "$provider" || exit 1
+    shunt_provider_plaintext_warning >&2
+  fi
+  echo "shunt: key stored for '$provider' (type $type)."
+}
+
 subcommand="${1:-}"
-[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|roles|sync> [args...]"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|roles|sync|key> [args...]"
 shift
 
 case "$subcommand" in
@@ -400,5 +458,6 @@ case "$subcommand" in
   list) cmd_list "$@" ;;
   status) cmd_status "$@" ;;
   sync) cmd_sync "$@" ;;
+  key) cmd_key "$@" ;;
   *) shunt_report_error "unknown subcommand: $subcommand" ;;
 esac
