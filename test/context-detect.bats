@@ -269,3 +269,72 @@ breaker_with_failures() {
   run jq -r '.models["acme/m1"].failures' "$SHUNT_BREAKER_STATE_FILE"
   assert_output 3
 }
+
+# hang_curl: replaces the fake curl with one that touches $TEST_TMPDIR/curl-started
+# and then hangs, so a test can kill the caller while a request is in flight.
+hang_curl() {
+  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
+#!/bin/bash
+: >"$TEST_TMPDIR/curl-started"
+exec sleep 30
+SH
+  chmod +x "$TEST_TMPDIR/bin/curl"
+  export TEST_TMPDIR
+}
+
+# kill_group_when_curl_starts <pid>: TERMs the process group (what Ctrl-C or a
+# tool timeout does to the whole tree) once the hanging curl has started.
+kill_group_when_curl_starts() {
+  local i
+  for i in $(seq 1 100); do
+    [ -f "$TEST_TMPDIR/curl-started" ] && break
+    sleep 0.05
+  done
+  kill -TERM -- -"$1" 2>/dev/null || true
+  wait "$1" 2>/dev/null || true
+}
+
+@test "detect: killing detect-context mid-request leaves no auth header file with the key in TMPDIR" {
+  command -v setsid >/dev/null || skip "setsid not available"
+  hang_curl
+  setsid "$REPO_ROOT/scripts/shunt-models" detect-context acme/m1 >/dev/null 2>&1 &
+  kill_group_when_curl_starts "$!"
+  run grep -rlF "$ACME_KEY" "$TMPDIR"
+  assert_output ""
+}
+
+@test "detect: a 401 answer is reported as an auth failure with exit code 3, not as a missing window" {
+  route v1_models_m1 '{"error":"unauthorized"}'
+  printf 401 >"$FAKE_ROUTES/v1_models_m1.code"
+  run --separate-stderr detect acme/m1
+  [ "$status" -eq 3 ]
+  [[ "$stderr" == *"auth failed"* ]]
+  [[ "$stderr" == *"re-enter the key through /model-config"* ]]
+  [[ "$stderr" != *"could not detect"* ]]
+  [[ "$stderr" != *"$ACME_KEY"* ]]
+  registry_untouched
+}
+
+@test "detect: a 403 on the models list is also an auth failure" {
+  printf 403 >"$FAKE_ROUTES/v1_models.code"
+  route v1_models '{"error":"forbidden"}'
+  run --separate-stderr detect acme/m1
+  [ "$status" -eq 3 ]
+  [[ "$stderr" == *"auth failed"* ]]
+}
+
+@test "detect: a 404 everywhere is still the plain could-not-detect failure with exit code 1" {
+  run --separate-stderr detect acme/m1
+  [ "$status" -eq 1 ]
+  [[ "$stderr" == *"could not detect the context window"* ]]
+}
+
+@test "detect: a caller's EXIT trap survives shunt_models_detect_context" {
+  route v1_models_m1 '{"id":"m1","context_length":4096}'
+  run bash -c '
+    source "$1/scripts/lib/opencode.sh"; source "$1/scripts/lib/context-detect.sh"
+    trap "echo caller-trap-ran" EXIT
+    shunt_models_detect_context acme/m1 >/dev/null
+    trap -p EXIT' _ "$REPO_ROOT"
+  assert_output --partial "caller-trap-ran"
+}

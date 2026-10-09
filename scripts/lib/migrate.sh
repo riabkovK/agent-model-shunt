@@ -12,39 +12,121 @@
 # state: new | pending | done | skip. storage: none env keyring plaintext
 # stored skip ask.
 #
-# Secret rules: a literal apiKey is never printed, logged, put in a plan, in
-# argv or copied anywhere but the chosen storage. It travels from opencode.json
-# through a pipe to shunt_keyring_store / shunt_provider_plaintext_store.
-# opencode.json is never modified.
+# Key sources, in order: the apiKey of the provider in opencode.json (a literal
+# string, {env:NAME} or {file:path}), else the provider's entry in OpenCode's
+# auth.json ($XDG_DATA_HOME/opencode/auth.json, default
+# ~/.local/share/opencode/auth.json, {"<provider>":{"type":"api","key":"..."}}).
+# A literal, a file or an auth.json key is copied to the chosen storage.
+#
+# Secret rules: such a key is never printed, logged, put in a plan, in argv or
+# copied anywhere but the chosen storage. It travels from its source through a
+# pipe to shunt_keyring_store / shunt_provider_plaintext_store. The detection
+# providers file in TMPDIR never holds a key. opencode.json and auth.json are
+# never modified.
 
 MIGRATE_STORAGE_CHOICES="keyring env plaintext skip"
 MIGRATE_PLAN=""
-_MIGRATE_TMP=""
+_MIGRATE_DETECT_TMP=""
+_MIGRATE_USED_REFS=""
+# Env var through which the detection subshell hands one stored plaintext key
+# to the sanitized detection providers file (see _migrate_detect_doc).
+_MIGRATE_DETECT_KEY_VAR="SHUNT_MIGRATE_DETECT_KEY"
 
 # _migrate_opencode_json
 _migrate_opencode_json() { printf '%s' "$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"; }
 
 # _migrate_collect_providers
 # Prints one compact JSON line per opencode provider used by the registry,
-# with the key classified as none | env | literal (the key itself is dropped).
+# with the key classified as none | env | file | literal (a literal key itself
+# is dropped, a file key keeps its path).
 _migrate_collect_providers() {
   jq -c --slurpfile reg "$SHUNT_MODELS_FILE" '
     ([$reg[0].models[]?.id | split("/")[0]] | unique) as $used
     | (.provider // {}) | to_entries[] | select(.key as $k | $used | index($k))
     | (.value.options.apiKey // "") as $k
     | (if ($k | type) == "string" then ($k | capture("^\\{env:(?<n>[A-Za-z_][A-Za-z0-9_]*)\\}$")? // null) else null end) as $env
+    | (if ($k | type) == "string" then ($k | capture("^\\{file:(?<p>.+)\\}$")? // null) else null end) as $file
     | {name: .key, base_url: (.value.options.baseURL // ""),
-       key_kind: (if $k == "" then "none" elif $env != null then "env" else "literal" end),
-       env_ref: ($env.n // "")}' "$(_migrate_opencode_json)"
+       key_kind: (if $k == "" then "none" elif $env != null then "env" elif $file != null then "file" else "literal" end),
+       env_ref: ($env.n // ""), key_path: ($file.p // "")}' "$(_migrate_opencode_json)"
 }
 
-# _migrate_default_env_ref <provider>
-_migrate_default_env_ref() {
+# _migrate_auth_json
+_migrate_auth_json() { printf '%s' "${XDG_DATA_HOME:-$HOME/.local/share}/opencode/auth.json"; }
+
+# _migrate_trim: strips leading and trailing whitespace from the argument.
+_migrate_trim() {
+  local v="$1"
+  v="${v#"${v%%[![:space:]]*}"}"
+  printf '%s' "${v%"${v##*[![:space:]]}"}"
+}
+
+# _migrate_expand_path <path>
+# Expands a leading ~ and resolves a relative path against the OpenCode config dir.
+_migrate_expand_path() {
+  case "$1" in
+    "~") printf '%s' "$HOME" ;;
+    "~/"*) printf '%s' "$HOME/${1#\~/}" ;;
+    /*) printf '%s' "$1" ;;
+    *) printf '%s' "$SHUNT_OPENCODE_CONFIG_HOME/$1" ;;
+  esac
+}
+
+# _migrate_auth_json_has_key <provider>
+# Succeeds when auth.json holds a non-empty api key for the provider.
+_migrate_auth_json_has_key() {
+  local f
+  f=$(_migrate_auth_json)
+  [ -f "$f" ] && [ -r "$f" ] || return 1
+  jq -e --arg p "$1" '.[$p] | objects | .type == "api" and (.key | type) == "string" and (.key | length) > 0' "$f" >/dev/null 2>&1
+}
+
+# _migrate_file_key_ok <path>
+# Succeeds when the {file:path} key file is readable and holds a non-blank key.
+_migrate_file_key_ok() {
+  local f key
+  f=$(_migrate_expand_path "$1")
+  [ -f "$f" ] && [ -r "$f" ] || return 1
+  key=$(_migrate_trim "$(cat "$f" 2>/dev/null)")
+  [ -n "$key" ]
+}
+
+# _migrate_read_key <provider>
+# Prints the key the plan copies for the provider, from its source. Only ever
+# captured into a variable or piped into a storage function.
+_migrate_read_key() {
+  local name="$1" src path key=""
+  src=$(jq -r --arg n "$name" '.providers[] | select(.name == $n) | .key_source' <<<"$MIGRATE_PLAN")
+  case "$src" in
+    literal) key=$(jq -r --arg p "$name" '.provider[$p].options.apiKey' "$(_migrate_opencode_json)") ;;
+    file)
+      path=$(jq -r --arg n "$name" '.providers[] | select(.name == $n) | .key_path' <<<"$MIGRATE_PLAN")
+      key=$(_migrate_trim "$(cat "$(_migrate_expand_path "$path")")") ;;
+    auth.json) key=$(jq -r --arg p "$name" '.[$p].key' "$(_migrate_auth_json)") ;;
+  esac
+  printf '%s\n' "$key"
+}
+
+# _migrate_base_env_ref <provider>
+_migrate_base_env_ref() {
   printf 'SHUNT_%s_KEY' "$(printf '%s' "$1" | tr 'a-z' 'A-Z' | tr -c 'A-Z0-9' _)"
 }
 
+# _migrate_default_env_ref <provider>
+# Prints SHUNT_<NAME>_KEY, with a _2, _3, ... suffix while that ref is already
+# used by another provider (a-b and a.b would otherwise share one variable).
+_migrate_default_env_ref() {
+  local base ref n=1
+  base=$(_migrate_base_env_ref "$1")
+  ref="$base"
+  while [[ $'\n'"$_MIGRATE_USED_REFS" == *$'\n'"$ref"$'\n'* ]]; do
+    n=$((n + 1)); ref="${base}_$n"
+  done
+  printf '%s' "$ref"
+}
+
 # _migrate_ask_storage <provider>
-# Asks on the tty which storage to use for a literal key. Prints the choice.
+# Asks on the tty which storage to use for a key to copy. Prints the choice.
 _migrate_ask_storage() {
   local name="$1" default=env choice
   [ -z "$(shunt_keyring_backend)" ] || default=keyring
@@ -61,6 +143,7 @@ _migrate_ask_storage() {
 _migrate_resolve_storage() {
   local name="$1" kind="$2" apply="$3" flag="$4" type storage
   case "$kind" in none) printf none; return ;; env) printf env; return ;; esac
+  # Any other kind (literal, file, auth.json) is a key to copy.
   type=$(shunt_provider_key_type "$name" 2>/dev/null) || type=none
   if { [ "$type" = keyring ] || [ "$type" = plaintext ]; } && shunt_provider_key_resolve "$name" >/dev/null 2>&1; then
     printf stored; return
@@ -72,7 +155,7 @@ _migrate_resolve_storage() {
   elif [ -t 0 ]; then
     printf ask; return
   else
-    echo "shunt: provider '$name' has a literal key, no tty and no --key-storage: treating it as skip." >&2
+    echo "shunt: provider '$name' has a key to copy, no tty and no --key-storage: treating it as skip." >&2
     storage=skip
   fi
   if [ "$storage" = keyring ] && [ -z "$(shunt_keyring_backend)" ]; then
@@ -96,26 +179,52 @@ _migrate_entry() {
     end'
 }
 
+# _migrate_key_source <provider> <kind> <path>
+# Prints the source of the key to copy (literal, file, auth.json) or nothing.
+# Fails with a reason on stderr when the source is unusable.
+_migrate_key_source() {
+  local name="$1" kind="$2" path="$3"
+  case "$kind" in
+    literal) printf literal ;;
+    file)
+      _migrate_file_key_ok "$path" \
+        || { echo "the apiKey file $path is not readable or is empty, so the key cannot be copied" >&2; return 1; }
+      printf file ;;
+    none)
+      if _migrate_auth_json_has_key "$name"; then printf auth.json; fi ;;
+  esac
+}
+
 # _migrate_plan_provider <collected-json> <apply 0|1> <flag>
 # Prints the plan entry for one provider.
 _migrate_plan_provider() {
   local line="$1" apply="$2" flag="$3" name raw kind ref state=new storage=none reason="" base="" entry=null err
+  local path source=""
   name=$(jq -r .name <<<"$line"); raw=$(jq -r .base_url <<<"$line")
-  kind=$(jq -r .key_kind <<<"$line"); ref=$(jq -r .env_ref <<<"$line")
+  kind=$(jq -r .key_kind <<<"$line"); ref=$(jq -r .env_ref <<<"$line"); path=$(jq -r .key_path <<<"$line")
   if [ "$(shunt_provider_transport "$name")" = http ]; then
     state=done; reason="already on the http transport"
   elif ! err=$(_shunt_http_check_base_url "$name" "$raw" _ 2>&1 >/dev/null); then
     state=skip; reason="${err#shunt: }"
+  elif ! err=$(_migrate_key_source "$name" "$kind" "$path" 2>&1 >/dev/null); then
+    state=skip; reason="$err, the provider stays on opencode"
   else
+    source=$(_migrate_key_source "$name" "$kind" "$path")
+    [ -z "$source" ] || kind=literal
     _shunt_http_check_base_url "$name" "$raw" base 2>/dev/null
     storage=$(_migrate_resolve_storage "$name" "$kind" "$apply" "$flag")
-    [ "$storage" != env ] || [ "$kind" = env ] || ref=$(_migrate_default_env_ref "$name")
+    if [ "$storage" = env ] && [ "$kind" != env ]; then
+      ref=$(_migrate_default_env_ref "$name")
+      [ "$ref" = "$(_migrate_base_env_ref "$name")" ] \
+        || reason="the default env ref is taken by another provider, so this one gets $ref"
+    fi
     case "$storage" in skip | ask) state=pending ;; esac
     entry=$(_migrate_entry "$storage" "$base" "$ref")
   fi
   jq -n -c --arg n "$name" --arg b "$base" --arg st "$state" --arg s "$storage" --arg r "$ref" \
-    --arg why "$reason" --argjson e "$entry" \
-    '{name: $n, base_url: $b, state: $st, storage: $s, env_ref: $r, reason: $why, entry: $e}'
+    --arg why "$reason" --argjson e "$entry" --arg src "$source" --arg kp "$path" \
+    '{name: $n, base_url: $b, state: $st, storage: $s, env_ref: $r, reason: $why, entry: $e,
+      key_source: $src, key_path: $kp}'
 }
 
 # _migrate_providers_doc
@@ -141,13 +250,24 @@ _migrate_effort() {
     | select(length > 0)' "$SHUNT_MODELS_FILE"
 }
 
+# _migrate_detect_env <detect-providers-file> <provider>
+# Run in the detection subshell. When the detection file is the sanitized copy
+# (see _migrate_detect_doc), hands the provider's stored plaintext key over in
+# the environment of that subshell only, never through a file.
+_migrate_detect_env() {
+  local pfile="$1" provider="$2" key
+  [ "$pfile" != "$SHUNT_PROVIDERS_FILE" ] || return 0
+  [ -f "$SHUNT_PROVIDERS_FILE" ] || return 0
+  key=$(jq -r --arg p "$provider" '.providers[$p] | select(.key.type == "plaintext") | .key.ref // empty' "$SHUNT_PROVIDERS_FILE" 2>/dev/null) || return 0
+  [ -z "$key" ] || export "$_MIGRATE_DETECT_KEY_VAR=$key"
+}
+
 # _migrate_context <id> <detect 0|1> <detect-providers-file>
-# Prints "tokens<TAB>source", "deferred" (detection needs a key not stored yet
-# and no fallback is claimed), or nothing when there is no number at all.
+# Prints "tokens<TAB>source", or nothing when there is no number at all.
 _migrate_context() {
   local id="$1" detect="$2" pfile="$3" tokens fallback
   if [ "$detect" = 1 ]; then
-    tokens=$( (SHUNT_PROVIDERS_FILE="$pfile"; shunt_models_detect_context "$id") 2>/dev/null) || tokens=""
+    tokens=$( (_migrate_detect_env "$pfile" "${id%%/*}"; SHUNT_PROVIDERS_FILE="$pfile"; shunt_models_detect_context "$id") 2>/dev/null) || tokens=""
     if [ -n "$tokens" ]; then printf '%s\tdetected from the provider' "$tokens"; return; fi
   fi
   fallback=$(jq -r --arg p "${id%%/*}" --arg m "${id#*/}" \
@@ -196,18 +316,22 @@ _migrate_models_doc() {
 
 # _migrate_print_provider <plan-entry-json>
 _migrate_print_provider() {
-  jq -r '
+  jq -r --arg cmd "$SHUNT_MODELS_HINT_CMD" '
     "provider \(.name): " + (
       if .state == "skip" then "skipped, \(.reason)"
       elif .state == "done" then "\(.reason), nothing to do for the provider"
       else "base_url \(.base_url), transport opencode -> \(if .state == "pending" then "opencode (stays, key pending)" else "http" end), key: " + (
-        if .storage == "none" then "none (opencode.json has no apiKey)"
+        (if .key_source == "file" then "read from the apiKey file \(.key_path) (never shown), then "
+         elif .key_source == "auth.json" then "read from OpenCode auth.json (never shown), then "
+         else "" end)
+        + (if .storage == "none" then "none (no apiKey in opencode.json or auth.json)"
         elif .storage == "env" then "env \(.env_ref) (export it yourself, the key is not copied)"
+          + (if .reason != "" then " [\(.reason)]" else "" end)
         elif .storage == "keyring" then "copied to the keyring (never shown)"
         elif .storage == "plaintext" then "copied to providers.json as plain text (mode 600, never shown)"
         elif .storage == "stored" then "already stored"
-        elif .storage == "ask" then "literal key, storage is asked at --apply (or pass --key-storage keyring|env|plaintext|skip)"
-        else "skipped: run `! scripts/shunt-models key set \(.name)` then re-run" end)
+        elif .storage == "ask" then "key to copy, storage is asked at --apply (or pass --key-storage keyring|env|plaintext|skip)"
+        else "skipped: run `! \($cmd) key set \(.name)` then re-run" end))
       end)' <<<"$1"
 }
 
@@ -229,21 +353,21 @@ _migrate_backup() {
 }
 
 # _migrate_store_keys <storage>
-# Stores the literal key of every provider planned with <storage>, keyring
+# Stores the key (see _migrate_read_key) of every provider planned with <storage>, keyring
 # (before providers.json is written) or plaintext (after). A failed keyring
 # store turns the provider into pending. The key goes through a pipe only.
 _migrate_store_keys() {
   local which="$1" name
   while IFS= read -r name; do
     if [ "$which" = keyring ]; then
-      if jq -r --arg p "$name" '.provider[$p].options.apiKey' "$(_migrate_opencode_json)" | shunt_keyring_store "$name"; then
+      if _migrate_read_key "$name" | shunt_keyring_store "$name"; then
         continue
       fi
       echo "shunt: could not store the key of '$name' in the keyring, leaving it pending." >&2
       MIGRATE_PLAN=$(jq -c --arg n "$name" '(.providers[] | select(.name == $n)) |= (.storage = "skip" | .state = "pending"
         | .entry = {transport: "opencode", base_url: .base_url, key: {type: "keyring"}})' <<<"$MIGRATE_PLAN")
     else
-      jq -r --arg p "$name" '.provider[$p].options.apiKey' "$(_migrate_opencode_json)" | shunt_provider_plaintext_store "$name" \
+      _migrate_read_key "$name" | shunt_provider_plaintext_store "$name" \
         || shunt_report_error "could not store the key of '$name' in $SHUNT_PROVIDERS_FILE."
       shunt_provider_plaintext_warning
     fi
@@ -262,24 +386,50 @@ _migrate_apply() {
   shunt_providers_unlock
   MIGRATE_PLAN=$(jq -c --argjson m "$(_migrate_plan_models 1 "$SHUNT_PROVIDERS_FILE")" '.models = $m' <<<"$MIGRATE_PLAN")
   shunt_models_write "$(_migrate_models_doc)"
-  echo "shunt: migration applied. Check with: shunt-models status"
+  echo "shunt: migration applied. Check with: $SHUNT_MODELS_HINT_CMD status"
 }
 
 # _migrate_build_plan <apply 0|1> <flag>
 _migrate_build_plan() {
-  local apply="$1" flag="$2" line providers="[]" entry names tmp
+  local apply="$1" flag="$2" line providers="[]" entry names
+  # Env refs already taken: those in providers.json and those the plan hands out.
+  _MIGRATE_USED_REFS=""
+  if [ -f "$SHUNT_PROVIDERS_FILE" ]; then
+    _MIGRATE_USED_REFS=$(jq -r '.providers[]? | .key | objects | select(.type == "env") | .ref // empty' "$SHUNT_PROVIDERS_FILE" 2>/dev/null || true)
+    _MIGRATE_USED_REFS+=$'\n'
+  fi
   while IFS= read -r line; do
     entry=$(_migrate_plan_provider "$line" "$apply" "$flag")
     providers=$(jq -c --argjson e "$entry" '. + [$e]' <<<"$providers")
+    _MIGRATE_USED_REFS+=$(jq -r 'select(.storage == "env") | .env_ref' <<<"$entry")$'\n'
   done < <(_migrate_collect_providers)
   MIGRATE_PLAN=$(jq -n -c --argjson p "$providers" '{providers: $p, models: []}')
-  # Detection sees the planned providers, without any literal key: a temp
-  # providers file with only the migrated entries, removed right away.
+  # Detection sees the planned providers through a temp providers file that
+  # holds no key (see _migrate_detect_doc). It is removed on every way out.
   names=$(jq -c '[.providers[] | select(.state == "new" or .state == "done") | .name]' <<<"$MIGRATE_PLAN")
-  tmp=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-migrate.XXXXXX")
-  _migrate_providers_doc | jq -c --argjson n "$names" '.providers |= with_entries(select(.key | IN($n[])))' >"$tmp"
-  MIGRATE_PLAN=$(jq -c --argjson m "$(_migrate_plan_models 0 "$tmp")" '.models = $m' <<<"$MIGRATE_PLAN")
-  rm -f "$tmp"
+  _MIGRATE_DETECT_TMP=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-migrate.XXXXXX")
+  _shunt_guard_install _MIGRATE_G _migrate_detect_cleanup
+  _migrate_detect_doc "$names" >"$_MIGRATE_DETECT_TMP"
+  MIGRATE_PLAN=$(jq -c --argjson m "$(_migrate_plan_models 0 "$_MIGRATE_DETECT_TMP")" '.models = $m' <<<"$MIGRATE_PLAN")
+  _migrate_detect_cleanup
+  _shunt_guard_remove _MIGRATE_G
+}
+
+# _migrate_detect_doc <provider-names-json>
+# Prints the providers document used for context detection: the planned
+# providers only, and every stored plaintext key replaced by an env ref to
+# _MIGRATE_DETECT_KEY_VAR, so no key is ever written to a temp file.
+_migrate_detect_doc() {
+  _migrate_providers_doc | jq -c --argjson n "$1" --arg v "$_MIGRATE_DETECT_KEY_VAR" '
+    .providers |= with_entries(select(.key | IN($n[])))
+    | .providers |= map_values(if .key.type == "plaintext" and ((.key.ref // "") != "")
+        then .key = {type: "env", ref: $v} else . end)'
+}
+
+# _migrate_detect_cleanup
+_migrate_detect_cleanup() {
+  [ -z "$_MIGRATE_DETECT_TMP" ] || rm -f "$_MIGRATE_DETECT_TMP"
+  _MIGRATE_DETECT_TMP=""
 }
 
 # _migrate_has_changes

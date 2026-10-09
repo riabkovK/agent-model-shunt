@@ -107,9 +107,10 @@ when `importable=` is not `none`.
 4. Ask the model id, then its roles (multi-select, both recommended), then
    `add <name>/<model> [<roles>]`. If it has code-write, offer the self-fix
    settings once.
-5. `detect-context <id> --write`. If that fails, ask the user for the
-   context window and run `set-context`. On an auth error, reopen the key
-   dialog once.
+5. `detect-context <id> --write`. If it fails with exit code 3 and the
+   message `auth failed ... re-enter the key through /model-config`, the key
+   was rejected (401 or 403): reopen the key dialog once, then retry. For any
+   other failure ask the user for the context window and run `set-context`.
 6. Re-run `dashboard`, show a short done summary and the action menu.
 
 If `opencode config=present` while `empty`, mention that models can also be

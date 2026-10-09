@@ -262,3 +262,42 @@ pfield() { jq -c ".providers.$1" "$SHUNT_PROVIDERS_FILE"; }
   run jq -r '.models[0].id' "$SHUNT_MODELS_FILE"
   assert_output "acme/m1"
 }
+
+@test "the mkdir lock fallback keeps the caller's EXIT trap and removes its lock dir" {
+  echo '{"version":1,"providers":{}}' >"$SHUNT_PROVIDERS_FILE"
+  # A PATH without flock forces the mkdir lock.
+  mkdir -p "$TEST_TMPDIR/noflock"
+  local tool
+  for tool in bash jq dirname mkdir rmdir mktemp sleep; do ln -s "$(command -v $tool)" "$TEST_TMPDIR/noflock/$tool"; done
+  run env PATH="$TEST_TMPDIR/noflock" bash -c '
+    source "$1/scripts/lib/providers.sh"
+    trap "echo caller-trap-ran" EXIT
+    shunt_providers_lock
+    [ -d "$SHUNT_PROVIDERS_FILE.lock.d" ] || echo no-lock-dir
+    shunt_providers_unlock
+    [ ! -d "$SHUNT_PROVIDERS_FILE.lock.d" ] || echo lock-dir-left
+    trap -p EXIT' _ "$REPO_ROOT"
+  assert_output --partial "caller-trap-ran"
+  refute_output --partial "no-lock-dir"
+  refute_output --partial "lock-dir-left"
+}
+
+@test "the mkdir lock fallback is released and the caller's trap runs when the shell exits holding it" {
+  echo '{"version":1,"providers":{}}' >"$SHUNT_PROVIDERS_FILE"
+  mkdir -p "$TEST_TMPDIR/noflock"
+  local tool
+  for tool in bash jq dirname mkdir rmdir mktemp sleep; do ln -s "$(command -v $tool)" "$TEST_TMPDIR/noflock/$tool"; done
+  run env PATH="$TEST_TMPDIR/noflock" bash -c '
+    source "$1/scripts/lib/providers.sh"
+    trap "echo caller-trap-ran" EXIT
+    shunt_providers_lock
+    exit 0' _ "$REPO_ROOT"
+  assert_output --partial "caller-trap-ran"
+  [ ! -d "$SHUNT_PROVIDERS_FILE.lock.d" ]
+}
+
+@test "plaintext store with an empty stdin fails cleanly under set -e instead of aborting" {
+  echo '{"version":1,"providers":{"p":{"transport":"http","base_url":"https://p.test/v1","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  run bash -c 'set -e; source "$1/scripts/lib/providers.sh"; shunt_provider_plaintext_store p </dev/null; echo reached' _ "$REPO_ROOT"
+  assert_output --partial "reached"
+}

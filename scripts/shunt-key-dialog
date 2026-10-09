@@ -27,6 +27,9 @@ unset BASH_XTRACEFD SHELLOPTS 2>/dev/null || true
 
 readonly EXIT_REFUSED=1 EXIT_USAGE=2 EXIT_NO_KEY=3 EXIT_TIMEOUT=4 EXIT_NO_DIALOG=5 EXIT_STORE=6
 readonly DEFAULT_DIALOG_TIMEOUT=120
+# What the AppleScript prints when the dialog gave up. A cancelled dialog is an
+# AppleScript error (-128, exit 1), so the two cases need different signals.
+readonly OSASCRIPT_GAVE_UP="__SHUNT_DIALOG_GAVE_UP__"
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/providers.sh
@@ -95,13 +98,16 @@ run_dialog() {
         kdialog --title "Model Shunt: $provider" --password "$prompt" || rc=$?
       fi ;;
     osascript)
-      osascript \
+      local out
+      out=$(osascript \
         -e 'on run argv' \
         -e 'set r to display dialog (item 1 of argv) default answer "" with hidden answer with title (item 2 of argv) giving up after (item 3 of argv as integer)' \
-        -e 'if gave up of r then error number -128' \
+        -e "if gave up of r then return \"$OSASCRIPT_GAVE_UP\"" \
         -e 'return text returned of r' \
         -e 'end run' \
-        -- "$prompt" "Model Shunt: $provider" "$timeout_s" || rc=$? ;;
+        -- "$prompt" "Model Shunt: $provider" "$timeout_s") || rc=$?
+      if [ "$out" = "$OSASCRIPT_GAVE_UP" ]; then rc=124; out=""; fi
+      printf '%s' "$out" ;;
   esac
   return "$rc"
 }
@@ -146,7 +152,8 @@ if [ -z "$key" ]; then
 fi
 
 store_rc=0
-printf '%s\n' "$key" | "$MODELS_BIN" key set "$provider" >/dev/null 2>&1 || store_rc=$?
+# shunt-models never prints the key, so its stderr is safe to pass through.
+printf '%s\n' "$key" | "$MODELS_BIN" key set "$provider" >/dev/null || store_rc=$?
 unset key
 if [ "$store_rc" -ne 0 ]; then
   echo "shunt: storing the key for '$provider' failed. Check: $SHUNT_MODELS_HINT_CMD key status $provider_q" >&2

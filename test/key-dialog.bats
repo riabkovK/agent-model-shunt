@@ -187,3 +187,25 @@ stored_key() { jq -r '.providers.plain.key.ref // ""' "$SHUNT_PROVIDERS_FILE"; }
   [[ "$output" != *"$SECRET"* ]]
   [[ "$stderr" != *"$SECRET"* ]]
 }
+
+@test "an osascript dialog that gave up exits 4 (timeout), not 3 (cancel)" {
+  STUB_KEY="__SHUNT_DIALOG_GAVE_UP__" SHUNT_KEY_DIALOG=osascript run --separate-stderr "$DIALOG_BIN" plain
+  [ "$status" -eq 4 ]
+  [[ "$stderr" == *"timed out"* ]]
+  [ -z "$(stored_key)" ]
+}
+
+@test "an osascript dialog the user cancelled still exits 3" {
+  STUB_KEY="" STUB_RC=1 SHUNT_KEY_DIALOG=osascript run --separate-stderr "$DIALOG_BIN" plain
+  [ "$status" -eq 3 ]
+}
+
+@test "a failing store passes the shunt-models error through without the key" {
+  # Under WSL there is no keyring backend, so `key set` refuses a keyring key.
+  echo "Linux version 5 microsoft" >"$TEST_TMPDIR/proc-version"
+  echo '{"version":1,"providers":{"kr":{"transport":"http","base_url":"https://x.test/v1","key":{"type":"keyring"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  SHUNT_PROC_VERSION_FILE="$TEST_TMPDIR/proc-version" run --separate-stderr "$DIALOG_BIN" kr
+  [ "$status" -eq 6 ]
+  [[ "$stderr" == *"no keyring backend"* ]]
+  [[ "$stderr" != *"$SECRET"* ]]
+}

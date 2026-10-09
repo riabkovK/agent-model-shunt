@@ -24,6 +24,43 @@ SHUNT_PROVIDER_KEY_TYPES="keyring env plaintext none"
 SHUNT_PROVIDERS_LOCK_TIMEOUT="${SHUNT_PROVIDERS_LOCK_TIMEOUT:-10}"
 _SHUNT_PROVIDERS_LOCK_DEPTH=0 _SHUNT_PROVIDERS_LOCK_FD="" _SHUNT_PROVIDERS_LOCK_DIR=""
 
+# _shunt_guard_install <prefix> <cleanup-command>
+# Runs <cleanup-command> when the shell exits, including on INT, TERM and HUP,
+# and then still runs the caller's own EXIT trap. The caller's EXIT, INT, TERM
+# and HUP traps are saved in <prefix>_SAVED_<SIG> (use a distinct <prefix> per
+# guard) and put back by _shunt_guard_remove. While a guard is installed a
+# caller's INT, TERM or HUP trap does not run. Bash defers a trap until the
+# foreground child ends, so a signal sent to the whole process group acts at once.
+_shunt_guard_install() {
+  local prefix="$1" cleanup="$2" sig saved old_exit=""
+  for sig in EXIT INT TERM HUP; do
+    saved=$(trap -p "$sig")
+    printf -v "${prefix}_SAVED_$sig" '%s' "$saved"
+    if [ "$sig" = EXIT ] && [ -n "$saved" ]; then
+      eval "set -- $saved"
+      old_exit="${3:-}"
+    fi
+  done
+  # The trap text only acts in the process that installed it: a subshell that
+  # inherits it (trap -p reports the parent's traps) must not run the cleanup.
+  local pid="${BASHPID:-$$}"
+  # shellcheck disable=SC2064 # pid and the commands are meant to be expanded now
+  trap "if [ \"\${BASHPID:-\$\$}\" = $pid ]; then $cleanup${old_exit:+; $old_exit}; fi" EXIT
+  trap 'exit 130' INT
+  trap 'exit 143' TERM
+  trap 'exit 129' HUP
+}
+
+# _shunt_guard_remove <prefix>
+# Puts back the traps saved by _shunt_guard_install. Does not run the cleanup.
+_shunt_guard_remove() {
+  local prefix="$1" sig var
+  for sig in EXIT INT TERM HUP; do
+    var="${prefix}_SAVED_$sig"
+    if [ -n "${!var:-}" ]; then eval "${!var}"; else trap - "$sig"; fi
+  done
+}
+
 # jq definition: `entry_problem` maps one providers to_entries item to a
 # description of what is wrong with it, or null. Never includes a key ref.
 # shellcheck disable=SC2016 # jq program, $names are jq variables
@@ -115,16 +152,17 @@ shunt_providers_lock() {
     _SHUNT_PROVIDERS_LOCK_DEPTH=$((_SHUNT_PROVIDERS_LOCK_DEPTH + 1))
     return 0
   fi
-  local lock="$SHUNT_PROVIDERS_FILE.lock" fd tries
+  local lock="$SHUNT_PROVIDERS_FILE.lock" tries
   mkdir -p "$(dirname "$SHUNT_PROVIDERS_FILE")" || return 1
+  # flock on a fixed fd works on every bash. The `{fd}>` form needs bash 4.1.
   if command -v flock >/dev/null 2>&1; then
-    exec {fd}>>"$lock" || return 1
-    if ! flock -x -w "$SHUNT_PROVIDERS_LOCK_TIMEOUT" "$fd"; then
-      exec {fd}>&-
+    exec 8>>"$lock" || return 1
+    if ! flock -x -w "$SHUNT_PROVIDERS_LOCK_TIMEOUT" 8; then
+      exec 8>&-
       echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE." >&2
       return 1
     fi
-    _SHUNT_PROVIDERS_LOCK_FD="$fd"
+    _SHUNT_PROVIDERS_LOCK_FD=8
   else
     tries=$((SHUNT_PROVIDERS_LOCK_TIMEOUT * 10))
     until mkdir "$lock.d" 2>/dev/null; do
@@ -136,7 +174,7 @@ shunt_providers_lock() {
       sleep 0.1
     done
     _SHUNT_PROVIDERS_LOCK_DIR="$lock.d"
-    trap 'rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null' EXIT
+    _shunt_guard_install _SHUNT_PL 'rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null'
   fi
   _SHUNT_PROVIDERS_LOCK_DEPTH=1
 }
@@ -146,11 +184,11 @@ shunt_providers_unlock() {
   _SHUNT_PROVIDERS_LOCK_DEPTH=$((_SHUNT_PROVIDERS_LOCK_DEPTH - 1))
   [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -eq 0 ] || return 0
   if [ -n "$_SHUNT_PROVIDERS_LOCK_FD" ]; then
-    exec {_SHUNT_PROVIDERS_LOCK_FD}>&-
+    exec 8>&-
     _SHUNT_PROVIDERS_LOCK_FD=""
   elif [ -n "$_SHUNT_PROVIDERS_LOCK_DIR" ]; then
     rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null
-    trap - EXIT
+    _shunt_guard_remove _SHUNT_PL
     _SHUNT_PROVIDERS_LOCK_DIR=""
   fi
 }
@@ -210,7 +248,7 @@ shunt_keyring_store() {
     kwallet-query)
       kwallet-query -f "$SHUNT_KEYRING_SERVICE" -w "$provider" "$SHUNT_KWALLET_WALLET" >/dev/null ;;
     security)
-      IFS= read -r key
+      IFS= read -r key || true
       security add-generic-password -U -s "$SHUNT_KEYRING_SERVICE/$provider" \
         -a "$SHUNT_KEYRING_SERVICE" -w "$key" >/dev/null ;;
   esac || { echo "shunt: storing the key in $backend failed." >&2; return 1; }
@@ -294,16 +332,22 @@ shunt_providers_write() {
 
 # shunt_provider_plaintext_store <provider>
 # Reads the key from stdin and stores it as the provider's plaintext ref. The
-# key travels through the environment, not argv. Holds the providers lock.
+# key travels through the environment, not argv. Holds the providers lock and
+# checks the key type inside it: a provider switched to env (or anything but
+# plaintext) in the meantime is refused, so a key is never written as an env ref.
 shunt_provider_plaintext_store() {
-  local provider="$1" key updated rc=0
-  IFS= read -r key
+  local provider="$1" key updated type rc=0
+  IFS= read -r key || true
   shunt_providers_lock || return 1
-  if shunt_providers_validate \
-    && updated=$(SHUNT_KEY_VALUE="$key" jq -c --arg p "$provider" \
+  if type=$(shunt_provider_key_type "$provider") && [ "$type" = plaintext ]; then
+    if updated=$(SHUNT_KEY_VALUE="$key" jq -c --arg p "$provider" \
       '.providers[$p].key.ref = $ENV.SHUNT_KEY_VALUE' "$SHUNT_PROVIDERS_FILE"); then
-    shunt_providers_write "$updated" || rc=1
+      shunt_providers_write "$updated" || rc=1
+    else
+      rc=1
+    fi
   else
+    echo "shunt: provider '$provider' no longer has a plaintext key type, nothing stored." >&2
     rc=1
   fi
   shunt_providers_unlock

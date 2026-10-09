@@ -288,7 +288,8 @@ Never read a stored key back, in any form: no secret-tool, kwallet or
 security lookup, no length, no prefix, no comparison with an env variable.
 The only way to check a key is a provider call. After storing, run
 `scripts/shunt-models detect-context <provider/model>` (no `--write`). On an
-auth failure (401/403 hint), tell the user the key was rejected and reopen
+auth failure (exit code 3, message `auth failed ... re-enter the key through
+/model-config`), tell the user the key was rejected and reopen
 the dialog once.
 
 Confirm with `key status <provider>`. Spell out `<plugin-root>` as the
@@ -308,8 +309,9 @@ scripts/shunt-models set-context <provider/model> <tokens>
 scripts/shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>
 ```
 
-- Run `detect-context` first. It asks the provider and never guesses. If
-  it fails, ASK the user for the model's context window and store the
+- Run `detect-context` first. It asks the provider and never guesses. Exit
+  code 3 means the provider rejected the key (401 or 403): reopen the key
+  dialog instead of asking for a number. If it fails otherwise, ASK the user for the model's context window and store the
   answer with `set-context`. Never invent a value.
 - `oversize_policy` decides what bulk-read does with input too large for
   the context: `map_reduce` (default, also when unset) splits it into

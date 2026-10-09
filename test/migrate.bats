@@ -13,6 +13,7 @@ setup() {
   export SHUNT_PROC_VERSION_FILE="$TEST_TMPDIR/proc-version"
   echo "Linux version 6.1" >"$SHUNT_PROC_VERSION_FILE"
   export TMPDIR="$TEST_TMPDIR/tmp"
+  export XDG_DATA_HOME="$TEST_TMPDIR/xdg-data"
   export FAKE_ROUTES="$TEST_TMPDIR/routes" FAKE_ARGV="$TEST_TMPDIR/argv" FAKE_STORE="$TEST_TMPDIR/store"
   mkdir -p "$TMPDIR" "$TEST_TMPDIR/bin" "$FAKE_ROUTES"
   SECRET="sk-super-secret-value-123"
@@ -229,4 +230,150 @@ no_secret_anywhere_but() {
   run --separate-stderr migrate --apply --yes --key-storage keyring
   assert_success
   [ "$(cat "$FAKE_STORE")" = "$SECRET" ]
+}
+
+@test "an OpenCode {file:path} apiKey is not copied as the literal key string" {
+  write_opencode '{file:~/.secrets/acme-key}'
+  run --separate-stderr migrate --apply --yes --key-storage plaintext
+  run jq -r '.providers.acme | "\(.transport) \(.key.type) \(.key.ref)"' "$SHUNT_PROVIDERS_FILE"
+  refute_output "http plaintext {file:~/.secrets/acme-key}"
+}
+
+@test "two providers whose names differ only in punctuation get distinct env refs" {
+  jq -n --arg k "$SECRET" '{provider:{
+      "a-b":{options:{baseURL:"https://ab1.test/v1",apiKey:$k},models:{m:{}}},
+      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{m:{}}}}}' \
+    >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+  jq -n '{version:1,active:null,models:[
+    {id:"a-b/m",agent:"a1",enabled:true},{id:"a.b/m",agent:"a2",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+  run --separate-stderr migrate --apply --yes --key-storage env
+  assert_success
+  run jq -r '.providers["a-b"].key.ref, .providers["a.b"].key.ref' "$SHUNT_PROVIDERS_FILE"
+  [ "${lines[0]}" != "${lines[1]}" ]
+}
+
+@test "a provider keyed through OpenCode auth.json is not migrated to http without a key and reported ok" {
+  # OpenCode's documented custom-provider flow: `opencode auth login` stores the
+  # key in auth.json, opencode.json has only the baseURL.
+  export XDG_DATA_HOME="$TEST_TMPDIR/xdg-data"
+  mkdir -p "$XDG_DATA_HOME/opencode"
+  jq -n --arg k "$SECRET" '{acme:{type:"api",key:$k}}' >"$XDG_DATA_HOME/opencode/auth.json"
+  write_opencode -
+  jq -n '{version:1,active:null,models:[{id:"acme/m1",agent:"a1",enabled:true,thinking:false}]}' >"$SHUNT_MODELS_FILE"
+  run --separate-stderr migrate --apply --yes
+  assert_success
+  run "$BIN" dashboard
+  if jq -e '.providers.acme | .transport == "http" and .key.type == "none"' "$SHUNT_PROVIDERS_FILE" >/dev/null; then
+    refute_output --partial "setup: ok"
+  fi
+}
+
+@test "a dry run killed during context detection leaves no copy of a plaintext key in TMPDIR" {
+  command -v setsid >/dev/null || skip "setsid not available"
+  # acme is already on http with a plaintext key (state done), so the dry run
+  # detects its model's context through a temp providers file.
+  jq -n --arg k "$SECRET" '{version:1,providers:{acme:{transport:"http",
+    base_url:"https://api.acme.test/v1",key:{type:"plaintext",ref:$k}}}}' >"$SHUNT_PROVIDERS_FILE"
+  chmod 600 "$SHUNT_PROVIDERS_FILE"
+  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
+#!/bin/bash
+: >"$TEST_TMPDIR/curl-started"
+exec sleep 30
+SH
+  export TEST_TMPDIR
+  setsid "$BIN" --migrate-from-opencode </dev/null >/dev/null 2>&1 &
+  pid=$!
+  for i in $(seq 1 100); do
+    [ -f "$TEST_TMPDIR/curl-started" ] && break
+    sleep 0.05
+  done
+  kill -TERM -- -"$pid" 2>/dev/null || true
+  wait "$pid" 2>/dev/null || true
+  run grep -rlF "$SECRET" "$TMPDIR"
+  assert_output ""
+}
+
+@test "a {file:path} apiKey is imported: ~ expanded, trailing newline stripped, key never shown" {
+  export HOME="$TEST_TMPDIR/home"
+  mkdir -p "$HOME/.secrets"
+  printf '%s\n\n' "$SECRET" >"$HOME/.secrets/acme-key"
+  write_opencode '{file:~/.secrets/acme-key}'
+  run --separate-stderr migrate --key-storage plaintext
+  assert_success
+  refute_output --partial "$SECRET"
+  assert_output --partial "apiKey file"
+  run --separate-stderr migrate --apply --yes --key-storage plaintext
+  assert_success
+  refute_output --partial "$SECRET"
+  run jq -r '.providers.acme | "\(.transport) \(.key.type) \(.key.ref)"' "$SHUNT_PROVIDERS_FILE"
+  assert_output "http plaintext $SECRET"
+}
+
+@test "an unreadable {file:path} apiKey leaves the provider on opencode with a plan line" {
+  write_opencode '{file:~/.secrets/missing-key}'
+  run --separate-stderr migrate --apply --yes --key-storage plaintext
+  assert_success
+  assert_output --partial "not readable or is empty"
+  assert_output --partial "stays on opencode"
+  [ ! -f "$SHUNT_PROVIDERS_FILE" ] || [ "$(jq -r '.providers.acme.transport // "opencode"' "$SHUNT_PROVIDERS_FILE")" = opencode ]
+}
+
+@test "an OpenCode auth.json key is imported into the chosen storage and never shown" {
+  mkdir -p "$XDG_DATA_HOME/opencode"
+  jq -n --arg k "$SECRET" '{acme:{type:"api",key:$k}}' >"$XDG_DATA_HOME/opencode/auth.json"
+  write_opencode -
+  run --separate-stderr migrate --key-storage keyring
+  assert_success
+  refute_output --partial "$SECRET"
+  assert_output --partial "auth.json"
+  run --separate-stderr migrate --apply --yes --key-storage keyring
+  assert_success
+  refute_output --partial "$SECRET"
+  [ "$(cat "$FAKE_STORE")" = "$SECRET" ]
+  run jq -r '.providers.acme | "\(.transport) \(.key.type)"' "$SHUNT_PROVIDERS_FILE"
+  assert_output "http keyring"
+  no_secret_anywhere_but "$FAKE_STORE"
+}
+
+@test "an auth.json entry that is not an api key does not count as a key" {
+  mkdir -p "$XDG_DATA_HOME/opencode"
+  jq -n '{acme:{type:"oauth",access:"x"}}' >"$XDG_DATA_HOME/opencode/auth.json"
+  write_opencode -
+  run --separate-stderr migrate --apply --yes
+  assert_success
+  run jq -c '.providers.acme.key' "$SHUNT_PROVIDERS_FILE"
+  assert_output '{"type":"none"}'
+}
+
+@test "a clashing default env ref gets a suffix and the plan says so" {
+  jq -n --arg k "$SECRET" '{provider:{
+      "a-b":{options:{baseURL:"https://ab1.test/v1",apiKey:$k},models:{m:{}}},
+      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{m:{}}}}}' \
+    >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+  jq -n '{version:1,active:null,models:[
+    {id:"a-b/m",agent:"a1",enabled:true},{id:"a.b/m",agent:"a2",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+  run --separate-stderr migrate --key-storage env
+  assert_success
+  assert_output --partial "SHUNT_A_B_KEY_2"
+  assert_output --partial "taken by another provider"
+}
+
+@test "plan hints use the absolute shunt-models path, not a relative one" {
+  run --separate-stderr migrate --key-storage skip
+  assert_success
+  assert_output --partial "key set acme"
+  refute_output --partial " scripts/shunt-models"
+  assert_output --partial "$REPO_ROOT/scripts/shunt-models"
+}
+
+@test "context detection works for every model of a provider, not just the first" {
+  jq -n '{version:1,active:null,models:[
+    {id:"acme/m1",agent:"a1",enabled:true},{id:"acme/m2",agent:"a2",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+  write_opencode -
+  printf '%s' '{"id":"m1","context_length":1111}' >"$FAKE_ROUTES/v1_models_m1"
+  printf '%s' '{"id":"m2","context_length":2222}' >"$FAKE_ROUTES/v1_models_m2"
+  run --separate-stderr migrate
+  assert_success
+  assert_output --partial "1111 (detected"
+  assert_output --partial "2222 (detected"
 }

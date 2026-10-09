@@ -10,21 +10,27 @@
 #      `num_ctx` in the `parameters` text, preferred because it is what the
 #      server really allows. A model_info key ending in .context_length is only
 #      the architecture maximum, used when num_ctx is not set.
-# Every failure (network, non-2xx, bad JSON) just means "not found". The key
-# only ever lives in a 0600 header file handed to curl as -H @file.
+# Every failure (network, non-2xx, bad JSON) just means "not found", except a
+# 401 or 403 answer: that is reported apart (status SHUNT_DETECT_AUTH_FAILED),
+# because the fix is a new key, not a hand-typed number. The key only ever
+# lives in a 0600 header file handed to curl as -H @file, removed on every
+# way out including INT, TERM and HUP.
 
 SHUNT_DETECT_TIMEOUT_SECONDS="${SHUNT_DETECT_TIMEOUT_SECONDS:-15}"
 # Fields of a /models entry that carry the context window, first present wins.
 SHUNT_DETECT_FIELDS=(context_length max_model_len context_window max_context_length max_input_tokens)
 # Model names outside this alphabet are not put into a URL.
 SHUNT_DETECT_MODEL_PATTERN='^[A-Za-z0-9._:@+/-]+$'
+# Exit status of shunt_models_detect_context when the provider answered 401 or 403.
+SHUNT_DETECT_AUTH_FAILED=3
 _SHUNT_DETECT_TMP=()
+_SHUNT_DETECT_AUTH_SEEN=0
 
 # _shunt_detect_cleanup
 # Removes the temp files of the current detection, the auth header first.
 _shunt_detect_cleanup() {
   local f
-  for f in "${_SHUNT_DETECT_TMP[@]}"; do
+  for f in ${_SHUNT_DETECT_TMP[@]+"${_SHUNT_DETECT_TMP[@]}"}; do
     rm -f "$f"
   done
   _SHUNT_DETECT_TMP=()
@@ -55,9 +61,13 @@ _shunt_detect_get() {
   local method=(-X GET)
   [ -z "$body" ] || method=(-X POST -H 'Content-Type: application/json' --data-binary "$body")
   code=$(curl -q -sS --globoff --max-time "$SHUNT_DETECT_TIMEOUT_SECONDS" --proto '=http,https' \
-    "${method[@]}" "${_SHUNT_DETECT_HDR_ARGS[@]}" -o "$out" -w '%{http_code}' "$url" 2>/dev/null </dev/null) \
+    "${method[@]}" ${_SHUNT_DETECT_HDR_ARGS[@]+"${_SHUNT_DETECT_HDR_ARGS[@]}"} -o "$out" -w '%{http_code}' "$url" 2>/dev/null </dev/null) \
     || return 1
-  case "$code" in 2??) return 0 ;; *) return 1 ;; esac
+  case "$code" in
+    2??) return 0 ;;
+    401 | 403) _SHUNT_DETECT_AUTH_SEEN=1; return 1 ;;
+    *) return 1 ;;
+  esac
 }
 
 # _shunt_detect_run <model-id> <resp-file>
@@ -83,11 +93,13 @@ _shunt_detect_run() {
     value=$(_shunt_detect_positive "$fields" <"$resp")
     [ -z "$value" ] || { echo "$value"; return 0; }
   fi
+  [ "$_SHUNT_DETECT_AUTH_SEEN" = 0 ] || return 1
   if _shunt_detect_get "$base/models" "$resp"; then
     value=$(jq -c --arg id "$model" '[(.data // .models // .)[]? | objects | select(.id == $id)] | first // empty' "$resp" 2>/dev/null \
       | _shunt_detect_positive "$fields")
     [ -z "$value" ] || { echo "$value"; return 0; }
   fi
+  [ "$_SHUNT_DETECT_AUTH_SEEN" = 0 ] || return 1
   api_base="${base%/v1}"
   body=$(jq -n -c --arg m "$model" '{model: $m}')
   if _shunt_detect_get "$api_base/api/show" "$resp" "$body"; then
@@ -101,14 +113,21 @@ _shunt_detect_run() {
 }
 
 # shunt_models_detect_context <provider/model>
-# Prints the context window in tokens as reported by the provider, or fails
-# with status 1 and prints nothing on stdout when it cannot find one.
+# Prints the context window in tokens as reported by the provider. Fails with
+# status 1 and prints nothing on stdout when it cannot find one, and with
+# status SHUNT_DETECT_AUTH_FAILED (3) when the provider rejected the key.
 shunt_models_detect_context() {
   local resp status=0
   _SHUNT_DETECT_TMP=()
-  resp=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-detect.XXXXXX") || return 1
+  _SHUNT_DETECT_AUTH_SEEN=0
+  _shunt_guard_install _SHUNT_DETECT_G _shunt_detect_cleanup
+  resp=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-detect.XXXXXX") || { _shunt_guard_remove _SHUNT_DETECT_G; return 1; }
   _SHUNT_DETECT_TMP+=("$resp")
   _shunt_detect_run "$1" "$resp" || status=1
   _shunt_detect_cleanup
+  _shunt_guard_remove _SHUNT_DETECT_G
+  if [ "$status" -ne 0 ] && [ "$_SHUNT_DETECT_AUTH_SEEN" = 1 ]; then
+    status=$SHUNT_DETECT_AUTH_FAILED
+  fi
   return "$status"
 }

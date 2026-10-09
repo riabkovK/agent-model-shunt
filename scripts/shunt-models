@@ -435,10 +435,15 @@ cmd_set_context() {
 # Asks the provider for the model's context window. Prints it, and with --write
 # stores it. Nothing is ever written when the provider does not report one.
 cmd_detect_context() {
-  local id="${1:-}" write="${2:-}" tokens
+  local id="${1:-}" write="${2:-}" tokens rc=0
   [ -n "$id" ] && { [ -z "$write" ] || [ "$write" = --write ]; } \
     || shunt_report_error "usage: shunt-models detect-context <provider/model> [--write]"
-  tokens=$(shunt_models_detect_context "$id") || tokens=""
+  tokens=$(shunt_models_detect_context "$id") || rc=$?
+  if [ "$rc" -eq "$SHUNT_DETECT_AUTH_FAILED" ]; then
+    echo "shunt: auth failed for the provider of '$id' (the key was rejected with 401 or 403): re-enter the key through /model-config." >&2
+    exit "$SHUNT_DETECT_AUTH_FAILED"
+  fi
+  [ "$rc" -eq 0 ] || tokens=""
   [ -n "$tokens" ] || shunt_report_error "could not detect the context window of '$id' from its provider. Enter it yourself: shunt-models set-context $id <tokens>"
   if [ "$write" = --write ]; then
     shunt_models_store_context "$id" "$tokens"
