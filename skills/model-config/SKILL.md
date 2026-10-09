@@ -258,14 +258,28 @@ Key storage trade-offs:
 - `none`: local endpoints without auth (e.g. Ollama).
 
 Never ask the user to paste a key into chat, and never put a key on a
-command line. For keyring and plaintext, tell the user to run it
-themselves with the `!` prefix, which reads the key from a hidden prompt:
-`! <plugin-root>/scripts/shunt-models key set <provider>`. Spell out
-`<plugin-root>` as the absolute path of this plugin (two directories above
-this SKILL.md, the `${CLAUDE_PLUGIN_ROOT}` of the hooks). A `!` command runs
-in the user's project directory, where the relative `scripts/shunt-models`
-does not exist. The auth-failure hint of the HTTP transport already prints
-the absolute path.
+command line. For keyring and plaintext, run
+`<plugin-root>/scripts/shunt-key-dialog <provider>` yourself with a Bash
+timeout above 120 s (for example 150000 ms) and tell the user a password
+window has opened on their desktop. The key goes from that window straight
+into `key set`, never through chat or tool output. Exit codes:
+- 0: stored.
+- 3: cancelled or empty input, nothing stored.
+- 4: the window timed out. Offer a retry.
+- 5: no dialog available (no zenity, kdialog or osascript with a display,
+  or a headless or SSH session). Only then show the fallback line the
+  script prints, `! <plugin-root>/scripts/shunt-models key set <provider>`,
+  and ask the user to run it. It reads the key from a hidden prompt.
+- 1, 2, 6: refused provider, usage error, storing failed. Show the message.
+
+Confirm with `key status <provider>`. Spell out `<plugin-root>` as the
+absolute path of this plugin (two directories above this SKILL.md, the
+`${CLAUDE_PLUGIN_ROOT}` of the hooks). A `!` command runs in the user's
+project directory, where the relative `scripts/shunt-models` does not exist.
+The auth-failure hint of the HTTP transport already prints the absolute
+path. If the user pastes a key into chat anyway, tell them it is now in the
+transcript and they should rotate it, then enter the new one through the
+dialog.
 
 ## Context window and oversize policy (HTTP transport)
 
@@ -291,8 +305,10 @@ scripts/shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>
 ## Adding an HTTP model, in order
 
 1. Provider: `provider set <name> --transport http --base-url <url> --key <type>`.
-2. Key: `! <plugin-root>/scripts/shunt-models key set <name>` (keyring/plaintext) or the
-   exported variable (env), then confirm with `key status <name>`.
+2. Key (keyring/plaintext): run `<plugin-root>/scripts/shunt-key-dialog <name>`
+   (Bash timeout above 120 s) and tell the user a password window is open.
+   Use the `!` fallback only on exit code 5. For env, the user exports the
+   variable. Then confirm with `key status <name>`.
 3. `scripts/shunt-models add <provider/model>`, then check connectivity
    with `detect-context <provider/model> --write`.
 4. If detection fails, ask the user for the context window and run
@@ -321,8 +337,8 @@ else the opencode `limit.context`, labelled "not verified"). `--apply` asks
 Key storage for a literal `apiKey`: `keyring` (default when a backend exists),
 `env` (`SHUNT_<PROVIDER>_KEY`, the user must export it, nothing is copied),
 `plaintext` (in `providers.json`, mode 600, with a warning) or `skip` (the
-provider stays on opencode, then run `! <plugin-root>/scripts/shunt-models key set <provider>`
-and re-run). `{env:NAME}` becomes an env key and no `apiKey` becomes type none.
+provider stays on opencode, then run `<plugin-root>/scripts/shunt-key-dialog <provider>`
+and re-run, using the `!` fallback only if it exits 5). `{env:NAME}` becomes an env key and no `apiKey` becomes type none.
 Without a tty and without `--key-storage` a literal key counts as skip. The key
 is never shown, logged or put in a command line, and never removed from
 `opencode.json`, so do not ask for or print it.
