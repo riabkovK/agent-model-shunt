@@ -123,6 +123,7 @@ _shunt_note_failure() {
   id=$(printf '%s' "$1" | tr -d '[:cntrl:]')
   case "$2" in
     "$SHUNT_TRY_INVOKE_TIMEOUT") reason="timed out after ${SHUNT_TIMEOUT_SECONDS}s" ;;
+    "$SHUNT_TRY_INVOKE_DEADLINE") reason="total deadline reached (SHUNT_TOTAL_TIMEOUT_SECONDS)" ;;
     "$SHUNT_TRY_INVOKE_ERROR") reason="opencode error" ;;
     "$SHUNT_TRY_INVOKE_EMPTY") reason="empty output" ;;
     "$SHUNT_TRY_INVOKE_AUTH") reason="auth failed" ;;

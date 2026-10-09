@@ -61,4 +61,4 @@ against the file yourself with a targeted `offset`/`limit` read.
 
 See the project README for the `bulk-reader` OpenCode agent setup and the
 `SHUNT_*` environment variables (`SHUNT_MIN_LINES`, `SHUNT_TIMEOUT_SECONDS`,
-`SHUNT_OPENCODE_BIN`, `SHUNT_BULK_READER_AGENT`).
+`SHUNT_TOTAL_TIMEOUT_SECONDS`, `SHUNT_OPENCODE_BIN`, `SHUNT_BULK_READER_AGENT`).

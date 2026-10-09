@@ -228,7 +228,8 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 |---|---|---|
 | `SHUNT_MIN_LINES` | `350` | Line-count threshold above which reads are blocked and delegated. |
 | `SHUNT_OPENCODE_BIN` | `opencode` | Path or name of the OpenCode binary to invoke. |
-| `SHUNT_TIMEOUT_SECONDS` | `300` | Timeout for a single delegated `opencode run` call. |
+| `SHUNT_TIMEOUT_SECONDS` | `300` | Timeout for a single delegated `opencode run` call, and for each single HTTP request with the `http` transport. |
+| `SHUNT_TOTAL_TIMEOUT_SECONDS` | 3 x `SHUNT_TIMEOUT_SECONDS` (`900`) | `http` transport only: deadline for one whole delegated call, covering every part and the merge request of a chunked (map_reduce) call. It is checked before each request, and each request's timeout is capped at the time left. When it runs out, the call fails as a timeout (counted by the circuit breaker, the next model is tried) and stderr says how many parts finished. A single unchunked request is only affected when this is set below `SHUNT_TIMEOUT_SECONDS`. Must be a positive whole number of seconds. |
 | `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation when no models registry exists (legacy single-agent mode). |
 | `SHUNT_HOOKS_DISABLED` | unset | When `1`/`true`/`yes`, both PreToolUse hooks allow every read through unchecked. See the `/toggle-hooks` skill for A/B testing hooks-on vs hooks-off. |
 | `SHUNT_OPENCODE_CONFIG_HOME` | `~/.config/opencode` | Where to read your real OpenCode agent/provider config from, when building the isolated per-call config below. |

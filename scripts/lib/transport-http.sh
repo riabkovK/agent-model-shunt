@@ -5,7 +5,9 @@
 # models.sh, and shunt_tmpfile from opencode.sh.
 #
 # Status mapping (curl -w '%{http_code}'):
-#   curl exit 28                        TIMEOUT
+#   curl exit 28                        TIMEOUT, or DEADLINE when the request's
+#                                       max-time was cut to the total deadline
+#   total deadline already passed       DEADLINE (nothing sent)
 #   other curl failure, 429, 5xx,
 #   400/404/413 and any other non-2xx   ERROR (model failure, the breaker counts it)
 #   401, 403                            AUTH (a key problem, not the model's fault:
@@ -28,13 +30,14 @@ SHUNT_HTTP_CONTEXT_BUDGET_PERCENT=60
 SHUNT_HTTP_UNKNOWN_CONTEXT_MAX_TOKENS=4000
 # What an absent oversize_policy means.
 SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY=map_reduce
-# map_reduce chunking. Neighbouring chunks of a file share this many lines. Room
-# kept per request for the block markers and the "part i of n" note, and the
-# smallest file content worth a request. Partial answers are merged in at most
-# SHUNT_HTTP_MAX_MERGE_DEPTH group rounds. SHUNT_HTTP_PARTIAL_RESERVE_BYTES is
-# the marker overhead assumed per partial answer in a merge request.
+# map_reduce chunking. Neighbouring chunks of a file share this many lines, and
+# a chunk request carries at least SHUNT_HTTP_MIN_CHUNK_BYTES of file content.
+# The framing of a chunk request (question, "part i of n" note, block markers)
+# is measured per file, see _shunt_http_chunk_overhead. Partial answers are
+# merged in at most SHUNT_HTTP_MAX_MERGE_DEPTH group rounds.
+# SHUNT_HTTP_PARTIAL_RESERVE_BYTES is the marker overhead assumed per partial
+# answer in a merge request.
 SHUNT_HTTP_CHUNK_OVERLAP_LINES=20
-SHUNT_HTTP_CHUNK_RESERVE_BYTES=600
 SHUNT_HTTP_MIN_CHUNK_BYTES=200
 SHUNT_HTTP_MAX_MERGE_DEPTH=3
 # A call that would need more chunk requests than this fails before sending any.
@@ -365,18 +368,99 @@ _shunt_http_check_reply() {
   _SHUNT_HTTP_OUT="$out"
 }
 
+# ---- total deadline ----------------------------------------------------------
+# One call (a single request, or every chunk and merge request of a chunked call)
+# must finish within SHUNT_TOTAL_TIMEOUT_SECONDS. The clock is bash's $SECONDS,
+# whole seconds and portable to bash 3.2, read only through _shunt_http_now so
+# tests can swap it.
+_SHUNT_HTTP_NOW=0 _SHUNT_HTTP_TOTAL=0 _SHUNT_HTTP_DEADLINE=0
+_SHUNT_HTTP_MAX_TIME="" _SHUNT_HTTP_MAX_TIME_CAPPED=0
+# Chunk progress for the deadline message, 0 of 0 for an unchunked call.
+_SHUNT_HTTP_CHUNKS_DONE=0 _SHUNT_HTTP_CHUNKS_TOTAL=0
+# Longest accepted SHUNT_TOTAL_TIMEOUT_SECONDS, in digits, so the arithmetic
+# cannot overflow.
+SHUNT_HTTP_TOTAL_TIMEOUT_MAX_DIGITS=9
+
+_shunt_http_now() { _SHUNT_HTTP_NOW=$SECONDS; }
+
+# _shunt_http_init_deadline
+# Validates SHUNT_TOTAL_TIMEOUT_SECONDS (a config error, status 1, when it is not
+# a positive whole number) and starts the clock. Unset or empty means
+# SHUNT_TOTAL_TIMEOUT_FACTOR times the whole seconds of SHUNT_TIMEOUT_SECONDS.
+_shunt_http_init_deadline() {
+  local total="${SHUNT_TOTAL_TIMEOUT_SECONDS:-}" per="${SHUNT_TIMEOUT_SECONDS%%.*}"
+  _SHUNT_HTTP_CHUNKS_DONE=0 _SHUNT_HTTP_CHUNKS_TOTAL=0
+  if [ -z "$total" ]; then
+    case "$per" in '' | *[!0-9]*) per=300 ;; esac
+    [ "${#per}" -le "$SHUNT_HTTP_TOTAL_TIMEOUT_MAX_DIGITS" ] && [ $(( 10#$per )) -gt 0 ] || per=300
+    total=$(( 10#$per * SHUNT_TOTAL_TIMEOUT_FACTOR ))
+  else
+    case "$total" in
+      *[!0-9]*) total=bad ;;
+      *) { [ "${#total}" -le "$SHUNT_HTTP_TOTAL_TIMEOUT_MAX_DIGITS" ] && [ $(( 10#$total )) -gt 0 ]; } || total=bad ;;
+    esac
+    if [ "$total" = bad ]; then
+      echo "shunt: SHUNT_TOTAL_TIMEOUT_SECONDS must be a positive whole number of seconds (at most $SHUNT_HTTP_TOTAL_TIMEOUT_MAX_DIGITS digits), got '$(printf '%s' "$SHUNT_TOTAL_TIMEOUT_SECONDS" | tr -d '[:cntrl:]' | head -c 40)'." >&2
+      return 1
+    fi
+    total=$(( 10#$total ))
+  fi
+  _SHUNT_HTTP_TOTAL=$total
+  _shunt_http_now
+  _SHUNT_HTTP_DEADLINE=$(( _SHUNT_HTTP_NOW + total ))
+}
+
+# _shunt_http_deadline_note
+# Says on stderr that the total deadline ended the call, and how far a chunked
+# call got. Never prints chunk content.
+_shunt_http_deadline_note() {
+  local progress=""
+  [ "$_SHUNT_HTTP_CHUNKS_TOTAL" -eq 0 ] \
+    || progress=", $_SHUNT_HTTP_CHUNKS_DONE of $_SHUNT_HTTP_CHUNKS_TOTAL chunks finished"
+  echo "shunt: model $_SHUNT_HTTP_ID: total deadline of ${_SHUNT_HTTP_TOTAL}s (SHUNT_TOTAL_TIMEOUT_SECONDS) reached$progress." >&2
+}
+
+# _shunt_http_request_max_time
+# Sets _SHUNT_HTTP_MAX_TIME for the next request: SHUNT_TIMEOUT_SECONDS, or the
+# time left before the deadline when that is smaller (then _SHUNT_HTTP_MAX_TIME_CAPPED
+# is 1). Returns SHUNT_TRY_INVOKE_DEADLINE, and sends nothing, once no time is left.
+_shunt_http_request_max_time() {
+  local left per="${SHUNT_TIMEOUT_SECONDS%%.*}"
+  _shunt_http_now
+  left=$(( _SHUNT_HTTP_DEADLINE - _SHUNT_HTTP_NOW ))
+  if [ "$left" -le 0 ]; then
+    _shunt_http_deadline_note
+    return "$SHUNT_TRY_INVOKE_DEADLINE"
+  fi
+  _SHUNT_HTTP_MAX_TIME="$SHUNT_TIMEOUT_SECONDS" _SHUNT_HTTP_MAX_TIME_CAPPED=0
+  # A SHUNT_TIMEOUT_SECONDS that is not a number is passed on to curl unchanged,
+  # as before. A fractional one is compared by its whole seconds.
+  case "$per" in '' | *[!0-9]*) return 0 ;; esac
+  [ "${#per}" -le "$SHUNT_HTTP_TOTAL_TIMEOUT_MAX_DIGITS" ] || return 0
+  if [ "$left" -lt $(( 10#$per )) ]; then
+    _SHUNT_HTTP_MAX_TIME=$left _SHUNT_HTTP_MAX_TIME_CAPPED=1
+  fi
+}
+
 # _shunt_http_send
 # POSTs the body file. On success _SHUNT_HTTP_OUT holds the normalized response
 # file, which the caller owns. Returns a SHUNT_TRY_INVOKE_* status otherwise.
 _shunt_http_send() {
-  local http_code curl_status=0
+  local http_code curl_status=0 status=0
   _SHUNT_HTTP_OUT=""
+  _shunt_http_request_max_time || return $?
   _shunt_http_prepare_auth || return 1
-  http_code=$(curl -q -sS --globoff --max-time "$SHUNT_TIMEOUT_SECONDS" --proto '=http,https' \
+  http_code=$(curl -q -sS --globoff --max-time "$_SHUNT_HTTP_MAX_TIME" --proto '=http,https' \
     -H 'Content-Type: application/json' "${_SHUNT_HTTP_HDR_ARGS[@]}" \
     --data-binary "@$_SHUNT_HTTP_BODY_FILE" -o "$_SHUNT_HTTP_RESP_FILE" -w '%{http_code}' \
     "${_SHUNT_HTTP_BASE_URL%/}/chat/completions" 2>"$_SHUNT_HTTP_ERR_FILE" </dev/null) || curl_status=$?
-  _shunt_http_check_reply "$http_code" "$curl_status"
+  _shunt_http_check_reply "$http_code" "$curl_status" || status=$?
+  # A request cut short by the remaining time ran into the total deadline.
+  if [ "$status" -eq "$SHUNT_TRY_INVOKE_TIMEOUT" ] && [ "$_SHUNT_HTTP_MAX_TIME_CAPPED" = 1 ]; then
+    _shunt_http_deadline_note
+    status=$SHUNT_TRY_INVOKE_DEADLINE
+  fi
+  return "$status"
 }
 
 # _shunt_http_ask <prompt-file>
@@ -481,11 +565,53 @@ _shunt_http_line_ranges() {
     }' <"$1"
 }
 
+# _shunt_http_utf8_cut <file> <pos>
+# Prints where to split <file> at or just before byte offset <pos>: the last of
+# offsets pos-3..pos whose byte does not continue a UTF-8 character (10xxxxxx),
+# so no character is cut in half. A UTF-8 character has at most 3 continuation
+# bytes. Prints <pos> when all four bytes are continuation bytes (not UTF-8).
+# Uses only tail -c +N, head -c and od -A n -t u1, which BSD and GNU share.
+_shunt_http_utf8_cut() {
+  local pos="$2" from i bytes=()
+  from=$(( pos > 3 ? pos - 3 : 0 ))
+  read -r -a bytes < <(tail -c +$(( from + 1 )) "$1" | head -c $(( pos - from + 1 )) | od -A n -t u1 -v)
+  for (( i = ${#bytes[@]} - 1; i >= 0; i-- )); do
+    if [ $(( bytes[i] & 192 )) -ne 128 ]; then
+      echo $(( from + i ))
+      return 0
+    fi
+  done
+  echo "$pos"
+}
+
+# _shunt_http_plan_long_line <file> <line> <content-budget-bytes>
+# Appends byte pieces of one line longer than the budget, each at most the
+# budget and split on a UTF-8 character boundary. Stops once the plan is over
+# SHUNT_HTTP_MAX_CHUNKS, as the call fails then anyway.
+_shunt_http_plan_long_line() {
+  local f="$1" s="$2" budget="$3" line_file len off end cut
+  _shunt_http_new_tmp line_file || return 1
+  sed -n "${s}p" <"$f" >"$line_file"
+  len=$(wc -c <"$line_file")
+  for (( off = 0; off < len; off = end )); do
+    end=$(( off + budget ))
+    if [ "$end" -ge "$len" ]; then
+      end=$len
+    else
+      cut=$(_shunt_http_utf8_cut "$line_file" "$end")
+      [ "$cut" -le "$off" ] || end=$cut
+    fi
+    _shunt_http_add_chunk "$f" "$s" "$s" "$off" $(( end - off ))
+    [ "${#_CH_FILE[@]}" -le "$SHUNT_HTTP_MAX_CHUNKS" ] || break
+  done
+  rm -f "$line_file"
+}
+
 # _shunt_http_plan_file <file> <content-budget-bytes>
 # Appends the chunks of one file to the plan: the whole file when it fits, else
 # line ranges with overlap, else byte pieces for a line longer than the budget.
 _shunt_http_plan_file() {
-  local f="$1" budget="$2" base=${#_CH_FILE[@]} size lines s e kind len off n i
+  local f="$1" budget="$2" base=${#_CH_FILE[@]} size lines s e kind n i
   size=$(wc -c <"$f")
   if [ "$size" -le "$budget" ]; then
     lines=$(awk 'END { print NR }' <"$f")
@@ -493,13 +619,11 @@ _shunt_http_plan_file() {
   else
     while read -r s e kind; do
       if [ "$kind" = B ]; then
-        len=$(sed -n "${s}p" <"$f" | wc -c)
-        for (( off = 0; off < len; off += budget )); do
-          _shunt_http_add_chunk "$f" "$s" "$s" "$off" "$budget"
-        done
+        _shunt_http_plan_long_line "$f" "$s" "$budget" || return 1
       else
         _shunt_http_add_chunk "$f" "$s" "$e" -1 0
       fi
+      [ "${#_CH_FILE[@]}" -le "$SHUNT_HTTP_MAX_CHUNKS" ] || break
     done < <(_shunt_http_line_ranges "$f" "$budget")
   fi
   n=$(( ${#_CH_FILE[@]} - base ))
@@ -508,25 +632,55 @@ _shunt_http_plan_file() {
   done
 }
 
+# _shunt_http_chunk_question <var> <question> <note>
+# Sets <var> to the question of one chunk request, as sent.
+_shunt_http_chunk_question() {
+  printf -v "$1" '%s\n\n(This is %s. Answer for this part only.)' "$2" "$3"
+}
+
+# _shunt_http_chunk_overhead <question> <label> <size> <probe-file> <empty-file>
+# Prints the bytes a chunk request of a file named <label> and <size> bytes adds
+# around its content: the role prompt plus the chunk prompt built, with the same
+# functions the map step uses, around the empty file. The note gets the longest
+# form a chunk of that file can have, every number with as many digits as
+# <size>, which bounds line numbers, byte offsets and part counts. This is the
+# decoded text the oversize guard estimates tokens from. JSON escaping only
+# grows the request on the wire, not what the model reads.
+_shunt_http_chunk_overhead() {
+  local n="${3//[!0-9]/}" q
+  n=${n:-0}
+  n=${n//?/9}
+  _shunt_http_chunk_question q "$1" "part $n of $n of $2, line $n, bytes $n-$n"
+  _shunt_http_build_chunk_prompt "$4" "$q" "$2" "$5" || return 1
+  echo $(( $(_shunt_http_bytes "$_SHUNT_HTTP_SYSTEM") + $(wc -c <"$4") ))
+}
+
 # _shunt_http_plan_all <question> <file>...
 # Fills the chunk plan. Fails when the role prompt and question leave too little
 # room for file content.
 _shunt_http_plan_all() {
-  local question="$1" f room fixed
+  local question="$1" f room overhead probe empty
   shift
   _CH_FILE=() _CH_START=() _CH_END=() _CH_OFF=() _CH_LEN=() _CH_PART=() _CH_OF=()
-  fixed=$(( $(_shunt_http_bytes "$_SHUNT_HTTP_SYSTEM") + $(_shunt_http_bytes "$question") + SHUNT_HTTP_CHUNK_RESERVE_BYTES ))
+  _shunt_http_new_tmp probe && _shunt_http_new_tmp empty || return 1
   # The empty name checks the question alone, which also covers a call without files.
   for f in "" "$@"; do
-    room=$(( $(_shunt_http_budget_bytes) - fixed - $(_shunt_http_bytes "$f") ))
+    overhead=$(_shunt_http_chunk_overhead "$question" "$f" "$( [ -z "$f" ] || wc -c <"$f")" "$probe" "$empty") \
+      || return 1
+    room=$(( $(_shunt_http_budget_bytes) - overhead ))
     if [ "$room" -lt "$SHUNT_HTTP_MIN_CHUNK_BYTES" ]; then
       echo "shunt: model $_SHUNT_HTTP_ID: the role prompt and the question leave no room for file content in the context budget (no request sent)." >&2
       return "$SHUNT_TRY_INVOKE_ERROR"
     fi
-    [ -z "$f" ] || _shunt_http_plan_file "$f" "$room"
+    [ -z "$f" ] || _shunt_http_plan_file "$f" "$room" || return 1
+    [ "${#_CH_FILE[@]}" -le "$SHUNT_HTTP_MAX_CHUNKS" ] || break
   done
-  if [ "${#_CH_FILE[@]}" -gt "$SHUNT_HTTP_MAX_CHUNKS" ] || [ "${#_CH_FILE[@]}" -eq 0 ]; then
-    echo "shunt: model $_SHUNT_HTTP_ID: the input needs ${#_CH_FILE[@]} chunks, more than the limit of $SHUNT_HTTP_MAX_CHUNKS (no request sent)." >&2
+  rm -f "$probe" "$empty"
+  if [ "${#_CH_FILE[@]}" -gt "$SHUNT_HTTP_MAX_CHUNKS" ]; then
+    echo "shunt: model $_SHUNT_HTTP_ID: the input needs more chunks than the limit of $SHUNT_HTTP_MAX_CHUNKS (no request sent)." >&2
+    return "$SHUNT_TRY_INVOKE_ERROR"
+  elif [ "${#_CH_FILE[@]}" -eq 0 ]; then
+    echo "shunt: model $_SHUNT_HTTP_ID: the input gives no chunks to send (no request sent)." >&2
     return "$SHUNT_TRY_INVOKE_ERROR"
   fi
 }
@@ -643,20 +797,22 @@ _shunt_http_merge() {
 # one (reduce). Prints the final normalized response path with usage totals over
 # every request. Any failing request aborts and no later request is sent.
 _shunt_http_map_reduce() {
-  local question="$1" i total note prompt_file chunk_file
+  local question="$1" i total note chunk_question prompt_file chunk_file
   shift
   _shunt_http_plan_all "$question" "$@" || return $?
   total=${#_CH_FILE[@]}
   _shunt_http_new_tmp prompt_file && _shunt_http_new_tmp chunk_file || return 1
   _shunt_http_agg_reset
   _MR_TEXT=() _MR_LABEL=()
+  _SHUNT_HTTP_CHUNKS_TOTAL=$total _SHUNT_HTTP_CHUNKS_DONE=0
   echo "shunt: model $_SHUNT_HTTP_ID: input is too large for one request, asking in $total parts and merging." >&2
   for (( i = 0; i < total; i++ )); do
     note=$(_shunt_http_chunk_note "$i")
     _shunt_http_write_chunk "$i" "$chunk_file" || return 1
-    _shunt_http_build_chunk_prompt "$prompt_file" "$question"$'\n\n'"(This is $note. Answer for this part only.)" \
-      "${_CH_FILE[i]}" "$chunk_file" || return 1
+    _shunt_http_chunk_question chunk_question "$question" "$note"
+    _shunt_http_build_chunk_prompt "$prompt_file" "$chunk_question" "${_CH_FILE[i]}" "$chunk_file" || return 1
     _shunt_http_ask_counted "$prompt_file" || return $?
+    _SHUNT_HTTP_CHUNKS_DONE=$(( i + 1 ))
     if [ "$total" -gt 1 ]; then
       _MR_TEXT+=("$(jq -r '.text' "$_SHUNT_HTTP_OUT")") _MR_LABEL+=("${note#part * of * of }")
       rm -f "$_SHUNT_HTTP_OUT"
@@ -675,6 +831,7 @@ _shunt_http_map_reduce() {
 _shunt_http_call() {
   local agent="$1" question="$2" prompt_file guard=0
   shift 2
+  _shunt_http_init_deadline || return 1
   _shunt_http_setup "$agent" || return $?
   _shunt_http_new_tmp prompt_file || return 1
   _shunt_http_build_prompt "$prompt_file" "$question" "$@" || return 1

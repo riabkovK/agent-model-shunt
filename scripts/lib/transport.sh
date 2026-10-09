@@ -15,6 +15,12 @@
 # shunt_prepare_isolated_config, shunt_tmpfile and shunt_report_error.
 
 SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-300}"
+# SHUNT_TOTAL_TIMEOUT_SECONDS (http transport only) is the deadline for one whole
+# delegated call, every chunk and merge request of a chunked call included. When
+# unset it is SHUNT_TOTAL_TIMEOUT_FACTOR times SHUNT_TIMEOUT_SECONDS, worked out
+# per call (see _shunt_http_init_deadline), so by default it never cuts a single
+# request short.
+SHUNT_TOTAL_TIMEOUT_FACTOR=3
 
 # Exit statuses of shunt_transport_invoke that name the failure, so the failover
 # loop can say why a model failed. Any other non-zero status (1) means the agent
@@ -26,6 +32,9 @@ SHUNT_TRY_INVOKE_EMPTY=3
 # The provider rejected the key (HTTP 401/403). Not the model's fault, so the
 # failover loop moves on to the next candidate without a breaker failure.
 SHUNT_TRY_INVOKE_AUTH=4
+# The http transport's total deadline (SHUNT_TOTAL_TIMEOUT_SECONDS) ended the
+# call, as opposed to one request running past SHUNT_TIMEOUT_SECONDS (TIMEOUT).
+SHUNT_TRY_INVOKE_DEADLINE=5
 
 _SHUNT_TRANSPORT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=providers.sh

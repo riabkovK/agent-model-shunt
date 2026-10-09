@@ -35,7 +35,8 @@ teardown() {
 }
 
 # write_fake_curl: also counts requests (FAKE_CURL_COUNT), keeps every request
-# body as $FAKE_CURL_SENT.<n>, and answers request FAKE_CURL_FAIL_AT with
+# body as $FAKE_CURL_SENT.<n> and argv as $FAKE_CURL_ARGV.<n>, advances the fake
+# clock file FAKE_CLOCK (when set) by FAKE_CURL_ADVANCE seconds, and answers request FAKE_CURL_FAIL_AT with
 # FAKE_CURL_FAIL_CODE instead of FAKE_CURL_CODE. Records argv (one arg per line), the request body file and the
 # -H @file header file contents, and answers with FAKE_CURL_BODY / _CODE / _EXIT.
 write_fake_curl() {
@@ -54,6 +55,8 @@ done
 n=$(( $(cat "$FAKE_CURL_COUNT" 2>/dev/null || echo 0) + 1 ))
 echo "$n" >"$FAKE_CURL_COUNT"
 cp "$FAKE_CURL_SENT" "$FAKE_CURL_SENT.$n"
+cp "$FAKE_CURL_ARGV" "$FAKE_CURL_ARGV.$n"
+[ -z "${FAKE_CLOCK:-}" ] || echo $(( $(cat "$FAKE_CLOCK") + ${FAKE_CURL_ADVANCE:-0} )) >"$FAKE_CLOCK"
 [ "$FAKE_CURL_EXIT" -eq 0 ] || exit "$FAKE_CURL_EXIT"
 [ -z "$out" ] || cp "$FAKE_CURL_BODY" "$out"
 if [ "$n" = "${FAKE_CURL_FAIL_AT:-}" ]; then printf '%s' "$FAKE_CURL_FAIL_CODE"; else printf '%s' "$FAKE_CURL_CODE"; fi
@@ -717,6 +720,87 @@ request_count() {
   sent_prompt 1 | grep -q "line 1, bytes 1-"
 }
 
+# utf8_line <file> <prefix-bytes> <char> [count]: one line of prefix-bytes "a",
+# then the multi-byte char count (300) times, so a 200-byte split lands inside
+# a character.
+utf8_line() {
+  local i
+  { head -c "$2" /dev/zero | tr '\0' a
+    for (( i = 0; i < ${4:-300}; i++ )); do printf '%s' "$3"; done
+    printf '\n'; } >"$1"
+}
+
+@test "chunking: a line split by bytes never cuts a UTF-8 character" {
+  local f="$TEST_TMPDIR/u.txt" c="$TEST_TMPDIR/chunk" joined="$TEST_TMPDIR/joined" ch k i n
+  for ch in é я € 😀; do
+    for k in 0 1 2 3; do
+      utf8_line "$f" $(( 200 - k )) "$ch"
+      _CH_FILE=() _CH_START=() _CH_END=() _CH_OFF=() _CH_LEN=() _CH_PART=() _CH_OF=()
+      _shunt_http_plan_file "$f" 200
+      n=${#_CH_FILE[@]}
+      [ "$n" -gt 1 ]
+      : >"$joined"
+      for (( i = 0; i < n; i++ )); do
+        _shunt_http_write_chunk "$i" "$c"
+        [ "$(wc -c <"$c")" -le 200 ]
+        iconv -f UTF-8 -t UTF-8 "$c" >/dev/null
+        cat "$c" >>"$joined"
+      done
+      cmp "$joined" "$f"
+    done
+  done
+}
+
+@test "chunking: split UTF-8 chunks reach the model as valid UTF-8" {
+  write_sized_registry 6000 null
+  utf8_line "$TEST_TMPDIR/u2.txt" 1 "😀" 4000
+  run shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/u2.txt"
+  assert_success
+  local i n
+  n=$(request_count)
+  [ "$n" -gt 2 ]
+  for (( i = 1; i < n; i++ )); do
+    iconv -f UTF-8 -t UTF-8 "$FAKE_CURL_SENT.$i" >/dev/null
+    # jq turns invalid UTF-8 into U+FFFD replacement characters.
+    [ "$(grep -c $'\xef\xbf\xbd' "$FAKE_CURL_SENT.$i")" -eq 0 ]
+  done
+}
+
+# sent_text_bytes <n>: bytes of the decoded system and user messages of the
+# n-th request, the size the oversize guard estimates tokens from.
+sent_text_bytes() {
+  jq -j '.messages[0].content + .messages[1].content' "$FAKE_CURL_SENT.$1" | wc -c
+}
+
+@test "chunking: no chunk request exceeds the budget with a long question, long file name and escaped content" {
+  write_sized_registry 6000 null
+  local dir="$TEST_TMPDIR" seg i n q
+  seg=$(head -c 200 /dev/zero | tr '\0' d)
+  for i in 1 2 3 4 5 6; do dir="$dir/$seg"; done
+  mkdir -p "$dir"
+  # Every line is quotes, backslashes, tabs and \u0001 control characters.
+  awk 'BEGIN { for (i = 1; i <= 400; i++) { s = ""
+    for (j = 0; j < 20; j++) s = s "\"\\\t\001"; print s } }' >"$dir/esc.txt"
+  q="$(big_question 2000) \"quoted\" back\\slash"
+  run --separate-stderr shunt_transport_invoke "$AGENT" "$q" "$dir/esc.txt"
+  assert_success
+  n=$(request_count)
+  [ "$n" -gt 2 ]
+  for (( i = 1; i < n; i++ )); do
+    [ "$(sent_text_bytes "$i")" -le 10800 ]
+  done
+  # One long line split by bytes carries the longest chunk note.
+  head -c 30000 /dev/zero | tr '\0' '"' >"$dir/one.txt"
+  echo 0 >"$FAKE_CURL_COUNT"
+  run --separate-stderr shunt_transport_invoke "$AGENT" "$q" "$dir/one.txt"
+  assert_success
+  n=$(request_count)
+  [ "$n" -gt 2 ]
+  for (( i = 1; i < n; i++ )); do
+    [ "$(sent_text_bytes "$i")" -le 10800 ]
+  done
+}
+
 @test "chunking: usage and cost are summed over every request" {
   write_sized_registry 6000 null
   ok_body 'part' stop '{"usage":{"prompt_tokens":12,"completion_tokens":5,"cost":0.01}}'
@@ -811,4 +895,123 @@ request_count() {
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
   assert_output --partial "limit"
   [ ! -f "$FAKE_CURL_ARGV" ]
+}
+
+# ---- total deadline (SHUNT_TOTAL_TIMEOUT_SECONDS) ----------------------------
+
+# use_fake_clock <seconds-per-request>: the transport's clock reads FAKE_CLOCK,
+# which starts at 0 and only moves when the fake curl answers a request.
+use_fake_clock() {
+  export FAKE_CLOCK="$TEST_TMPDIR/clock" FAKE_CURL_ADVANCE="$1"
+  echo 0 >"$FAKE_CLOCK"
+  _shunt_http_now() { _SHUNT_HTTP_NOW=$(cat "$FAKE_CLOCK"); }
+}
+
+# max_time_of <n>: the --max-time argument of the n-th request.
+max_time_of() {
+  grep -A1 -x -- '--max-time' "$FAKE_CURL_ARGV.$1" | tail -n1
+}
+
+@test "total deadline: hit between chunks stops further requests with DEADLINE" {
+  write_sized_registry 6000 null
+  make_lines "$TEST_TMPDIR/big.txt" 300
+  use_fake_clock 10
+  export SHUNT_TOTAL_TIMEOUT_SECONDS=25
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_DEADLINE" ]
+  [ "$(request_count)" -eq 3 ]
+  [[ "$stderr" == *"total deadline of 25s (SHUNT_TOTAL_TIMEOUT_SECONDS)"* ]]
+  [[ "$stderr" == *"3 of 4 chunks finished"* ]]
+  [[ "$stderr" != *L0001* ]]
+}
+
+@test "total deadline: each request's max-time is capped at the remaining time" {
+  write_sized_registry 6000 null
+  make_lines "$TEST_TMPDIR/big.txt" 300
+  use_fake_clock 10
+  export SHUNT_TIMEOUT_SECONDS=12 SHUNT_TOTAL_TIMEOUT_SECONDS=30
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_DEADLINE" ]
+  [ "$(request_count)" -eq 3 ]
+  [ "$(max_time_of 1)" = 12 ]
+  [ "$(max_time_of 2)" = 12 ]
+  [ "$(max_time_of 3)" = 10 ]
+}
+
+@test "total deadline: defaults to three times the per-request timeout" {
+  write_sized_registry 6000 null
+  make_lines "$TEST_TMPDIR/big.txt" 300
+  use_fake_clock 10
+  unset SHUNT_TOTAL_TIMEOUT_SECONDS
+  export SHUNT_TIMEOUT_SECONDS=10
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_DEADLINE" ]
+  [ "$(request_count)" -eq 3 ]
+  [[ "$stderr" == *"total deadline of 30s"* ]]
+}
+
+@test "total deadline: a chunked call within the deadline succeeds" {
+  write_sized_registry 6000 null
+  make_lines "$TEST_TMPDIR/big.txt" 300
+  use_fake_clock 10
+  export SHUNT_TOTAL_TIMEOUT_SECONDS=60
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
+  assert_success
+  [ "$(request_count)" -eq 5 ]
+  [ "$(max_time_of 5)" = 20 ]
+}
+
+@test "total deadline: a non-chunked call keeps the per-request timeout" {
+  unset SHUNT_TOTAL_TIMEOUT_SECONDS
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(max_time_of 1)" = 300 ]
+  SHUNT_TOTAL_TIMEOUT_SECONDS=5000 run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(max_time_of 2)" = 300 ]
+}
+
+@test "total deadline: a smaller total also caps a non-chunked call" {
+  SHUNT_TOTAL_TIMEOUT_SECONDS=7 run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(max_time_of 1)" = 7 ]
+}
+
+@test "total deadline: a curl timeout under the capped max-time names the total deadline" {
+  export FAKE_CURL_EXIT=28 SHUNT_TOTAL_TIMEOUT_SECONDS=7
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_DEADLINE" ]
+  [[ "$stderr" == *"total deadline of 7s"* ]]
+}
+
+@test "total deadline: a plain per-request curl timeout does not blame the total deadline" {
+  export FAKE_CURL_EXIT=28
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_TIMEOUT" ]
+  [[ "$stderr" != *"total deadline"* ]]
+}
+
+@test "total deadline: an invalid SHUNT_TOTAL_TIMEOUT_SECONDS is a config error and sends nothing" {
+  local v
+  for v in 0 abc -5 1.5 ' 3' 0000 1234567890; do
+    SHUNT_TOTAL_TIMEOUT_SECONDS="$v" run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+    [ "$status" -eq 1 ]
+    [[ "$stderr" == *"SHUNT_TOTAL_TIMEOUT_SECONDS must be a positive whole number"* ]]
+  done
+  [ ! -f "$FAKE_CURL_ARGV" ]
+}
+
+@test "total deadline: the failover line names the total deadline, not the per-request timeout" {
+  export FAKE_CURL_EXIT=28 SHUNT_TOTAL_TIMEOUT_SECONDS=7
+  run --separate-stderr shunt_invoke_with_failover "q"
+  assert_failure
+  [[ "$stderr" == *"shunt: acme/m1 failed: total deadline reached (SHUNT_TOTAL_TIMEOUT_SECONDS)"* ]]
+  [[ "$stderr" != *"timed out after"* ]]
+}
+
+@test "total deadline: a plain per-request timeout still names SHUNT_TIMEOUT_SECONDS in the failover line" {
+  export FAKE_CURL_EXIT=28
+  run --separate-stderr shunt_invoke_with_failover "q"
+  assert_failure
+  [[ "$stderr" == *"shunt: acme/m1 failed: timed out after 300s"* ]]
 }
