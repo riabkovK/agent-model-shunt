@@ -9,7 +9,7 @@ Single entry point for all of shunt's delegate-model configuration:
 the model registry (`scripts/shunt-models`, `~/.config/agent-model-shunt/models.json`),
 the retry/failover behavior around a failing model (`scripts/shunt-breaker-config`,
 `~/.config/agent-model-shunt/breaker-config.json`, internally called the
-"circuit breaker" — see Terminology below), and the code-write self-fix
+"circuit breaker", see Terminology below), and the code-write self-fix
 loop's retry count (`scripts/shunt-codewrite-config`,
 `~/.config/agent-model-shunt/code-write-self-fix-config.json`). Always drive all three
 through their CLI, never by hand-editing any of the JSON files directly.
@@ -18,15 +18,15 @@ through their CLI, never by hand-editing any of the JSON files directly.
 
 When invoked with no specific request, show the full status in one pass,
 as two separate, clearly labeled blocks, then ask what the user wants to
-do — add/remove/reorder/activate/disable a model, tune the breaker, or
+do, add/remove/reorder/activate/disable a model, tune the breaker, or
 something else.
 
 1. **Model registry** (`scripts/shunt-models status`, or the legacy-mode
    message it prints if no registry exists yet). For every model, not just
    the active one, show: enabled/disabled, whether it's the active model,
    its roles, and its thinking-mode state (on/off, and whether off is an
-   explicit stored setting — `thinking_off=set` — or just the unset
-   default — `thinking_off=none`). Don't omit a model just because its
+   explicit stored setting, `thinking_off=set`, or just the unset
+   default, `thinking_off=none`). Don't omit a model just because its
    thinking mode is off or it isn't active; the point of the dashboard is
    that every model's state is visible at a glance, e.g. as one row per
    model in a small table.
@@ -39,7 +39,7 @@ something else.
    plainly instead of printing numbers that wouldn't mean anything yet.
 3. **Code-write self-fix loop**: the retry count
    (`scripts/shunt-codewrite-config show`), shown right after the circuit
-   breaker block, also not gated behind an opt-in question — same
+   breaker block, also not gated behind an opt-in question, same
    "annotated with its default" treatment as the breaker's threshold and
    cooldown, e.g. "Повторные попытки self-fix: 1 (по умолчанию 1)" /
    "Self-fix retries: 1 (default: 1)". This setting is global, like the
@@ -47,6 +47,10 @@ something else.
    have the `code-write` role. If no model in the registry has that role
    yet, still show the value (it takes effect the moment a model gains the
    role) rather than omitting the block.
+4. **Providers**: `scripts/shunt-models provider list` (name, transport,
+   base_url, key type), plus `scripts/shunt-models key status <provider>`
+   for each http provider. Skip the block if it says no providers are
+   configured.
 
 ## Language
 
@@ -57,11 +61,11 @@ underlying scripts always print English (`enabled`, `disabled`,
 pasting raw lines verbatim, e.g. "включена"/"отключена", "активна",
 "выключен", "не на паузе". Match the user's language for the whole
 reply, including any explanations, the same way as the rest of the
-conversation — this skill has no separate language setting of its own.
+conversation, this skill has no separate language setting of its own.
 
 ## Terminology
 
-Internally (code, tests, env vars) this is called a "circuit breaker" —
+Internally (code, tests, env vars) this is called a "circuit breaker":
 that term is fine once you're explaining what it does, but still lead with
 the *behavior*, not the name: "how many failed attempts before shunt stops
 using a model for a while, and how long before it tries that model again."
@@ -106,7 +110,7 @@ with it.
 
 `add` requires the model's provider to already exist in the OpenCode
 config's `provider` block (`$SHUNT_OPENCODE_CONFIG_HOME/opencode.json` or
-`~/.config/opencode/opencode.json`) — if it's missing, the command fails
+`~/.config/opencode/opencode.json`), if it's missing, the command fails
 with a clear message rather than materializing an agent that can't run.
 
 ## Roles, per model
@@ -141,11 +145,11 @@ Whenever the roles just given to `add` (or a later `roles` call) include
 неудачную сборку/тест, прежде чем передать это вам)?" / "Want to configure
 the self-fix loop's settings (how many times code-write retries a failed
 build/test itself before handing it back to you)?" Ask this once per `add`
-or `roles` call that grants the role, not on every dashboard view — the
+or `roles` call that grants the role, not on every dashboard view, the
 no-argument dashboard already shows the current value passively (see above).
 
 - No: do nothing further. The model uses whatever `self_fix_retries` value
-  is already configured (global, not per-model — see below).
+  is already configured (global, not per-model, see below).
 - Yes: show the current value from `scripts/shunt-codewrite-config show`,
   then offer the retry count as a choice (e.g. `AskUserQuestion` with a few
   common values like 0/1/2/3 plus free text), and apply it with
@@ -222,6 +226,74 @@ instead of 45s. So for an Ollama model, offer
 `request-body <id> --role bulk-read '{"reasoning_effort":"none"}'`. Code-write
 thinking is not measured, so do not change its default.
 
+## Providers and keys (HTTP transport)
+
+```bash
+scripts/shunt-models provider set <name> --transport http --base-url <url> --key <keyring|plaintext|none|env:VARNAME>
+scripts/shunt-models provider set <name> --base-url <url>   # update, other fields kept
+scripts/shunt-models provider list
+scripts/shunt-models key status <provider>                  # yes/no and type, never the value
+```
+
+`provider set` writes `providers.json`. An http provider needs a base_url
+starting with `http://` or `https://` and naming a host, with no
+`user:password@`, whitespace or control characters (put credentials in the
+key, never in the URL). Changing the key type away from
+plaintext drops a stored plaintext key.
+
+Key storage trade-offs:
+
+- `env:VARNAME`: the key lives in the user's shell environment. Nothing is
+  stored by the plugin, but the variable must be exported where Claude Code
+  runs.
+- `keyring`: OS keyring (secret-tool, security, kwallet-query). Best default
+  when a backend exists.
+- `plaintext`: stored in `providers.json` (mode 600). Last resort.
+- `none`: local endpoints without auth (e.g. Ollama).
+
+Never ask the user to paste a key into chat, and never put a key on a
+command line. For keyring and plaintext, tell the user to run it
+themselves with the `!` prefix, which reads the key from a hidden prompt:
+`! <plugin-root>/scripts/shunt-models key set <provider>`. Spell out
+`<plugin-root>` as the absolute path of this plugin (two directories above
+this SKILL.md, the `${CLAUDE_PLUGIN_ROOT}` of the hooks). A `!` command runs
+in the user's project directory, where the relative `scripts/shunt-models`
+does not exist. The auth-failure hint of the HTTP transport already prints
+the absolute path.
+
+## Context window and oversize policy (HTTP transport)
+
+```bash
+scripts/shunt-models detect-context <provider/model> [--write]
+scripts/shunt-models set-context <provider/model> <tokens>
+scripts/shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>
+```
+
+- Run `detect-context` first. It asks the provider and never guesses. If
+  it fails, ASK the user for the model's context window and store the
+  answer with `set-context`. Never invent a value.
+- `oversize_policy` decides what bulk-read does with input too large for
+  the context: `map_reduce` (default, also when unset) splits it into
+  chunks, `fail` refuses. Code-write always fails on oversize input,
+  whatever the policy.
+- Saving with `set-context`, `detect-context --write` or `oversize-policy`
+  resets that model's circuit breaker, since a missing context or a bad
+  policy was counted as a model failure.
+
+## Adding an HTTP model, in order
+
+1. Provider: `provider set <name> --transport http --base-url <url> --key <type>`.
+2. Key: `! <plugin-root>/scripts/shunt-models key set <name>` (keyring/plaintext) or the
+   exported variable (env), then confirm with `key status <name>`.
+3. `scripts/shunt-models add <provider/model>`, then check connectivity
+   with `detect-context <provider/model> --write`.
+4. If detection fails, ask the user for the context window and run
+   `set-context`. Never guess.
+5. `oversize-policy` if the user wants `fail` instead of the `map_reduce`
+   default.
+6. Thinking and extra request fields: `thinking`, `request-body` (see the
+   sections on them).
+
 ## Migrating providers from OpenCode to the HTTP transport
 
 ```bash
@@ -241,7 +313,7 @@ else the opencode `limit.context`, labelled "not verified"). `--apply` asks
 Key storage for a literal `apiKey`: `keyring` (default when a backend exists),
 `env` (`SHUNT_<PROVIDER>_KEY`, the user must export it, nothing is copied),
 `plaintext` (in `providers.json`, mode 600, with a warning) or `skip` (the
-provider stays on opencode, then run `! scripts/shunt-models key set <provider>`
+provider stays on opencode, then run `! <plugin-root>/scripts/shunt-models key set <provider>`
 and re-run). `{env:NAME}` becomes an env key and no `apiKey` becomes type none.
 Without a tty and without `--key-storage` a literal key counts as skip. The key
 is never shown, logged or put in a command line, and never removed from
@@ -249,7 +321,7 @@ is never shown, logged or put in a command line, and never removed from
 
 ## Thinking/extended-reasoning, per model (off by default)
 
-Delegate models that support a "thinking" mode have it off by default —
+Delegate models that support a "thinking" mode have it off by default:
 bulk-read is a summarize/extract task, not deep reasoning, and thinking
 tokens cost time and money without a clear fidelity benefit. Never turn it
 on unprompted; only in response to the user asking about a specific model.
@@ -268,7 +340,7 @@ scripts/shunt-models thinking <provider/model> off '<off-options-json>'
 - `on` requires the caller to also supply the provider's own reasoning
   option(s) as a flat JSON object, e.g. `'{"reasoningEffort":"high"}'` for
   an OpenAI-style provider or whatever key/value the user's provider
-  expects — shunt doesn't hardcode one provider's shape, it merges these
+  expects, shunt doesn't hardcode one provider's shape, it merges these
   keys verbatim into the agent's frontmatter. If the user doesn't know
   their provider's exact option name, say so plainly and ask them to check
   `opencode models <provider>` or their provider's docs rather than
@@ -321,22 +393,22 @@ scripts/shunt-breaker-config reset                  # deletes the config file, r
 ```
 
 - `show`'s output always includes numeric `threshold=`/`cooldown_seconds=`
-  lines (useful for debugging) — these are part of the default dashboard
+  lines (useful for debugging), these are part of the default dashboard
   now, so always state the actual numbers, not just whether they're
   customized.
 - If `show`'s output contains "not applicable" (no models registry
-  configured yet — legacy single-agent mode), tell the user plainly that
+  configured yet, legacy single-agent mode), tell the user plainly that
   this doesn't apply yet because no delegate models are configured, and
-  skip showing threshold/cooldown numbers — they'd be misleading in a mode
+  skip showing threshold/cooldown numbers, they'd be misleading in a mode
   where the breaker never actually engages.
 - Present each value annotated with its default inline, e.g. "Порог: 5 (по
-  умолчанию 3)" / "Threshold: 5 (default: 3)" — there is no stored "was
+  умолчанию 3)" / "Threshold: 5 (default: 3)", there is no stored "was
   this overridden" flag; `show`'s `(default: N)` suffix is a live
   comparison against the hardcoded constant, not persisted state.
 - Validation (non-integer, threshold < 1, cooldown < 0) happens inside
-  `shunt-breaker-config` itself — surface its error message rather than
+  `shunt-breaker-config` itself, surface its error message rather than
   pre-validating in the skill.
-- "Turn the breaker off" maps to `disable`, not a new flag — it's an
+- "Turn the breaker off" maps to `disable`, not a new flag, it's an
   extreme-value preset on the same two-field schema, not a new state in
   the JSON or in `scripts/lib/breaker.sh`'s branching logic.
 
@@ -361,7 +433,7 @@ scripts/shunt-codewrite-config reset                              # deletes the 
   retried automatically, so any build/test failure goes straight to Claude.
   It is not an error and needs no separate `disable` subcommand.
 - Validation (non-integer, negative) happens inside `shunt-codewrite-config`
-  itself — surface its error message rather than pre-validating in the
+  itself, surface its error message rather than pre-validating in the
   skill.
 - This setting never touches the circuit breaker's threshold/cooldown or
   its per-model failure counters; the two are unrelated (see Terminology).
@@ -377,6 +449,6 @@ Self-fix retry count: hardcoded default (1) → `code-write-self-fix-config.json
 
 ## When NOT to use this skill
 
-- To delegate an actual file read, use `/bulk-reader` instead — this skill
+- To delegate an actual file read, use `/bulk-reader` instead, this skill
   only edits configuration, never runs a delegated call itself.
 - To read real per-call usage/cost, use `/usage-report` instead.

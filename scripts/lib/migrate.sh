@@ -256,8 +256,10 @@ _migrate_apply() {
   _migrate_backup "$SHUNT_MODELS_FILE"
   _migrate_backup "$SHUNT_PROVIDERS_FILE"
   _migrate_store_keys keyring
+  shunt_providers_lock || shunt_report_error "could not lock $SHUNT_PROVIDERS_FILE."
   shunt_providers_write "$(_migrate_providers_doc)" || shunt_report_error "could not write $SHUNT_PROVIDERS_FILE."
   _migrate_store_keys plaintext
+  shunt_providers_unlock
   MIGRATE_PLAN=$(jq -c --argjson m "$(_migrate_plan_models 1 "$SHUNT_PROVIDERS_FILE")" '.models = $m' <<<"$MIGRATE_PLAN")
   shunt_models_write "$(_migrate_models_doc)"
   echo "shunt: migration applied. Check with: shunt-models status"

@@ -24,7 +24,14 @@
 #   shunt-models set-context <provider/model> <tokens>
 #   shunt-models detect-context <provider/model> [--write]
 #     Asks the provider for the context window (never guessed). --write stores it.
+#   shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>
+#     set-context, detect-context --write and oversize-policy reset the model's breaker.
 #   shunt-models sync
+#   shunt-models provider set <name> [--transport http|opencode] [--base-url <url>]
+#                [--key keyring|plaintext|none|env:<VARNAME>]
+#     Creates or updates a providers.json entry, keeping fields not given. Never
+#     takes a key value: store it with `key set`.
+#   shunt-models provider list           (name, transport, base_url, key type)
 #   shunt-models key set <provider>      (hidden prompt, or one line on piped stdin)
 #   shunt-models key status <provider>   (yes/no and key type, never the value)
 #   shunt-models --migrate-from-opencode [--apply] [--key-storage keyring|env|plaintext|skip]
@@ -121,10 +128,15 @@ cmd_add() {
     roles_json=$(shunt_models_parse_roles "$roles_arg")
   fi
 
-  local provider="${id%%/*}"
+  # An http provider from providers.json needs nothing from opencode.json (add
+  # only checks that the provider exists). Any other provider is called through
+  # OpenCode, so it must be in opencode.json.
+  local provider="${id%%/*}" transport
+  transport=$(shunt_provider_transport "$provider") || exit 1
   local opencode_json="$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
-  if [ ! -f "$opencode_json" ] || ! jq -e --arg p "$provider" '.provider[$p]' "$opencode_json" >/dev/null 2>&1; then
-    shunt_report_error "provider '$provider' not found in $opencode_json. Add it to your OpenCode config first."
+  if [ "$transport" != http ] \
+    && { [ ! -f "$opencode_json" ] || ! jq -e --arg p "$provider" '.provider[$p]' "$opencode_json" >/dev/null 2>&1; }; then
+    shunt_report_error "provider '$provider' not found in $opencode_json. Add it to your OpenCode config first, or configure it for the HTTP transport with: shunt-models provider set $provider --transport http --base-url <url> --key <type>"
   fi
 
   local current
@@ -382,19 +394,28 @@ SHUNT_CONTEXT_MAX_DIGITS=12
 # Stores <tokens> as the model's context_tokens through the atomic registry
 # write. Like cmd_roles it does not need a valid registry to begin with.
 shunt_models_store_context() {
-  local id="$1" tokens="$2" current updated
+  local id="$1" tokens="$2" updated
   [[ "$tokens" =~ ^[1-9][0-9]{0,$((SHUNT_CONTEXT_MAX_DIGITS - 1))}$ ]] \
     || shunt_report_error "tokens must be a positive integer of at most $SHUNT_CONTEXT_MAX_DIGITS digits."
+  shunt_models_require_entry "$id"
+  updated=$(jq --arg id "$id" --argjson t "$tokens" \
+    '.models |= map(if .id == $id then .context_tokens = $t else . end)' "$SHUNT_MODELS_FILE")
+  shunt_models_write "$updated"
+  # A missing context window was recorded as a model failure, start clean.
+  shunt_breaker_clear_state "$id" || echo "shunt: warning, could not reset the breaker state of '$id'." >&2
+  echo "shunt: context_tokens for '$id' set to $tokens."
+}
+
+# shunt_models_require_entry <provider/model>
+# Exits with an error unless the registry file exists, has a models array and
+# holds <id>. Does not need an otherwise valid registry.
+shunt_models_require_entry() {
+  local id="$1"
   [ -f "$SHUNT_MODELS_FILE" ] || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
   jq -e '.models | type == "array"' "$SHUNT_MODELS_FILE" >/dev/null 2>&1 \
     || shunt_report_error "$SHUNT_MODELS_FILE is not a valid models registry."
-  current=$(cat "$SHUNT_MODELS_FILE")
-  echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null \
+  jq -e --arg id "$id" '.models | any(.id == $id)' "$SHUNT_MODELS_FILE" >/dev/null \
     || shunt_report_error "model '$id' is not in the registry."
-  updated=$(echo "$current" | jq --arg id "$id" --argjson t "$tokens" \
-    '.models |= map(if .id == $id then .context_tokens = $t else . end)')
-  shunt_models_write "$updated"
-  echo "shunt: context_tokens for '$id' set to $tokens."
 }
 
 # set-context <provider/model> <tokens>
@@ -417,6 +438,144 @@ cmd_detect_context() {
     shunt_models_store_context "$id" "$tokens"
   fi
   echo "$tokens"
+}
+
+# oversize-policy <provider/model> <map_reduce|fail|--clear>
+# Sets or clears the model's oversize_policy (absent means map_reduce).
+cmd_oversize_policy() {
+  local id="${1:-}" policy="${2:-}" updated
+  case "$policy" in
+    map_reduce | fail | --clear) ;;
+    *) shunt_report_error "usage: shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>" ;;
+  esac
+  [ -n "$id" ] || shunt_report_error "usage: shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>"
+  shunt_models_require_entry "$id"
+  updated=$(jq --arg id "$id" --arg p "$policy" '
+    .models |= map(if .id != $id then .
+      elif $p == "--clear" then del(.oversize_policy)
+      else .oversize_policy = $p end)' "$SHUNT_MODELS_FILE")
+  shunt_models_write "$updated"
+  # An oversize failure under the old policy counted against the model.
+  shunt_breaker_clear_state "$id" || echo "shunt: warning, could not reset the breaker state of '$id'." >&2
+  if [ "$policy" = --clear ]; then
+    echo "shunt: oversize_policy for '$id' cleared (map_reduce applies)."
+  else
+    echo "shunt: oversize_policy for '$id' set to $policy."
+  fi
+}
+
+# shunt_parse_key_spec <keyring|plaintext|none|env:VARNAME>
+# Sets _shunt_key_type and _shunt_key_ref. Never echoes the spec back, so a
+# key pasted by mistake does not end up in the output.
+shunt_parse_key_spec() {
+  _shunt_key_type="" _shunt_key_ref=""
+  case "$1" in
+    keyring | plaintext | none) _shunt_key_type="$1" ;;
+    env:*)
+      [[ "${1#env:}" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
+        || shunt_report_error "--key env:<VARNAME> needs a valid environment variable name."
+      _shunt_key_type=env _shunt_key_ref="${1#env:}" ;;
+    *) shunt_report_error "--key must be keyring, plaintext, none or env:<VARNAME>. Never pass a key value here, store it with: ! $SHUNT_MODELS_HINT_CMD key set <provider>" ;;
+  esac
+}
+
+# provider set <name> [--transport http|opencode] [--base-url <url>] [--key <spec>]
+# Creates or updates a providers.json entry. Fields not given are kept. A key
+# type change drops the stored ref unless it stays plaintext.
+cmd_provider_set() {
+  local name="${1:-}" transport="" base_url="" _shunt_key_type="" _shunt_key_ref=""
+  local usage="usage: shunt-models provider set <name> [--transport http|opencode] [--base-url <url>] [--key keyring|plaintext|none|env:<VARNAME>]"
+  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || shunt_report_error "$usage"
+  shift
+  while [ $# -gt 0 ]; do
+    [ $# -ge 2 ] || shunt_report_error "$usage"
+    case "$1" in
+      --transport | --base-url | --key)
+        [ -n "$2" ] || shunt_report_error "$1 needs a non-empty value." ;;
+    esac
+    case "$1" in
+      --transport) transport="$2" ;;
+      --base-url) base_url="$2" ;;
+      --key) shunt_parse_key_spec "$2" ;;
+      *) shunt_report_error "$usage" ;;
+    esac
+    shift 2
+  done
+  if [ -n "$transport" ] && [[ " $SHUNT_PROVIDER_TRANSPORTS " != *" $transport "* ]]; then
+    shunt_report_error "--transport must be one of: $SHUNT_PROVIDER_TRANSPORTS."
+  fi
+  if [ -n "$base_url" ]; then
+    local url_rc=0
+    shunt_base_url_check "$base_url" || url_rc=$?
+    case "$url_rc" in
+      0) ;;
+      2 | 3) shunt_report_error "--base-url must start with http:// or https://." ;;
+      *) shunt_report_error "--base-url is malformed: it needs a host and must not contain user:password@, whitespace or control characters." ;;
+    esac
+  fi
+  shunt_providers_lock || exit 1
+  shunt_providers_validate || exit 1
+
+  local current updated
+  if [ -f "$SHUNT_PROVIDERS_FILE" ]; then
+    current=$(cat "$SHUNT_PROVIDERS_FILE")
+  else
+    current='{"version":1,"providers":{}}'
+  fi
+  if [ -z "$transport" ] && ! echo "$current" | jq -e --arg n "$name" '.providers | has($n)' >/dev/null; then
+    shunt_report_error "provider '$name' is new: --transport is required."
+  fi
+  updated=$(echo "$current" | jq --arg n "$name" --arg t "$transport" --arg u "$base_url" \
+    --arg kt "$_shunt_key_type" --arg kr "$_shunt_key_ref" '
+    (.providers[$n] // {}) as $old
+    | .providers[$n] = $old
+      + (if $t != "" then {transport: $t} else {} end)
+      + (if $u != "" then {base_url: $u} else {} end)
+      + (if $kt == "" then (if $old | has("key") then {} else {key: {type: "none"}} end)
+         elif $kt == "env" then {key: {type: "env", ref: $kr}}
+         elif $kt == "plaintext" and $old.key.type == "plaintext" then {key: $old.key}
+         else {key: {type: $kt}} end)')
+  if echo "$updated" | jq -e --arg n "$name" '.providers[$n] | (.transport // "opencode") == "http" and ((.base_url // "") == "")' >/dev/null; then
+    shunt_report_error "provider '$name': transport http needs a base_url (--base-url http://... or https://...)."
+  fi
+  shunt_providers_write "$updated" || exit 1
+  shunt_providers_unlock
+  echo "shunt: provider '$name' saved ($(echo "$updated" | jq -r --arg n "$name" \
+    '.providers[$n] | "transport \(.transport // "opencode"), key \(.key.type)"'))."
+  case "$_shunt_key_type" in
+    keyring | plaintext) echo "shunt: store the key yourself (hidden prompt, never paste it into chat): ! $SHUNT_MODELS_HINT_CMD key set $name" ;;
+  esac
+}
+
+# provider list: name, transport, base_url and key type. Only env refs (a
+# variable name) are shown, never a stored key.
+# An invalid entry is listed as "invalid: <reason>" and the command exits 1
+# after listing the others.
+cmd_provider_list() {
+  if [ ! -f "$SHUNT_PROVIDERS_FILE" ]; then
+    echo "shunt: no providers configured in $SHUNT_PROVIDERS_FILE."
+    return 0
+  fi
+  jq -e '(.providers | type) == "object"' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1 \
+    || shunt_report_error "$SHUNT_PROVIDERS_FILE is invalid JSON or has no \"providers\" object."
+  if jq -e '.providers | length == 0' "$SHUNT_PROVIDERS_FILE" >/dev/null; then
+    echo "shunt: no providers configured in $SHUNT_PROVIDERS_FILE."
+    return 0
+  fi
+  shunt_providers_list_lines
+  shunt_providers_validate 2>/dev/null \
+    || shunt_report_error "$SHUNT_PROVIDERS_FILE has invalid entries (marked above). Fix them before using those providers."
+}
+
+# cmd_provider set|list
+cmd_provider() {
+  local action="${1:-}"
+  shift || true
+  case "$action" in
+    set) cmd_provider_set "$@" ;;
+    list) cmd_provider_list ;;
+    *) shunt_report_error "usage: shunt-models provider <set|list> [args...]" ;;
+  esac
 }
 
 cmd_list() {
@@ -544,7 +703,7 @@ cmd_key_set() {
 }
 
 subcommand="${1:-}"
-[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|request-body|roles|set-context|detect-context|sync|key|--migrate-from-opencode> [args...]"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|request-body|roles|set-context|detect-context|oversize-policy|sync|provider|key|--migrate-from-opencode> [args...]"
 shift
 
 case "$subcommand" in
@@ -559,6 +718,8 @@ case "$subcommand" in
   roles) cmd_roles "$@" ;;
   set-context) cmd_set_context "$@" ;;
   detect-context) cmd_detect_context "$@" ;;
+  oversize-policy) cmd_oversize_policy "$@" ;;
+  provider) cmd_provider "$@" ;;
   list) cmd_list "$@" ;;
   status) cmd_status "$@" ;;
   sync) cmd_sync "$@" ;;

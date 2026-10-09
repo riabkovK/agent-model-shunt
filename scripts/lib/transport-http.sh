@@ -75,6 +75,12 @@ _shunt_http_excerpt() {
   printf '%s' "${s:0:$SHUNT_HTTP_EXCERPT_CHARS}"
 }
 
+# Absolute path of shunt-models for hints. Hooks run with the user's project as
+# the working directory, so a relative scripts/shunt-models would not resolve.
+# Shell-quoted so a plugin root with spaces still pastes as one word.
+printf -v _SHUNT_HTTP_MODELS_CMD '%q' \
+  "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"
+
 # _shunt_http_check_base_url <provider> <base_url> <outvar>
 # Stores the URL to use in <outvar>. An explicit http:// or https:// is taken
 # as written (http to any host is the user's informed choice). A base_url with
@@ -82,26 +88,24 @@ _shunt_http_excerpt() {
 # connection can say so. Never falls back to http. Other schemes, userinfo,
 # whitespace and control characters are refused.
 _shunt_http_check_base_url() {
-  local provider="$1" url="$2" rest authority
+  local provider="$1" url="$2" rc=0
   _SHUNT_HTTP_ASSUMED_HTTPS=0
-  case "$url" in
-    https://*) rest="${url#https://}" ;;
-    http://*) rest="${url#http://}" ;;
-    *://*)
+  shunt_base_url_check "$url" || rc=$?
+  case "$rc" in
+    0) ;;
+    3)
+      url="https://$url"
+      _SHUNT_HTTP_ASSUMED_HTTPS=1
+      ;;
+    2)
       echo "shunt: provider '$provider': base_url scheme must be http:// or https:// (config problem, no request sent)." >&2
       return 1
       ;;
     *)
-      rest="$url"
-      url="https://$url"
-      _SHUNT_HTTP_ASSUMED_HTTPS=1
+      echo "shunt: provider '$provider': base_url is malformed or has credentials in it (config problem, no request sent)." >&2
+      return 1
       ;;
   esac
-  authority="${rest%%[/?#]*}"
-  if [ -z "$authority" ] || [[ "$url" == *[[:space:][:cntrl:]]* ]] || [[ "$authority" == *@* ]]; then
-    echo "shunt: provider '$provider': base_url is malformed or has credentials in it (config problem, no request sent)." >&2
-    return 1
-  fi
   printf -v "$3" '%s' "$url"
 }
 
@@ -315,7 +319,7 @@ _shunt_http_check_reply() {
   case "$http_code" in
     2??) ;;
     401 | 403)
-      echo "shunt: auth failed for provider $provider, check key via model-config" >&2
+      echo "shunt: auth failed for provider $provider. Check the key with: $_SHUNT_HTTP_MODELS_CMD key status $provider (set it with: ! $_SHUNT_HTTP_MODELS_CMD key set $provider)" >&2
       return "$SHUNT_TRY_INVOKE_AUTH"
       ;;
     400 | 404 | 413)

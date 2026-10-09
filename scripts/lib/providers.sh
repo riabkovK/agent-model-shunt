@@ -21,6 +21,31 @@ SHUNT_KWALLET_WALLET="kdewallet"
 SHUNT_PROVIDER_TRANSPORTS="http opencode"
 SHUNT_PROVIDER_KEY_TYPES="keyring env plaintext none"
 
+SHUNT_PROVIDERS_LOCK_TIMEOUT="${SHUNT_PROVIDERS_LOCK_TIMEOUT:-10}"
+_SHUNT_PROVIDERS_LOCK_DEPTH=0 _SHUNT_PROVIDERS_LOCK_FD="" _SHUNT_PROVIDERS_LOCK_DIR=""
+
+# jq definition: `entry_problem` maps one providers to_entries item to a
+# description of what is wrong with it, or null. Never includes a key ref.
+# shellcheck disable=SC2016 # jq program, $names are jq variables
+_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ='
+  def entry_problem($transports; $types):
+    .key as $n | .value as $v
+    | if ($v | type) != "object" then "provider \"\($n)\": entry is not an object"
+      elif ($v.transport // "opencode" | type) != "string" then "provider \"\($n)\": transport is not a string"
+      elif ($transports | index($v.transport // "opencode")) == null
+        then "provider \"\($n)\": unknown transport \"\($v.transport)\" (allowed: \($transports | join(" ")))"
+      elif ($v.base_url // "" | type) != "string" then "provider \"\($n)\": base_url is not a string"
+      elif ($v.base_url // "" | test("^([A-Za-z][A-Za-z0-9+.-]*://)?[^/?#]*@")) then "provider \"\($n)\": base_url has credentials (user:password@) in it"
+      elif ($v.key // {} | type) != "object"
+        then "provider \"\($n)\": key is not an object (expected {\"type\":\"...\",\"ref\":\"...\"})"
+      elif ($v.key.type // "none" | type) != "string" then "provider \"\($n)\": key type is not a string"
+      elif ($types | index($v.key.type // "none")) == null
+        then "provider \"\($n)\": unknown key type \"\($v.key.type)\" (allowed: \($types | join(" ")))"
+      elif ($v.key.ref // "" | type) != "string" then "provider \"\($n)\": key ref is not a string"
+      elif $v.key.type == "env" and (($v.key.ref // "") | test("^[A-Za-z_][A-Za-z0-9_]*$") | not)
+        then "provider \"\($n)\": env key ref is not a valid environment variable name"
+      else null end;'
+
 # shunt_providers_validate
 # Returns 0 when the file is absent or valid. Otherwise explains on stderr.
 shunt_providers_validate() {
@@ -30,17 +55,103 @@ shunt_providers_validate() {
     return 1
   fi
   local bad
-  bad=$(jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" '
-    ($ts | split(" ")) as $transports | ($kt | split(" ")) as $types |
-    .providers | to_entries[] |
-    if (.value.transport // "opencode") as $t | ($transports | index($t)) == null
-      then "provider \"\(.key)\": unknown transport \"\(.value.transport)\" (allowed: \($ts))"
-    elif (.value.key.type // "none") as $t | ($types | index($t)) == null
-      then "provider \"\(.key)\": unknown key type \"\(.value.key.type)\" (allowed: \($kt))"
-    else empty end' "$SHUNT_PROVIDERS_FILE" 2>/dev/null | head -n 1)
-  if [ -n "$bad" ]; then
-    echo "shunt: $SHUNT_PROVIDERS_FILE: $bad" >&2
+  if ! bad=$(jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" \
+    "$_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ"'
+    .providers | to_entries[] | entry_problem($ts | split(" "); $kt | split(" ")) // empty' \
+    "$SHUNT_PROVIDERS_FILE" 2>/dev/null); then
+    echo "shunt: $SHUNT_PROVIDERS_FILE could not be validated." >&2
     return 1
+  fi
+  if [ -n "$bad" ]; then
+    echo "shunt: $SHUNT_PROVIDERS_FILE: ${bad%%$'\n'*}" >&2
+    return 1
+  fi
+}
+
+# shunt_providers_list_lines
+# Prints one tab-separated line per provider: name, transport, base_url and
+# key type (env:<VAR> for env keys). An invalid entry gets "invalid: <reason>"
+# instead, so one bad entry does not hide the others. Never prints a key value.
+shunt_providers_list_lines() {
+  jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" \
+    "$_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ"'
+    .providers | to_entries[]
+    | entry_problem($ts | split(" "); $kt | split(" ")) as $bad
+    | if $bad != null then "\(.key)\tinvalid: \($bad)"
+      else (.value.key // {}) as $k
+        | "\(.key)\t\(.value.transport // "opencode")\t\(.value.base_url // "-")\t"
+          + (if $k.type == "env" then "env:\($k.ref // "")" else ($k.type // "none") end)
+      end' "$SHUNT_PROVIDERS_FILE"
+}
+
+# shunt_base_url_check <url>
+# The one base_url validator, shared by `provider set` and the HTTP transport.
+# Returns 0 for a usable URL, 2 for a scheme other than http:// or https://,
+# 3 for no scheme at all, 1 when it is malformed: empty host, userinfo
+# (user:pass@), whitespace or control characters. Never prints the URL.
+shunt_base_url_check() {
+  local url="$1" rest authority
+  case "$url" in
+    https://*) rest="${url#https://}" ;;
+    http://*) rest="${url#http://}" ;;
+    *://*) return 2 ;;
+    *) rest="$url" ;;
+  esac
+  authority="${rest%%[/?#]*}"
+  if [ -z "$authority" ] || [[ "$url" == *[[:space:][:cntrl:]]* ]] || [[ "$authority" == *@* ]]; then
+    return 1
+  fi
+  [ "$rest" != "$url" ] || return 3
+}
+
+# shunt_providers_lock / shunt_providers_unlock
+# Serializes read-modify-write of providers.json between processes. Uses
+# flock on <file>.lock when available, otherwise a <file>.lock.d directory
+# (removed by an EXIT trap if the process exits while holding it). Nested
+# calls in the same process only count depth. Gives up after
+# SHUNT_PROVIDERS_LOCK_TIMEOUT seconds.
+shunt_providers_lock() {
+  if [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -gt 0 ]; then
+    _SHUNT_PROVIDERS_LOCK_DEPTH=$((_SHUNT_PROVIDERS_LOCK_DEPTH + 1))
+    return 0
+  fi
+  local lock="$SHUNT_PROVIDERS_FILE.lock" fd tries
+  mkdir -p "$(dirname "$SHUNT_PROVIDERS_FILE")" || return 1
+  if command -v flock >/dev/null 2>&1; then
+    exec {fd}>>"$lock" || return 1
+    if ! flock -x -w "$SHUNT_PROVIDERS_LOCK_TIMEOUT" "$fd"; then
+      exec {fd}>&-
+      echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE." >&2
+      return 1
+    fi
+    _SHUNT_PROVIDERS_LOCK_FD="$fd"
+  else
+    tries=$((SHUNT_PROVIDERS_LOCK_TIMEOUT * 10))
+    until mkdir "$lock.d" 2>/dev/null; do
+      tries=$((tries - 1))
+      if [ "$tries" -le 0 ]; then
+        echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE (remove $lock.d if no shunt-models is running)." >&2
+        return 1
+      fi
+      sleep 0.1
+    done
+    _SHUNT_PROVIDERS_LOCK_DIR="$lock.d"
+    trap 'rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null' EXIT
+  fi
+  _SHUNT_PROVIDERS_LOCK_DEPTH=1
+}
+
+shunt_providers_unlock() {
+  [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -gt 0 ] || return 0
+  _SHUNT_PROVIDERS_LOCK_DEPTH=$((_SHUNT_PROVIDERS_LOCK_DEPTH - 1))
+  [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -eq 0 ] || return 0
+  if [ -n "$_SHUNT_PROVIDERS_LOCK_FD" ]; then
+    exec {_SHUNT_PROVIDERS_LOCK_FD}>&-
+    _SHUNT_PROVIDERS_LOCK_FD=""
+  elif [ -n "$_SHUNT_PROVIDERS_LOCK_DIR" ]; then
+    rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null
+    trap - EXIT
+    _SHUNT_PROVIDERS_LOCK_DIR=""
   fi
 }
 
@@ -165,6 +276,8 @@ shunt_provider_write_auth_header_file() {
 
 # shunt_providers_write <json>
 # Validates and atomically replaces providers.json, created with mode 600.
+# Callers that read the file to build <json> hold shunt_providers_lock around
+# the read and this write.
 shunt_providers_write() {
   local json="$1" dir tmp
   dir=$(dirname "$SHUNT_PROVIDERS_FILE")
@@ -181,11 +294,23 @@ shunt_providers_write() {
 
 # shunt_provider_plaintext_store <provider>
 # Reads the key from stdin and stores it as the provider's plaintext ref. The
-# key travels through the environment, not argv.
+# key travels through the environment, not argv. Holds the providers lock.
 shunt_provider_plaintext_store() {
-  local provider="$1" key updated
+  local provider="$1" key updated rc=0
   IFS= read -r key
-  updated=$(SHUNT_KEY_VALUE="$key" jq -c --arg p "$provider" \
-    '.providers[$p].key.ref = $ENV.SHUNT_KEY_VALUE' "$SHUNT_PROVIDERS_FILE") || return 1
-  shunt_providers_write "$updated"
+  shunt_providers_lock || return 1
+  if shunt_providers_validate \
+    && updated=$(SHUNT_KEY_VALUE="$key" jq -c --arg p "$provider" \
+      '.providers[$p].key.ref = $ENV.SHUNT_KEY_VALUE' "$SHUNT_PROVIDERS_FILE"); then
+    shunt_providers_write "$updated" || rc=1
+  else
+    rc=1
+  fi
+  shunt_providers_unlock
+  return "$rc"
 }
+
+# Absolute, shell-quoted path of shunt-models for user-facing hints. Plugin users
+# run from their own project, so a relative scripts/shunt-models would not resolve.
+printf -v SHUNT_MODELS_HINT_CMD '%q' \
+  "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"

@@ -226,3 +226,46 @@ registry_untouched() { [ "$(cat "$SHUNT_MODELS_FILE")" = "$BEFORE" ]; }
   assert_failure
   registry_untouched
 }
+
+# breaker_with_failures: an open breaker for acme/m1 (both roles) and another model
+breaker_with_failures() {
+  echo '{"version":1,"models":{"acme/m1":{"failures":3,"cooldown_until":9999999999},"acme/m1#code-write":{"failures":3,"cooldown_until":9999999999},"other/x":{"failures":1,"cooldown_until":0}}}' \
+    >"$SHUNT_BREAKER_STATE_FILE"
+}
+
+@test "set-context: clears the model's breaker state, keeping other models'" {
+  breaker_with_failures
+  run "$REPO_ROOT/scripts/shunt-models" set-context acme/m1 8192
+  assert_success
+  run jq -c '.models | keys' "$SHUNT_BREAKER_STATE_FILE"
+  assert_output '["other/x"]'
+}
+
+@test "set-context: a rejected value keeps the breaker state" {
+  breaker_with_failures
+  run "$REPO_ROOT/scripts/shunt-models" set-context acme/m1 0
+  assert_failure
+  run jq -r '.models["acme/m1"].failures' "$SHUNT_BREAKER_STATE_FILE"
+  assert_output 3
+}
+
+@test "detect: --write clears the model's breaker state" {
+  breaker_with_failures
+  route v1_models_m1 '{"context_length":65536}'
+  run detect acme/m1 --write
+  assert_success
+  run jq -c '.models | keys' "$SHUNT_BREAKER_STATE_FILE"
+  assert_output '["other/x"]'
+}
+
+@test "detect: without --write or on failure the breaker state stays" {
+  breaker_with_failures
+  route v1_models_m1 '{"context_length":65536}'
+  run detect acme/m1
+  assert_success
+  rm "$FAKE_ROUTES/v1_models_m1"
+  run detect acme/m1 --write
+  assert_failure
+  run jq -r '.models["acme/m1"].failures' "$SHUNT_BREAKER_STATE_FILE"
+  assert_output 3
+}
