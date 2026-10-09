@@ -45,7 +45,12 @@ _shunt_guard_install() {
   # inherits it (trap -p reports the parent's traps) must not run the cleanup.
   local pid="${BASHPID:-$$}"
   # shellcheck disable=SC2064 # pid and the commands are meant to be expanded now
-  trap "if [ \"\${BASHPID:-\$\$}\" = $pid ]; then $cleanup${old_exit:+; $old_exit}; fi" EXIT
+  # The caller's trap goes on its own lines: a trailing comment in it must not
+  # swallow the closing "fi".
+  trap "if [ \"\${BASHPID:-\$\$}\" = $pid ]; then
+$cleanup
+${old_exit:+$old_exit
+}fi" EXIT
   trap 'exit 130' INT
   trap 'exit 143' TERM
   trap 'exit 129' HUP
@@ -300,9 +305,12 @@ shunt_provider_key_resolve() {
 # prints nothing (no Authorization header). A key with a line break is refused
 # so it cannot smuggle extra headers. Returns 1 when the key cannot be resolved
 # or is refused, 2 when the temp file cannot be created or written (an
-# environment failure, not a config one).
+# environment failure, not a config one). With <outvar> the path is stored in
+# that variable (not printed) as soon as the file exists, before the key is
+# written, so a caller's cleanup that removes the variable's file never misses it.
+# Call it directly then, not in $(...).
 shunt_provider_write_auth_header_file() {
-  local provider="$1" key file
+  local provider="$1" outvar="${2:-}" key file
   key=$(shunt_provider_key_resolve "$provider") || return 1
   [ -n "$key" ] || return 0
   case "$key" in
@@ -312,12 +320,13 @@ shunt_provider_write_auth_header_file() {
     echo "shunt: provider '$provider': cannot create a temp file for the auth header in ${TMPDIR:-/tmp}." >&2
     return 2
   fi
+  [ -z "$outvar" ] || printf -v "$outvar" '%s' "$file"
   if ! { chmod 600 "$file" && printf 'Authorization: Bearer %s\n' "$key" >"$file"; } 2>/dev/null; then
     rm -f "$file"
     echo "shunt: provider '$provider': cannot write the auth header file." >&2
     return 2
   fi
-  echo "$file"
+  [ -n "$outvar" ] || echo "$file"
 }
 
 # shunt_providers_write <json>

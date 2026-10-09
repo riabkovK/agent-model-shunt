@@ -42,6 +42,8 @@
 #     caller confirms the dry-run plan first); --yes skips the y/N prompt. A literal apiKey is copied only to the chosen
 #     storage and never shown.
 
+# A BASH_ENV startup file may have turned xtrace on, which would print a key read below.
+set +x
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"

@@ -338,3 +338,14 @@ kill_group_when_curl_starts() {
     trap -p EXIT' _ "$REPO_ROOT"
   assert_output --partial "caller-trap-ran"
 }
+
+@test "detect: a 403 on models/<model> alone (gateway route miss) does not stop the models list fallback" {
+  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache"
+  mkdir -p "$HOME"
+  route v1_models_m1 '{"message":"Missing Authentication Token"}'
+  printf 403 >"$FAKE_ROUTES/v1_models_m1.code"
+  route v1_models '{"data":[{"id":"m1","context_length":32768}]}'
+  run --separate-stderr detect acme/m1
+  assert_success
+  assert_output 32768
+}

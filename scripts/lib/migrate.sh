@@ -43,10 +43,12 @@ _migrate_collect_providers() {
   jq -c --slurpfile reg "$SHUNT_MODELS_FILE" '
     ([$reg[0].models[]?.id | split("/")[0]] | unique) as $used
     | (.provider // {}) | to_entries[] | select(.key as $k | $used | index($k))
-    | (.value.options.apiKey // "") as $k
+    | (.value.options.apiKey // "") as $raw
+    | (if ($raw | type) == "string" then $raw else "" end) as $k
     | (if ($k | type) == "string" then ($k | capture("^\\{env:(?<n>[A-Za-z_][A-Za-z0-9_]*)\\}$")? // null) else null end) as $env
     | (if ($k | type) == "string" then ($k | capture("^\\{file:(?<p>.+)\\}$")? // null) else null end) as $file
     | {name: .key, base_url: (.value.options.baseURL // ""),
+       bad_key: ($raw | type) != "string" and $raw != "",
        key_kind: (if $k == "" then "none" elif $env != null then "env" elif $file != null then "file" else "literal" end),
        env_ref: ($env.n // ""), key_path: ($file.p // "")}' "$(_migrate_opencode_json)"
 }
@@ -78,17 +80,24 @@ _migrate_auth_json_has_key() {
   local f
   f=$(_migrate_auth_json)
   [ -f "$f" ] && [ -r "$f" ] || return 1
-  jq -e --arg p "$1" '.[$p] | objects | .type == "api" and (.key | type) == "string" and (.key | length) > 0' "$f" >/dev/null 2>&1
+  jq -e --arg p "$1" '.[$p] | objects | .type == "api" and (.key | type) == "string" and (.key | gsub("^\\s+|\\s+$"; "") | length) > 0' "$f" >/dev/null 2>&1
 }
 
 # _migrate_file_key_ok <path>
-# Succeeds when the {file:path} key file is readable and holds a non-blank key.
+# Succeeds when the {file:path} key file is readable and holds a non-blank key
+# without a line break inside it.
 _migrate_file_key_ok() {
   local f key
   f=$(_migrate_expand_path "$1")
   [ -f "$f" ] && [ -r "$f" ] || return 1
   key=$(_migrate_trim "$(cat "$f" 2>/dev/null)")
-  [ -n "$key" ]
+  _migrate_key_usable "$key"
+}
+
+# _migrate_key_usable <trimmed-key>
+# Succeeds when the key is not empty and has no line break inside it.
+_migrate_key_usable() {
+  case "$1" in '' | *$'\n'* | *$'\r'*) return 1 ;; esac
 }
 
 # _migrate_read_key <provider>
@@ -101,8 +110,11 @@ _migrate_read_key() {
     literal) key=$(jq -r --arg p "$name" '.provider[$p].options.apiKey' "$(_migrate_opencode_json)") ;;
     file)
       path=$(jq -r --arg n "$name" '.providers[] | select(.name == $n) | .key_path' <<<"$MIGRATE_PLAN")
-      key=$(_migrate_trim "$(cat "$(_migrate_expand_path "$path")")") ;;
-    auth.json) key=$(jq -r --arg p "$name" '.[$p].key' "$(_migrate_auth_json)") ;;
+      key=$(_migrate_trim "$(cat "$(_migrate_expand_path "$path")")") || return 1
+      _migrate_key_usable "$key" || return 1 ;;
+    auth.json)
+      key=$(_migrate_trim "$(jq -r --arg p "$name" '.[$p].key' "$(_migrate_auth_json)")") || return 1
+      _migrate_key_usable "$key" || return 1 ;;
   esac
   printf '%s\n' "$key"
 }
@@ -202,6 +214,8 @@ _migrate_plan_provider() {
   local path source=""
   name=$(jq -r .name <<<"$line"); raw=$(jq -r .base_url <<<"$line")
   kind=$(jq -r .key_kind <<<"$line"); ref=$(jq -r .env_ref <<<"$line"); path=$(jq -r .key_path <<<"$line")
+  [ "$(jq -r .bad_key <<<"$line")" != true ] \
+    || reason="the apiKey in opencode.json is not a string, so it is not imported as a key"
   if [ "$(shunt_provider_transport "$name")" = http ]; then
     state=done; reason="already on the http transport"
   elif ! err=$(_shunt_http_check_base_url "$name" "$raw" _ 2>&1 >/dev/null); then
@@ -392,10 +406,13 @@ _migrate_apply() {
 # _migrate_build_plan <apply 0|1> <flag>
 _migrate_build_plan() {
   local apply="$1" flag="$2" line providers="[]" entry names
-  # Env refs already taken: those in providers.json and those the plan hands out.
-  _MIGRATE_USED_REFS=""
+  # Env refs already taken: those in providers.json, every {env:NAME} of any
+  # opencode provider (migrated or not) and those the plan hands out.
+  _MIGRATE_USED_REFS=$(jq -r '(.provider // {}) | .[] | objects | .options.apiKey? | strings
+    | capture("^\\{env:(?<n>[A-Za-z_][A-Za-z0-9_]*)\\}$")? | .n' "$(_migrate_opencode_json)" 2>/dev/null || true)
+  _MIGRATE_USED_REFS+=$'\n'
   if [ -f "$SHUNT_PROVIDERS_FILE" ]; then
-    _MIGRATE_USED_REFS=$(jq -r '.providers[]? | .key | objects | select(.type == "env") | .ref // empty' "$SHUNT_PROVIDERS_FILE" 2>/dev/null || true)
+    _MIGRATE_USED_REFS+=$(jq -r '.providers[]? | .key | objects | select(.type == "env") | .ref // empty' "$SHUNT_PROVIDERS_FILE" 2>/dev/null || true)
     _MIGRATE_USED_REFS+=$'\n'
   fi
   while IFS= read -r line; do
@@ -407,8 +424,10 @@ _migrate_build_plan() {
   # Detection sees the planned providers through a temp providers file that
   # holds no key (see _migrate_detect_doc). It is removed on every way out.
   names=$(jq -c '[.providers[] | select(.state == "new" or .state == "done") | .name]' <<<"$MIGRATE_PLAN")
-  _MIGRATE_DETECT_TMP=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-migrate.XXXXXX")
+  _MIGRATE_DETECT_TMP=""
   _shunt_guard_install _MIGRATE_G _migrate_detect_cleanup
+  _MIGRATE_DETECT_TMP=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-migrate.XXXXXX") \
+    || { _shunt_guard_remove _MIGRATE_G; shunt_report_error "cannot create a temp file in ${TMPDIR:-/tmp}."; }
   _migrate_detect_doc "$names" >"$_MIGRATE_DETECT_TMP"
   MIGRATE_PLAN=$(jq -c --argjson m "$(_migrate_plan_models 0 "$_MIGRATE_DETECT_TMP")" '.models = $m' <<<"$MIGRATE_PLAN")
   _migrate_detect_cleanup

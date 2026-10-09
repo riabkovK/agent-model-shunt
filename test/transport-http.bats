@@ -1182,3 +1182,84 @@ breaker_failures() {
     [[ "$stderr" != *"syntax error"* ]]
   done
 }
+
+# ---- adversary review of 6b9e6f6: config errors vs the breaker, key scrubbing ---
+
+@test "adversary: an invalid providers.json is a config problem and records no breaker failure" {
+  two_http_models
+  printf '{"version":1,"providers":' >"$SHUNT_PROVIDERS_FILE"
+  run --separate-stderr shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
+  assert_failure
+  [ "$(breaker_failures acme/m1)" = 0 ]
+  [ "$(breaker_failures acme/m2)" = 0 ]
+}
+
+@test "adversary: a SHUNT_TIMEOUT_SECONDS curl cannot parse is a config problem and records no breaker failure" {
+  two_http_models
+  mv "$TEST_TMPDIR/bin/curl" "$TEST_TMPDIR/bin/curl-fake"
+  # Real curl: --max-time abc -> "expected a proper numerical parameter", exit 2.
+  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
+#!/bin/bash
+prev=""
+for a in "$@"; do
+  if [ "$prev" = --max-time ] && ! [[ "$a" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+    echo "curl: option --max-time: expected a proper numerical parameter" >&2; exit 2
+  fi
+  prev="$a"
+done
+exec "$(dirname "$0")/curl-fake" "$@"
+SH
+  chmod +x "$TEST_TMPDIR/bin/curl"
+  export SHUNT_TIMEOUT_SECONDS=abc
+  run --separate-stderr shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
+  assert_failure
+  [ "$(breaker_failures acme/m1)" = 0 ]
+  [ "$(breaker_failures acme/m2)" = 0 ]
+}
+
+@test "adversary: a context_tokens of 1e5 that passes registry validation is not refused by the http guard" {
+  write_sized_registry 1e5 null
+  run shunt_models_validate
+  assert_success
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -ne "$SHUNT_TRY_INVOKE_CONFIG" ]
+  assert_success
+}
+
+@test "adversary: a context_tokens of 128000.0 does not crash the opencode transport guard with an arithmetic error" {
+  write_sized_registry 128000.0 null
+  run shunt_models_validate
+  assert_success
+  _shunt_http_resolve "$AGENT"
+  run --separate-stderr _shunt_opencode_guard_size "$AGENT" "q"
+  [[ "$stderr" != *"syntax error"* ]]
+  [[ "$stderr" != *"invalid"* ]]
+  assert_success
+}
+
+# Deliberate design decision: a 401/403 says the key is wrong, not that the model
+# is unhealthy, so it never counts toward the circuit breaker. The user fixes the
+# key, nothing is paused behind their back. Do not "fix" this into a breaker failure.
+@test "adversary: a provider that keeps answering 403 records no breaker failure (intentional) and says why" {
+  two_http_models
+  export FAKE_CURL_CODE=403
+  local i
+  for i in 1 2 3 4 5 6; do
+    run --separate-stderr shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
+    assert_failure
+  done
+  [ "$(breaker_failures acme/m1)" = 0 ]
+  [ "$(breaker_failures acme/m2)" = 0 ]
+  # Every call still fails over: both models are reached each time.
+  [ "$(cat "$FAKE_CURL_COUNT")" -eq 12 ]
+  [[ "$stderr" == *"auth failed for provider acme"* ]]
+}
+
+@test "adversary: a key echoed JSON-escaped in an HTTP 400 body is not printed on stderr" {
+  export ACME_KEY="sk-live/abcdef0123456789secret"
+  export FAKE_CURL_CODE=400
+  printf '{"error":{"message":"invalid request for key sk-live\\/abcdef0123456789secret"}}' >"$FAKE_CURL_BODY"
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" != *"abcdef0123456789secret"* ]]
+}

@@ -31,6 +31,11 @@ readonly DEFAULT_DIALOG_TIMEOUT=120
 # AppleScript error (-128, exit 1), so the two cases need different signals.
 readonly OSASCRIPT_GAVE_UP="__SHUNT_DIALOG_GAVE_UP__"
 
+# A BASH_ENV startup file may have turned xtrace on, which would print the key.
+set +x
+# No child (the dialog tool, shunt-models) may run a startup file with the key at hand.
+unset BASH_ENV ENV
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/providers.sh
 source "$SCRIPT_DIR/lib/providers.sh"
@@ -153,7 +158,9 @@ fi
 
 store_rc=0
 # shunt-models never prints the key, so its stderr is safe to pass through.
-printf '%s\n' "$key" | "$MODELS_BIN" key set "$provider" >/dev/null || store_rc=$?
+# BASH_ENV and ENV are dropped for the child: a startup file that turns on xtrace
+# would print the key as it is read.
+printf '%s\n' "$key" | env -u BASH_ENV -u ENV "$MODELS_BIN" key set "$provider" >/dev/null || store_rc=$?
 unset key
 if [ "$store_rc" -ne 0 ]; then
   echo "shunt: storing the key for '$provider' failed. Check: $SHUNT_MODELS_HINT_CMD key status $provider_q" >&2

@@ -209,3 +209,11 @@ stored_key() { jq -r '.providers.plain.key.ref // ""' "$SHUNT_PROVIDERS_FILE"; }
   [[ "$stderr" == *"no keyring backend"* ]]
   [[ "$stderr" != *"$SECRET"* ]]
 }
+
+@test "a BASH_ENV that turns on xtrace does not leak the key through the passed-through store stderr" {
+  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache" TMPDIR="$TEST_TMPDIR"
+  mkdir -p "$HOME"
+  echo 'set -x' >"$TEST_TMPDIR/bash-env"
+  BASH_ENV="$TEST_TMPDIR/bash-env" run --separate-stderr "$DIALOG_BIN" plain
+  [[ "$stderr" != *"$SECRET"* ]]
+}

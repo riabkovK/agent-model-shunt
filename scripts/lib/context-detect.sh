@@ -24,12 +24,18 @@ SHUNT_DETECT_MODEL_PATTERN='^[A-Za-z0-9._:@+/-]+$'
 # Exit status of shunt_models_detect_context when the provider answered 401 or 403.
 SHUNT_DETECT_AUTH_FAILED=3
 _SHUNT_DETECT_TMP=()
+# 0 = no 401/403 seen, 1 = a 403 (may be a gateway route miss, the remaining
+# probes still run), 2 = a 401 (the key is rejected, nothing more is tried).
 _SHUNT_DETECT_AUTH_SEEN=0
+# The auth header file, set before the key is written into it.
+_SHUNT_DETECT_HDR_FILE=""
 
 # _shunt_detect_cleanup
 # Removes the temp files of the current detection, the auth header first.
 _shunt_detect_cleanup() {
   local f
+  [ -z "$_SHUNT_DETECT_HDR_FILE" ] || rm -f "$_SHUNT_DETECT_HDR_FILE"
+  _SHUNT_DETECT_HDR_FILE=""
   for f in ${_SHUNT_DETECT_TMP[@]+"${_SHUNT_DETECT_TMP[@]}"}; do
     rm -f "$f"
   done
@@ -65,7 +71,8 @@ _shunt_detect_get() {
     || return 1
   case "$code" in
     2??) return 0 ;;
-    401 | 403) _SHUNT_DETECT_AUTH_SEEN=1; return 1 ;;
+    401) _SHUNT_DETECT_AUTH_SEEN=2; return 1 ;;
+    403) [ "$_SHUNT_DETECT_AUTH_SEEN" -ge 1 ] || _SHUNT_DETECT_AUTH_SEEN=1; return 1 ;;
     *) return 1 ;;
   esac
 }
@@ -81,10 +88,10 @@ _shunt_detect_run() {
   base=$(shunt_provider_base_url "$provider") || return 1
   _shunt_http_check_base_url "$provider" "$base" base || return 1
   base="${base%/}"
-  hdr=$(shunt_provider_write_auth_header_file "$provider") || return 1
+  shunt_provider_write_auth_header_file "$provider" _SHUNT_DETECT_HDR_FILE || return 1
+  hdr="$_SHUNT_DETECT_HDR_FILE"
   _SHUNT_DETECT_HDR_ARGS=()
   if [ -n "$hdr" ]; then
-    _SHUNT_DETECT_TMP+=("$hdr")
     _SHUNT_DETECT_HDR_ARGS=(-H "@$hdr")
   fi
   fields=$(_shunt_detect_fields_expr)
@@ -93,13 +100,13 @@ _shunt_detect_run() {
     value=$(_shunt_detect_positive "$fields" <"$resp")
     [ -z "$value" ] || { echo "$value"; return 0; }
   fi
-  [ "$_SHUNT_DETECT_AUTH_SEEN" = 0 ] || return 1
+  [ "$_SHUNT_DETECT_AUTH_SEEN" -lt 2 ] || return 1
   if _shunt_detect_get "$base/models" "$resp"; then
     value=$(jq -c --arg id "$model" '[(.data // .models // .)[]? | objects | select(.id == $id)] | first // empty' "$resp" 2>/dev/null \
       | _shunt_detect_positive "$fields")
     [ -z "$value" ] || { echo "$value"; return 0; }
   fi
-  [ "$_SHUNT_DETECT_AUTH_SEEN" = 0 ] || return 1
+  [ "$_SHUNT_DETECT_AUTH_SEEN" -lt 2 ] || return 1
   api_base="${base%/v1}"
   body=$(jq -n -c --arg m "$model" '{model: $m}')
   if _shunt_detect_get "$api_base/api/show" "$resp" "$body"; then
@@ -126,7 +133,7 @@ shunt_models_detect_context() {
   _shunt_detect_run "$1" "$resp" || status=1
   _shunt_detect_cleanup
   _shunt_guard_remove _SHUNT_DETECT_G
-  if [ "$status" -ne 0 ] && [ "$_SHUNT_DETECT_AUTH_SEEN" = 1 ]; then
+  if [ "$status" -ne 0 ] && [ "$_SHUNT_DETECT_AUTH_SEEN" -ne 0 ]; then
     status=$SHUNT_DETECT_AUTH_FAILED
   fi
   return "$status"

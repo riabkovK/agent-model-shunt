@@ -119,7 +119,7 @@ shunt_try_invoke() {
 # error", "HTTP request error"), "request error" when the agent is not given or
 # its transport cannot be looked up. Control characters are stripped from the
 # id so a hand-edited registry cannot inject terminal escapes. Prints nothing
-# for status 1 (the agent could not be prepared, already reported).
+# for no status; an unknown one is reported as unexpected.
 _shunt_note_failure() {
   local id reason
   id=$(printf '%s' "$1" | tr -d '[:cntrl:]')
@@ -137,7 +137,7 @@ _shunt_note_failure() {
     "$SHUNT_TRY_INVOKE_AUTH") reason="auth failed" ;;
     "$SHUNT_TRY_INVOKE_OVERSIZE") reason="input too large for this model" ;;
     "$SHUNT_TRY_INVOKE_CONFIG") reason="config problem (see above), skipped" ;;
-    *) return 0 ;;
+    *) reason="unexpected status ${2//[^0-9]/}" ;;
   esac
   echo "shunt: $id failed: $reason" >&2
 }
@@ -155,9 +155,9 @@ shunt_invoke() {
   if [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]; then
     shunt_report_error "no delegate model can take this input (too large for agent '$agent'). Read the file directly instead, in sections with offset/limit."
   elif [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]; then
-    shunt_report_error "the model for agent '$agent' has a config problem (explained above), nothing was sent."
+    shunt_report_error "agent '$agent' could not be run: it is not prepared or its model has a config problem (explained above), nothing was sent."
   elif [ "$status" -eq 1 ]; then
-    shunt_report_error "agent '$agent' could not be run: it is not prepared, has no model in the registry, or its transport is unknown."
+    shunt_report_error "agent '$agent' failed with an unexpected status 1 (any reason is printed above)."
   elif [ "$status" -ne 0 ]; then
     if [ "$(shunt_transport_for_agent "$agent" 2>/dev/null)" = http ]; then
       _shunt_note_failure "$agent" "$status" "$agent"

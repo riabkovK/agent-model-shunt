@@ -220,3 +220,16 @@ use_fake_path() {
   run shunt_provider_plaintext_warning
   assert_output --partial "plain text"
 }
+
+@test "_shunt_guard_install still runs its cleanup when the caller's EXIT trap ends in a comment" {
+  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache" TMPDIR="$TEST_TMPDIR"
+  local f="$TEST_TMPDIR/guarded-temp"
+  : >"$f"
+  run bash -c '
+    source "$1/scripts/lib/providers.sh"
+    trap "echo caller-trap-ran # remove the lock" EXIT
+    _shunt_guard_install G "rm -f \"$2\""
+    exit 0' _ "$REPO_ROOT" "$f"
+  assert_output --partial "caller-trap-ran"
+  [ ! -e "$f" ]
+}

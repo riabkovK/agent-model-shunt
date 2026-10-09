@@ -377,3 +377,43 @@ SH
   assert_output --partial "1111 (detected"
   assert_output --partial "2222 (detected"
 }
+
+# Adversary review of ad56036: every test below isolates HOME, XDG_* and TMPDIR.
+isolate_home() {
+  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache"
+  mkdir -p "$HOME" "$XDG_CONFIG_HOME" "$XDG_CACHE_HOME" "$XDG_DATA_HOME/opencode"
+}
+
+@test "a default env ref is not handed out when a later provider's {env:NAME} already uses that name" {
+  isolate_home
+  jq -n --arg k "$SECRET" '{provider:{
+      "a":{options:{baseURL:"https://a.test/v1",apiKey:$k},models:{m:{}}},
+      "b":{options:{baseURL:"https://b.test/v1",apiKey:"{env:SHUNT_A_KEY}"},models:{m:{}}}}}' \
+    >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+  jq -n '{version:1,active:null,models:[
+    {id:"a/m",agent:"a1",enabled:true},{id:"b/m",agent:"a2",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+  run --separate-stderr migrate --apply --yes --key-storage env
+  assert_success
+  run jq -r '[.providers.a.key.ref, .providers.b.key.ref] | unique | length' "$SHUNT_PROVIDERS_FILE"
+  assert_output 2
+}
+
+@test "a non-string apiKey in opencode.json is not imported as a key" {
+  isolate_home
+  jq -n '{provider:{acme:{options:{baseURL:"https://api.acme.test/v1",apiKey:{nested:"x"}},models:{m1:{}}}}}' \
+    >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+  run --separate-stderr migrate --apply --yes --key-storage plaintext
+  assert_success
+  run jq -r '.providers.acme | "\(.transport) \(.key.type) \(.key.ref // "-")"' "$SHUNT_PROVIDERS_FILE"
+  refute_output "http plaintext {"
+}
+
+@test "a whitespace-only auth.json key is not imported as a key" {
+  isolate_home
+  jq -n '{acme:{type:"api",key:"   "}}' >"$XDG_DATA_HOME/opencode/auth.json"
+  write_opencode -
+  run --separate-stderr migrate --apply --yes --key-storage plaintext
+  assert_success
+  run jq -r '.providers.acme.key | "\(.type) [\(.ref // "-")]"' "$SHUNT_PROVIDERS_FILE"
+  refute_output "plaintext [   ]"
+}

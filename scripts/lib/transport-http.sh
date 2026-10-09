@@ -54,6 +54,9 @@ SHUNT_HTTP_PARTIAL_RESERVE_BYTES=100
 SHUNT_HTTP_NEEDS_CHUNKING=90
 SHUNT_HTTP_MERGE_INSTRUCTION="The input was too large to send at once, so it was analysed in parts. Below are the partial answers to the question above, one per part. Neighbouring parts of one file share $SHUNT_HTTP_CHUNK_OVERLAP_LINES lines, so the same finding can appear twice. Combine them into one final answer to the question, without repeating duplicates."
 _SHUNT_HTTP_TMP=()
+# The auth header file, set by shunt_provider_write_auth_header_file before the
+# key is written into it, so the cleanup cannot miss it.
+_SHUNT_HTTP_HDR_FILE=""
 
 _SHUNT_HTTP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=transport-http-deadline.sh
@@ -65,6 +68,8 @@ source "$_SHUNT_HTTP_LIB_DIR/transport-http-chunking.sh"
 # Removes every temp file the current call created, the auth header file first.
 _shunt_http_cleanup() {
   local f
+  [ -z "$_SHUNT_HTTP_HDR_FILE" ] || rm -f "$_SHUNT_HTTP_HDR_FILE"
+  _SHUNT_HTTP_HDR_FILE=""
   for f in ${_SHUNT_HTTP_TMP[@]+"${_SHUNT_HTTP_TMP[@]}"}; do
     rm -f "$f"
   done
@@ -74,9 +79,11 @@ _shunt_http_cleanup() {
 # _shunt_http_new_tmp <varname>
 # Creates a 0600 temp file, remembers it for cleanup and stores its path in the
 # named variable. Not a command substitution, so the cleanup list survives.
+# An environment failure (no temp file) is explained and returns ERROR.
 _shunt_http_new_tmp() {
   local f
-  f=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-http.XXXXXX") || return 1
+  f=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-http.XXXXXX" 2>/dev/null) \
+    || { echo "shunt: cannot create a temp file in ${TMPDIR:-/tmp}." >&2; return "$SHUNT_TRY_INVOKE_ERROR"; }
   _SHUNT_HTTP_TMP+=("$f")
   printf -v "$1" '%s' "$f"
 }
@@ -85,9 +92,18 @@ _shunt_http_new_tmp() {
 # Prints a one-line excerpt of the file that is safe for stderr: control
 # characters removed, the key value scrubbed, cut to SHUNT_HTTP_EXCERPT_CHARS.
 _shunt_http_excerpt() {
-  local s
+  local s key="$2" escaped
   s=$(head -c 4000 "$1" | tr -d '[:cntrl:]')
-  [ -z "$2" ] || s="${s//"$2"/[redacted]}"
+  if [ -n "$key" ]; then
+    # The key as it may be echoed: as is, and in the form jq writes it into a JSON
+    # string, plus the "\/" spelling some servers use for a slash. Control characters
+    # are stripped from the key like from the body, so a key holding one still matches.
+    key=$(printf '%s' "$key" | tr -d '[:cntrl:]')
+    escaped=$(jq -Rrj 'tojson | .[1:-1]' <<<"$key" 2>/dev/null) || escaped=""
+    [ -z "$key" ] || s="${s//"$key"/[redacted]}"
+    [ -z "$escaped" ] || s="${s//"$escaped"/[redacted]}"
+    [ -z "$escaped" ] || s="${s//"${escaped//\//\\\/}"/[redacted]}"
+  fi
   printf '%s' "${s:0:$SHUNT_HTTP_EXCERPT_CHARS}"
 }
 
@@ -174,7 +190,7 @@ _shunt_http_resolve() {
     _SHUNT_HTTP_CONTEXT_TOKENS="$ct" _SHUNT_HTTP_OVERSIZE_POLICY="$op"
     _SHUNT_HTTP_THINKING_FIELD="$tf" _SHUNT_HTTP_THINKING_BODY="$tb"
     return 0
-  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | tostring), (.oversize_policy // ""),
+  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | if type == "number" then floor | tostring else tostring end), (.oversize_policy // ""),
     (if .thinking == true then "thinking_options", (.thinking_options | tojson) else "thinking_off_options", (.thinking_off_options | tojson) end)] | join("\u001f")' "$SHUNT_MODELS_FILE")
   return 1
 }
@@ -305,7 +321,7 @@ _shunt_http_setup() {
   _SHUNT_HTTP_AUTH_READY=0 _SHUNT_HTTP_HDR_ARGS=() _SHUNT_HTTP_KEY=""
   # The dispatcher already resolved this agent. A direct caller has not.
   [ "$_SHUNT_HTTP_AGENT" = "$agent" ] || _shunt_http_resolve "$agent" \
-    || { echo "shunt: no model in the registry for agent '$agent'." >&2; return 1; }
+    || { echo "shunt: no model in the registry for agent '$agent'." >&2; return "$SHUNT_TRY_INVOKE_CONFIG"; }
   id="$_SHUNT_HTTP_ID"
   _SHUNT_HTTP_PROVIDER="${id%%/*}"
   _SHUNT_HTTP_BASE_URL=$(shunt_provider_base_url "$_SHUNT_HTTP_PROVIDER") || return "$SHUNT_TRY_INVOKE_CONFIG"
@@ -329,7 +345,7 @@ _shunt_http_setup() {
       + ($rrb[$role] // {})' <<<"$_SHUNT_HTTP_REQUEST_BODY") || return "$SHUNT_TRY_INVOKE_CONFIG"
   _shunt_http_system_prompt "$_SHUNT_HTTP_ROLE" _SHUNT_HTTP_SYSTEM || return $?
   _shunt_http_new_tmp _SHUNT_HTTP_BODY_FILE && _shunt_http_new_tmp _SHUNT_HTTP_RESP_FILE \
-    && _shunt_http_new_tmp _SHUNT_HTTP_ERR_FILE || return 1
+    && _shunt_http_new_tmp _SHUNT_HTTP_ERR_FILE
 }
 
 # _shunt_http_prepare_auth
@@ -337,11 +353,12 @@ _shunt_http_setup() {
 _shunt_http_prepare_auth() {
   [ "$_SHUNT_HTTP_AUTH_READY" = 1 ] && return 0
   local hdr key rc=0
-  hdr=$(shunt_provider_write_auth_header_file "$_SHUNT_HTTP_PROVIDER") || rc=$?
+  # The file is registered (_SHUNT_HTTP_HDR_FILE) before the key is written to it.
+  shunt_provider_write_auth_header_file "$_SHUNT_HTTP_PROVIDER" _SHUNT_HTTP_HDR_FILE || rc=$?
   # 1 = key problem (CONFIG), anything else = temp file failure (ERROR).
   [ "$rc" -eq 0 ] || { [ "$rc" -eq 1 ] && return "$SHUNT_TRY_INVOKE_CONFIG"; return "$SHUNT_TRY_INVOKE_ERROR"; }
+  hdr="$_SHUNT_HTTP_HDR_FILE"
   if [ -n "$hdr" ]; then
-    _SHUNT_HTTP_TMP+=("$hdr")
     key=$(<"$hdr")
     _SHUNT_HTTP_KEY="${key#Authorization: Bearer }"
     _SHUNT_HTTP_HDR_ARGS=(-H "@$hdr")
@@ -388,7 +405,7 @@ _shunt_http_check_reply() {
       return "$SHUNT_TRY_INVOKE_ERROR"
       ;;
   esac
-  out=$(shunt_tmpfile) || return 1
+  out=$(shunt_tmpfile) || { echo "shunt: cannot create a temp file for the reply." >&2; return "$SHUNT_TRY_INVOKE_ERROR"; }
   if ! _shunt_http_normalize "$_SHUNT_HTTP_RESP_FILE" >"$out"; then
     rm -f "$out"
     echo "shunt: provider '$provider' sent a reply that is not a chat completion." >&2
@@ -432,7 +449,8 @@ _shunt_http_send() {
 # _shunt_http_ask <prompt-file>
 # One request: builds the body for the prompt and sends it.
 _shunt_http_ask() {
-  _shunt_http_build_request "$1" || return 1
+  _shunt_http_build_request "$1" \
+    || { echo "shunt: cannot build the request body (model $_SHUNT_HTTP_ID)." >&2; return "$SHUNT_TRY_INVOKE_ERROR"; }
   _shunt_http_send
 }
 
@@ -445,7 +463,7 @@ _shunt_http_call() {
   shift 2
   _shunt_http_init_deadline || return $?
   _shunt_http_setup "$agent" || return $?
-  _shunt_http_new_tmp prompt_file || return 1
+  _shunt_http_new_tmp prompt_file || return $?
   _shunt_http_build_prompt "$prompt_file" "$question" "$@" || return $?
   _shunt_http_guard_size $(( $(_shunt_http_bytes "$_SHUNT_HTTP_SYSTEM") + $(wc -c <"$prompt_file") )) || guard=$?
   case "$guard" in
@@ -459,8 +477,8 @@ _shunt_http_call() {
 
 # _shunt_transport_http <agent> <question> [file...]
 # Prints the path to a temp file holding the normalized response. Never exits
-# the process: returns a SHUNT_TRY_INVOKE_* status (or 1 for a config problem
-# already explained on stderr). The temp files, the auth header file included,
+# the process: returns a SHUNT_TRY_INVOKE_* status, always with the reason
+# already explained on stderr. The temp files, the auth header file included,
 # are removed on every exit path, INT and TERM too. The caller's INT and TERM
 # traps are restored afterwards.
 _shunt_transport_http() {

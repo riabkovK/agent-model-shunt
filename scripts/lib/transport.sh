@@ -26,9 +26,9 @@ SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-300}"
 SHUNT_TOTAL_TIMEOUT_FACTOR=3
 
 # Exit statuses of shunt_transport_invoke that name the failure, so the failover
-# loop can say why a model failed. Any other non-zero status (1) means the agent
-# or its config could not be prepared, which shunt_prepare_isolated_config (or
-# the http transport) has already explained on stderr.
+# loop can say why a model failed. Every failure a transport knows
+# about has one of the statuses below and is explained on stderr. Any other
+# non-zero status (1) is unexpected.
 SHUNT_TRY_INVOKE_TIMEOUT=124
 SHUNT_TRY_INVOKE_ERROR=2
 SHUNT_TRY_INVOKE_EMPTY=3
@@ -44,7 +44,7 @@ SHUNT_TRY_INVOKE_DEADLINE=5
 SHUNT_TRY_INVOKE_OVERSIZE=6
 # A config problem of this model (missing or unresolvable key, invalid base_url,
 # request_body, oversize policy or total timeout, missing context_tokens or role
-# prompt). Nothing was sent and it says nothing about the model's health, so the
+# prompt, an unusable providers.json or opencode agent). Nothing was sent and it says nothing about the model's health, so the
 # failover loop explains it, tries the next candidate and records no breaker failure.
 SHUNT_TRY_INVOKE_CONFIG=7
 
@@ -130,6 +130,7 @@ _shunt_opencode_guard_size() {
     return "$SHUNT_TRY_INVOKE_OVERSIZE"
   done
   [ -n "${_SHUNT_HTTP_CONTEXT_TOKENS:-}" ] || return 0
+  _shunt_http_check_context_tokens || return "$SHUNT_TRY_INVOKE_CONFIG"
   bytes=$(printf '%s' "$question" | wc -c | tr -d ' ')
   for f in "$@"; do
     [ -r "$f" ] || continue
@@ -146,8 +147,8 @@ _shunt_opencode_guard_size() {
 # Runs `opencode run --agent <agent> "<question>" -f <file> ... --format json`
 # against an isolated OpenCode config (see shunt_prepare_isolated_config) and
 # prints the path to a temp file holding the normalized response. Never exits
-# the process on failure: returns one of the SHUNT_TRY_INVOKE_* statuses (or 1)
-# and cleans up after itself.
+# the process on failure: returns one of the SHUNT_TRY_INVOKE_* statuses and
+# cleans up after itself.
 _shunt_transport_opencode() {
   local agent="$1" question="$2"
   shift 2
@@ -162,10 +163,11 @@ _shunt_transport_opencode() {
   _shunt_opencode_guard_size "$agent" "$question" "$@" || return $?
 
   local iso_config
-  iso_config=$(shunt_prepare_isolated_config "$agent") || return 1
+  # shunt_prepare_isolated_config explains a missing agent or a broken config itself.
+  iso_config=$(shunt_prepare_isolated_config "$agent") || return "$SHUNT_TRY_INVOKE_CONFIG"
 
   local raw out status=0
-  raw=$(shunt_tmpfile)
+  raw=$(shunt_tmpfile) || { echo "shunt: cannot create a temp file for the opencode output." >&2; return "$SHUNT_TRY_INVOKE_ERROR"; }
   # </dev/null: opencode reads stdin, and this runs inside shunt_invoke_with_failover's
   # `while read ... <<<"$candidates"` loop, where it would swallow the remaining candidates.
   XDG_CONFIG_HOME="$iso_config" shunt_run_with_timeout \
@@ -182,7 +184,7 @@ _shunt_transport_opencode() {
     return "$SHUNT_TRY_INVOKE_EMPTY"
   fi
 
-  out=$(shunt_tmpfile)
+  out=$(shunt_tmpfile) || { rm -f "$raw"; echo "shunt: cannot create a temp file for the opencode reply." >&2; return "$SHUNT_TRY_INVOKE_ERROR"; }
   shunt_opencode_normalize "$raw" >"$out"
   rm -f "$raw"
   echo "$out"
@@ -191,19 +193,24 @@ _shunt_transport_opencode() {
 # shunt_transport_invoke <agent> <question> [file...]
 # Dispatches on SHUNT_TRANSPORT (default opencode) and prints the path to the
 # normalized response file. Returns the SHUNT_TRY_INVOKE_* statuses on a failed
-# call, and 1 for an unknown transport.
+# call: CONFIG, after saying why, for an unreadable providers.json or an
+# unknown transport.
 shunt_transport_invoke() {
   local transport status=0
   # The one registry lookup of this call. The http transport reuses it, and it
   # is forgotten afterwards so the next call sees registry edits.
   _shunt_http_resolve "$1" || true
-  transport=$(_shunt_transport_of_resolved) || { _shunt_http_clear; return 1; }
+  transport=$(_shunt_transport_of_resolved) || {
+    _shunt_http_clear
+    echo "shunt: cannot work out the transport of agent '$1': providers.json is unusable (config problem, no request sent)." >&2
+    return "$SHUNT_TRY_INVOKE_CONFIG"
+  }
   case "$transport" in
     opencode) _shunt_transport_opencode "$@" || status=$? ;;
     http) _shunt_transport_http "$@" || status=$? ;;
     *)
       echo "shunt: unknown transport '$transport' (supported: opencode, http)." >&2
-      status=1
+      status=$SHUNT_TRY_INVOKE_CONFIG
       ;;
   esac
   _shunt_http_clear

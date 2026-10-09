@@ -56,17 +56,22 @@ _shunt_http_per_limit() {
 }
 
 # _shunt_http_init_deadline
-# Validates SHUNT_TOTAL_TIMEOUT_SECONDS (a config error, status 1, when it is not
-# a positive whole number) and starts this model attempt's clock. Unset or
+# Validates SHUNT_TIMEOUT_SECONDS (a plain non-negative number) and
+# SHUNT_TOTAL_TIMEOUT_SECONDS (a positive whole number), each a CONFIG error
+# when it is not valid, and starts this model attempt's clock. Unset or
 # empty means SHUNT_TOTAL_TIMEOUT_FACTOR times SHUNT_TIMEOUT_SECONDS (rounded up
 # to whole seconds), and no total deadline when SHUNT_TIMEOUT_SECONDS is no
 # limit. _SHUNT_HTTP_TOTAL is 0 when there is no total deadline.
 _shunt_http_init_deadline() {
   local total="${SHUNT_TOTAL_TIMEOUT_SECONDS:-}"
   _SHUNT_HTTP_CHUNKS_DONE=0 _SHUNT_HTTP_CHUNKS_TOTAL=0
+  _shunt_http_per_limit
+  if [ -z "$_SHUNT_HTTP_PER_LIMIT" ]; then
+    echo "shunt: SHUNT_TIMEOUT_SECONDS must be a non-negative number of seconds (0 for no limit), got '$(printf '%s' "$SHUNT_TIMEOUT_SECONDS" | tr -d '[:cntrl:]' | head -c 40)' (config problem, no request sent)." >&2
+    return "$SHUNT_TRY_INVOKE_CONFIG"
+  fi
   if [ -z "$total" ]; then
-    _shunt_http_per_limit
-    total=$(( ${_SHUNT_HTTP_PER_LIMIT:-$SHUNT_HTTP_FALLBACK_TIMEOUT_SECONDS} * SHUNT_TOTAL_TIMEOUT_FACTOR ))
+    total=$(( _SHUNT_HTTP_PER_LIMIT * SHUNT_TOTAL_TIMEOUT_FACTOR ))
   else
     case "$total" in
       *[!0-9]*) total=bad ;;
@@ -111,9 +116,9 @@ _shunt_http_request_max_time() {
   fi
   left=$(( (left + _SHUNT_HTTP_TICKS - 1) / _SHUNT_HTTP_TICKS ))
   [ "$left" -le "$_SHUNT_HTTP_TOTAL" ] || left=$_SHUNT_HTTP_TOTAL
-  # A SHUNT_TIMEOUT_SECONDS that is not a number is passed on to curl unchanged.
+  # SHUNT_TIMEOUT_SECONDS was validated by _shunt_http_init_deadline.
   _shunt_http_per_limit
-  [ -n "$_SHUNT_HTTP_PER_LIMIT" ] || return 0
+  [ -n "$_SHUNT_HTTP_PER_LIMIT" ] || return "$SHUNT_TRY_INVOKE_CONFIG"
   if [ "$_SHUNT_HTTP_PER_LIMIT" -eq 0 ] || [ "$left" -lt "$_SHUNT_HTTP_PER_LIMIT" ]; then
     _SHUNT_HTTP_MAX_TIME=$left _SHUNT_HTTP_MAX_TIME_CAPPED=1
   fi
