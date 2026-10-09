@@ -12,7 +12,7 @@ rather than duplicating it here.
 
 | ADR | Title | Status | Implemented |
 |---|---|---|---|
-| [0002](0002-wrap-opencode-cli-not-http-client.md) | Wrap the OpenCode CLI, not a custom HTTP client, for MVP | Accepted | Yes (`scripts/lib/opencode.sh` shells out to `opencode run`) |
+| [0002](0002-wrap-opencode-cli-not-http-client.md) | Wrap the OpenCode CLI, not a custom HTTP client, for MVP | Superseded by 0018 | Superseded: `opencode` is now one of two transports (`scripts/lib/transport.sh`) |
 | [0003](0003-claude-code-only-scope.md) | Claude Code only scope for MVP | Accepted | Yes (`.claude-plugin/`, `hooks/hooks.json` remain Claude-Code-specific; no other host adapter exists) |
 | [0004](0004-bash-jq-implementation.md) | Bash + jq implementation | Accepted | Yes (all of `hooks/`, `scripts/` are Bash + jq) |
 | [0005](0005-no-custom-mode-registry.md) | No custom mode registry, use OpenCode agents directly | Accepted | Yes (no registry code; agents addressed by name) |
@@ -28,3 +28,7 @@ rather than duplicating it here.
 | [0015](0015-code-write-create-only-and-tag-protocol.md) | `code-write` is create-only, and the model returns text under a fixed tag protocol | Accepted | Yes (`scripts/code-write`, `scripts/lib/codewrite.sh`) |
 | [0016](0016-code-write-roles-and-candidate-order.md) | `code-write` shares the model registry via per-model roles, not a second registry | Accepted | Yes (`scripts/lib/models.sh` role-aware candidates, `scripts/shunt-models roles`) |
 | [0017](0017-code-write-boundaries-and-toctou.md) | `code-write` write boundaries, and the residual TOCTOU risk accepted for v1 | Accepted | Yes (`scripts/lib/codewrite.sh` path validation, denylist, atomic publish) |
+| [0018](0018-direct-http-transport-alongside-opencode.md) | Direct HTTP transport alongside the OpenCode CLI, chosen per provider | Accepted | Yes (`scripts/lib/transport.sh`, `scripts/lib/transport-http.sh`, `scripts/lib/providers.sh`) |
+| [0019](0019-api-key-storage.md) | API key storage: keyring, env var, plaintext or none, never in argv | Accepted | Yes (`scripts/lib/providers.sh`, `scripts/shunt-models key`) |
+| [0020](0020-context-window-and-oversize-handling.md) | Context window from detection or the user, and `map_reduce` or `fail` for oversize input | Accepted | Yes (`scripts/lib/context-detect.sh`, `scripts/lib/transport-http.sh`) |
+| [0021](0021-thinking-options-apply-to-both-transports.md) | Thinking options apply to both transports | Accepted | Yes (`scripts/lib/transport-http.sh` request body merge) |
