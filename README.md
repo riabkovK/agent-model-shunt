@@ -187,7 +187,7 @@ hand-editing the files below:
   `scripts/shunt-models`): a priority-ordered list of `provider/model`
   entries. `scripts/shunt-models add <provider/model>` materializes a
   `bulk-reader.md`-shaped agent file for it under
-  `~/.config/agent-model-shunt/agents/` automatically — you never
+  `~/.config/agent-model-shunt/agents/` automatically. You never
   hand-write these once a registry exists.
 - **Failover**: on each delegated call, shunt tries the registry's active
   model first, then the rest in priority order, skipping any model whose
@@ -202,8 +202,8 @@ hand-editing the files below:
 - **Circuit breaker**: N consecutive failures (errors/timeouts, not
   latency) on a model pause it for a cooldown period before it's retried.
   Configurable via `scripts/shunt-breaker-config` (defaults: 3 failures /
-  300s cooldown) — see the `/model-config` skill, which only surfaces this
-  after an explicit opt-in question.
+  300s cooldown). The `/model-config` skill shows these settings and
+  changes them.
 - **Thinking/extended-reasoning**: off by default for every registered
   model. Turn it on per model, with the provider's own reasoning options,
   via `scripts/shunt-models thinking <provider/model> on '<options-json>'`
@@ -267,8 +267,8 @@ dominates. Details in
 ## Code-writer: delegated generation of new files
 
 Where `bulk-read` delegates a large *read*, `code-writer` delegates
-generating a single brand-new file — a test, a config file, a stub, or
-docstring-heavy boilerplate — so Claude doesn't spend its own output tokens
+generating a single brand-new file (a test, a config file, a stub, or
+docstring-heavy boilerplate), so Claude doesn't spend its own output tokens
 on predictable generation. Claude reviews the result afterwards, which
 costs only input tokens. See `skills/code-writer/SKILL.md` for the full
 "when to delegate" guidance, the call contract, the mandatory
@@ -285,22 +285,22 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 - `--kind test` requires `--source` (the code under test); `--kind generic`
   makes it optional. Built-in, non-disableable test-writing rules
   (`prompts/test-rules.md`) are always injected for `--kind test`.
-- The delegate model has every tool disabled, including `read` — it only
+- The delegate model has every tool disabled, including `read`. It only
   ever returns text under a fixed tag protocol
   (`<SHUNT-NOTES>`/`<SHUNT-CODE>`), which the script validates before
   writing anything. Path validation and a denylist (`.git`, `.claude`,
   `.env*`, `CLAUDE.md`, and more) run before the model is ever called; see
   [ADR 0017](docs/adr/0017-code-write-boundaries-and-toctou.md) for the full
   list and the accepted TOCTOU trade-off.
-- A model needs the `code-write` role to be a candidate for this script —
-  add it with `scripts/shunt-models roles <provider/model> code-write` (or
+- A model needs the `code-write` role to be a candidate for this script.
+  Add it with `scripts/shunt-models roles <provider/model> code-write` (or
   leave `roles` unset, which grants every role). It shares the same
   registry, priority order, and circuit breaker as `bulk-read`, tracked
   separately per role. See [ADR 0016](docs/adr/0016-code-write-roles-and-candidate-order.md).
 - On a build/test failure after generation, the skill retries the delegate
   itself (appending the raw failure output to `--spec`) before falling back
   to Claude fixing the file by hand. The retry count is configurable
-  (`scripts/shunt-codewrite-config`, default 1, global) — drive it through
+  (`scripts/shunt-codewrite-config`, default 1, global). Drive it through
   `/model-config`.
 
 | Variable | Default | Purpose |
@@ -350,11 +350,11 @@ the hooks, and delegate-spend visibility.
 ## Evals
 
 ```bash
-evals/run.sh                # hook routing decisions — no network needed
-evals/transport-evals.sh    # one live scripts/bulk-read call — needs OpenCode + a provider
+evals/run.sh                # hook routing decisions, no network needed
+evals/transport-evals.sh    # one live scripts/bulk-read call, needs OpenCode + a provider
 evals/benchmark.sh          # token-savings + latency of the delegated OpenCode call, in isolation
-evals/baseline-benchmark.sh # shunt vs Claude reading the files directly — needs OpenCode + a provider + `claude` CLI
-evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? — needs OpenCode + a provider + `claude` CLI
+evals/baseline-benchmark.sh # shunt vs Claude reading the files directly, needs OpenCode + a provider + `claude` CLI
+evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? Needs OpenCode + a provider + `claude` CLI
 ```
 
 `evals/benchmark.sh` measures, per scenario in `evals/benchmarks.json`:
@@ -386,11 +386,11 @@ to read, rather than synthetic filler.
 `evals/baseline-benchmark.sh` runs the same scenarios a second way, to
 answer the actual "is this worth it" question: for each scenario, in each
 iteration, it sends the question plus the raw file content to a real
-`claude -p --output-format json` call twice — once as a brand-new session
+`claude -p --output-format json` call twice: once as a brand-new session
 (`no-resume`) and once chained into the same session as the prior scenario
 (`resume`, so the one-time cost of priming this project's system prompt is
-only paid once, matching how a real interactive session amortizes it) —
-then runs the same scenario through `scripts/bulk-read` (`shunt`) and
+only paid once, matching how a real interactive session amortizes it).
+Then it runs the same scenario through `scripts/bulk-read` (`shunt`) and
 writes all three as JSON rows to `evals/results/baseline-benchmark.jsonl`.
 `evals/aggregate-baseline-results.py` (run automatically at the end) turns
 those rows into `evals/results/baseline-benchmark-summary.json` and a
@@ -405,7 +405,7 @@ For `no-resume`/`resume`, `context_tokens` is the real
 what Claude actually paid to have the raw file content in context. For
 `shunt`, `context_tokens` is a chars/4 estimate of only the delegate's
 answer text (the thing that would land in Claude's context if a live
-session relayed it) — it does not include the tokens a real session would
+session relayed it). It does not include the tokens a real session would
 spend emitting the `Bash` call to `scripts/bulk-read` or reading the
 `/bulk-reader` skill instructions that route it there, so it's a
 best-case, not a full accounting of shunt's Claude-side cost. The
@@ -438,7 +438,7 @@ repo to view it rendered).
 
 > **On speed:** the timing numbers in that ledger (and in
 > `docs/fidelity-ledger.html`) depend heavily on which OpenCode provider and
-> model you point `scripts/bulk-read` at — different providers/models can be
+> model you point `scripts/bulk-read` at. Different providers/models can be
 > dramatically faster or slower for the same call. These numbers are one
 > personal observation from one provider/model at one point in time, not a
 > guarantee; re-run the benchmarks against your own setup before drawing
@@ -447,7 +447,7 @@ repo to view it rendered).
 > The fixtures moved to real `labstack/echo` source (see above); the
 > ledger and the results file it's built from need a fresh
 > `evals/baseline-benchmark.sh` run against them before the numbers are
-> trustworthy again — that run spends real money on your Claude account,
+> trustworthy again. That run spends real money on your Claude account,
 > so it isn't run automatically as part of an edit.
 
 | Variable | Default | Purpose |
@@ -461,7 +461,7 @@ repo to view it rendered).
 `evals/baseline-benchmark.sh` answers "is delegation worth it" (cost/time).
 `evals/fidelity-benchmark.sh` answers a different question: "does delegation
 actually degrade the answer?" It runs against a separate ground-truth set,
-[`evals/fidelity-questions.json`](evals/fidelity-questions.json) — a list of
+[`evals/fidelity-questions.json`](evals/fidelity-questions.json), a list of
 questions over the same `evals/fixtures/echo/` files, each with a
 `ground_truth.must_mention` list of exact identifiers extracted mechanically
 (`grep`) from the real source, not written from memory. Some questions are
@@ -472,13 +472,13 @@ identifiers, entries defined far from a file's main cluster).
 For each question it captures three answers: `direct` (Claude reads the file
 content inlined in the prompt), `delegate` (`scripts/bulk-read`'s raw
 answer, which Claude never sees the source for), and `final` (Claude
-answering the same question using *only* the delegate's raw answer — this
+answering the same question using *only* the delegate's raw answer, which
 is what a real user actually sees once the `PreToolUse` hook blocks a direct
 read and Claude falls back to bulk-read). Scoring is exact/structured, not
 LLM-judged: recall is the fraction of `must_mention` items found as a
 case-insensitive substring of the answer. An item counts as an
 **unsupported claim** (a hallucination signal) if it shows up in `final` but
-not in `delegate`'s own raw text — the only source `final` had. This is a
+not in `delegate`'s own raw text, the only source `final` had. This is a
 heuristic, not proof of fabrication: Claude can paraphrase a delegate claim
 in different wording and trip a false positive, so treat unsupported claims
 as something to inspect, not a final verdict.
@@ -488,7 +488,7 @@ Results go to `evals/results/fidelity-benchmark.jsonl`;
 a per-question table of direct vs. delegate recall, which ground-truth
 items each path dropped, and any unsupported claims. Like
 `baseline-benchmark.sh`, this spends real money on your Claude account and
-needs a reachable OpenCode provider — run it deliberately, not in a loop.
+needs a reachable OpenCode provider. Run it deliberately, not in a loop.
 
 **[`docs/fidelity-ledger.html`](docs/fidelity-ledger.html)** is the write-up
 of the latest `evals/fidelity-benchmark.sh` run: on the current question
