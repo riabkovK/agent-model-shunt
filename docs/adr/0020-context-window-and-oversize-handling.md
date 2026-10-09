@@ -48,7 +48,9 @@ silently.
 - Time limits: `SHUNT_TIMEOUT_SECONDS` limits each request. A chunked call also
   has a total deadline, `SHUNT_TOTAL_TIMEOUT_SECONDS`, defaulting to 3 times the
   per-request limit. Each request is capped by the time left, and no request is
-  sent once the deadline passes.
+  sent once the deadline passes. The deadline is per model attempt: a failover
+  candidate starts with a fresh deadline of its own, so a failover chain can
+  take up to the deadline once per candidate.
 - A failed or timed-out call counts as one failure of that model for the circuit
   breaker ([ADR 0012](0012-circuit-breaker-separate-from-model-selection.md)).
   The whole call is one unit, so the next candidate restarts from scratch.

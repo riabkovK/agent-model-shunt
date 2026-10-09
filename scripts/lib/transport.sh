@@ -15,11 +15,14 @@
 # shunt_prepare_isolated_config, shunt_tmpfile and shunt_report_error.
 
 SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-300}"
-# SHUNT_TOTAL_TIMEOUT_SECONDS (http transport only) is the deadline for one whole
-# delegated call, every chunk and merge request of a chunked call included. When
-# unset it is SHUNT_TOTAL_TIMEOUT_FACTOR times SHUNT_TIMEOUT_SECONDS, worked out
-# per call (see _shunt_http_init_deadline), so by default it never cuts a single
-# request short.
+# SHUNT_TOTAL_TIMEOUT_SECONDS (http transport only) is the deadline for one model
+# attempt, every chunk and merge request of a chunked call included. It is per
+# model, not per delegated call: when a model fails over, the next candidate
+# starts with a fresh deadline of its own, so a failover chain can take up to
+# this deadline once per candidate. When unset it is SHUNT_TOTAL_TIMEOUT_FACTOR
+# times SHUNT_TIMEOUT_SECONDS (no total deadline when SHUNT_TIMEOUT_SECONDS is 0,
+# that is no limit), worked out per attempt (see _shunt_http_init_deadline), so
+# by default it never cuts a single request short.
 SHUNT_TOTAL_TIMEOUT_FACTOR=3
 
 # Exit statuses of shunt_transport_invoke that name the failure, so the failover
