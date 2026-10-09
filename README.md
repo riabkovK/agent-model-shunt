@@ -2,7 +2,8 @@
 
 Shunts token-heavy, low-intelligence work (large file reads) away from
 your coding agent and onto your own custom models, routed through
-[OpenCode](https://opencode.ai). Currently implemented for Claude Code
+a direct OpenAI-compatible HTTP call or the [OpenCode](https://opencode.ai)
+CLI, chosen per provider. Currently implemented for Claude Code
 (see [`.claude-plugin/`](.claude-plugin/)); built to extend to other agent
 hosts (Codex, etc.) as they're added.
 
@@ -31,17 +32,31 @@ custom model of your choosing.
 2. Both hooks point Claude at the `/bulk-reader` skill
    (`skills/bulk-reader/SKILL.md`) instead of letting the read through.
 3. That skill runs `scripts/bulk-read --question "..." --paths file...`,
-   which shells out to `opencode run --agent bulk-reader -f file... "question"
-   --format json` and prints the delegated model's answer.
+   which sends the files and question to the delegated model and prints its
+   answer. Each provider uses one of two transports:
+   - `http` (recommended, faster): one POST with `curl` to the provider's
+     OpenAI-compatible `/chat/completions` endpoint.
+   - `opencode` (the previous path, still supported): shells out to
+     `opencode run --agent bulk-reader -f file... "question" --format json`.
+
+   A provider with no `transport` set uses `opencode`, so existing setups keep
+   working.
 
 ## Prerequisites
 
-- `bash`, `jq`, GNU `coreutils` (`timeout`).
-- [OpenCode](https://opencode.ai) installed and on `PATH`, with at least one
-  custom provider configured in `~/.config/opencode/opencode.json`. See
-  OpenCode's docs for adding an OpenAI-compatible provider.
+- `bash`, `jq`, `curl`, GNU `coreutils` (`timeout`).
+- [OpenCode](https://opencode.ai) installed and on `PATH`, only for providers
+  on the `opencode` transport. Those need a custom provider configured in
+  `~/.config/opencode/opencode.json`.
+- Optional: a keyring backend (`secret-tool`, `security` or `kwallet-query`)
+  to store `http` provider keys.
 
 ## Setup
+
+To use the `http` transport, follow
+[Add an HTTP model](#add-an-http-model-recommended) below. Steps 2 and 3 of
+the install flow below create the OpenCode agent and apply only to the
+`opencode` transport.
 
 ### 1. Install the plugin
 
@@ -78,7 +93,25 @@ plugin uninstall agent-model-shunt@agent-model-shunt-marketplace` removes it
 entirely. Slash-command equivalents (`/plugin disable`, `/plugin enable`,
 `/plugin uninstall`) work the same way.
 
-### 2. Create the `bulk-reader` OpenCode agent
+### Add an HTTP model (recommended)
+
+In this order (the `/model-config` skill walks through it):
+
+1. Provider: `scripts/shunt-models provider set <name> --transport http
+   --base-url <url> --key <keyring|plaintext|none|env:VARNAME>`.
+2. Key: run `! <plugin-root>/scripts/shunt-models key set <name>` yourself
+   (hidden prompt). Never paste a key into chat. Check with `key status
+   <name>`.
+3. `scripts/shunt-models add <provider/model>`.
+4. `scripts/shunt-models detect-context <provider/model> --write`. If
+   detection fails, store the window with `set-context`.
+
+Already on OpenCode providers? `scripts/shunt-models --migrate-from-opencode`
+is a dry run that prints the plan. `--migrate-from-opencode --apply` writes it
+and backs up `models.json` and `providers.json` first. See
+[Key storage](#key-storage-http-transport) for where keys go.
+
+### 2. Create the `bulk-reader` OpenCode agent (opencode transport)
 
 This plugin does not create global OpenCode configuration on your machine
 automatically; you create the agent once yourself. Create
@@ -133,7 +166,7 @@ small-file read from a few thousand prompt tokens to 70,000+, which you'd
 be paying for on the delegated model regardless of Claude's own savings.
 This isolation is automatic; no extra setup step is required.
 
-### 3. Verify
+### 3. Verify (opencode transport)
 
 ```bash
 opencode agent list   # confirm "bulk-reader" is listed
@@ -172,11 +205,57 @@ hand-editing the files below:
 - **Thinking/extended-reasoning**: off by default for every registered
   model. Turn it on per model, with the provider's own reasoning options,
   via `scripts/shunt-models thinking <provider/model> on '<options-json>'`
-  (see the `/model-config` skill).
+  (see the `/model-config` skill). It applies to both transports
+  ([ADR 0021](docs/adr/0021-thinking-options-apply-to-both-transports.md)).
 
 If no registry file exists, shunt stays in the legacy single-agent mode
 described in [Setup](#setup) above. See [Management skills](#management-skills)
 for `/model-config` and the other skills that manage shunt itself.
+
+### Key storage (HTTP transport)
+
+Each provider's `key.type` in `providers.json` is one of:
+
+| Type | Where the key lives | Trade-off |
+|---|---|---|
+| `keyring` | OS keyring (`secret-tool`, `security` or `kwallet-query`) | Strongest, but needs a backend. None is usable under WSL. |
+| `env` | An environment variable you export (`env:VARNAME`) | Nothing stored by the plugin. The variable must be set where Claude Code runs. |
+| `plaintext` | `providers.json`, mode 600 | Weakest. Setting it prints a warning. |
+| `none` | No key | For local endpoints without auth. |
+
+Keys never go in argv, logs or chat. Enter one with the `!` prefix, which
+reads it from a hidden prompt:
+`! <plugin-root>/scripts/shunt-models key set <provider>`. On macOS the
+`security` tool briefly shows the key in its own argv during `key set`, so an
+`env` key avoids that. See
+[ADR 0019](docs/adr/0019-api-key-storage.md).
+
+### Large files (HTTP transport)
+
+Each model has a `context_tokens` value, from `shunt-models detect-context
+--write` or `shunt-models set-context`. It is never guessed, and without it
+only small requests are sent. `oversize_policy` decides what happens to input
+that does not fit: `map_reduce` (default) splits it into overlapping chunks and
+merges the answers, `fail` refuses. `code-write` always fails on oversize
+input. Set it with `shunt-models oversize-policy <provider/model>
+<map_reduce|fail|--clear>`. A chunked call is bounded by the timeouts
+`SHUNT_TIMEOUT_SECONDS` and `SHUNT_TOTAL_TIMEOUT_SECONDS` in the
+[Configuration](#configuration) table. See
+[ADR 0020](docs/adr/0020-context-window-and-oversize-handling.md).
+
+## Performance
+
+Measured 2026-10-09 on mac with model qwen36: `bulk-read` of a 316-line file,
+3 runs each, averages.
+
+| Transport | Thinking off | Thinking on |
+|---|---|---|
+| `opencode` | 40.8s | 91.7s |
+| `http` | 15.4s | 77.8s |
+
+HTTP is about 2.6x faster without thinking. With thinking on, generation time
+dominates. Details in
+[ADR 0018](docs/adr/0018-direct-http-transport-alongside-opencode.md).
 
 ## Code-writer: delegated generation of new files
 
@@ -227,7 +306,7 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 | Variable | Default | Purpose |
 |---|---|---|
 | `SHUNT_MIN_LINES` | `350` | Line-count threshold above which reads are blocked and delegated. |
-| `SHUNT_OPENCODE_BIN` | `opencode` | Path or name of the OpenCode binary to invoke. |
+| `SHUNT_OPENCODE_BIN` | `opencode` | Path or name of the OpenCode binary to invoke (`opencode` transport only). |
 | `SHUNT_TIMEOUT_SECONDS` | `300` | Timeout for a single delegated `opencode run` call, and for each single HTTP request with the `http` transport. |
 | `SHUNT_TOTAL_TIMEOUT_SECONDS` | 3 x `SHUNT_TIMEOUT_SECONDS` (`900`) | `http` transport only: deadline for one whole delegated call, covering every part and the merge request of a chunked (map_reduce) call. It is checked before each request, and each request's timeout is capped at the time left. When it runs out, the call fails as a timeout (counted by the circuit breaker, the next model is tried) and stderr says how many parts finished. A single unchunked request is only affected when this is set below `SHUNT_TIMEOUT_SECONDS`. Must be a positive whole number of seconds. |
 | `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation when no models registry exists (legacy single-agent mode). |
@@ -276,7 +355,8 @@ evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? â
 - **Token savings**: a `chars/4` estimate (the same conservative heuristic
   shunt uses) of the raw file content Claude would otherwise read, versus
   the delegated model's answer that lands in Claude's context instead.
-- **Latency**: wall-clock time for the delegated `opencode run` round trip.
+- **Latency**: wall-clock time for the delegated round trip (see
+  [Performance](#performance) for measured numbers per transport).
   Delegation trades Claude context tokens for this added latency; the
   script reports both so you can judge the trade-off for your own workflow
   rather than assuming delegation is free.
@@ -410,9 +490,14 @@ adversarial ones, and zero unsupported claims.
 
 ## Scope
 
-This plugin wraps the `opencode` CLI as a subprocess; a direct HTTP client
-against your provider is a planned future phase. See
-[ADR 0002](docs/adr/0002-wrap-opencode-cli-not-http-client.md).
+Calls go through a transport layer with two transports, chosen per provider:
+a direct HTTP client and the `opencode` CLI as a subprocess. See
+[ADR 0018](docs/adr/0018-direct-http-transport-alongside-opencode.md), which
+supersedes [ADR 0002](docs/adr/0002-wrap-opencode-cli-not-http-client.md).
+Key storage, oversize input and thinking options are in
+[ADR 0019](docs/adr/0019-api-key-storage.md),
+[ADR 0020](docs/adr/0020-context-window-and-oversize-handling.md) and
+[ADR 0021](docs/adr/0021-thinking-options-apply-to-both-transports.md).
 
 ## License
 
