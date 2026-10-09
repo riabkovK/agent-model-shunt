@@ -34,7 +34,7 @@
 # Env:
 #   ITERATIONS              Repeats per question (default: 1). Total claude -p
 #                            calls = ITERATIONS * questions * 2 (direct + final).
-#   SHUNT_BASELINE_MODEL     Model alias for `claude -p --model` (default: sonnet).
+#   SHUNT_BASELINE_MODEL     Model alias for `claude -p --model` (default: haiku, sonnet at most).
 #   SHUNT_BASELINE_TIMEOUT   Timeout in seconds per claude -p call (default: 300).
 
 set -uo pipefail
@@ -46,7 +46,11 @@ RESULTS_DIR="$EVALS_DIR/results"
 RESULTS_JSONL="$RESULTS_DIR/fidelity-benchmark.jsonl"
 SUMMARY_JSON="$RESULTS_DIR/fidelity-benchmark-summary.json"
 
-SHUNT_BASELINE_MODEL="${SHUNT_BASELINE_MODEL:-sonnet}"
+SHUNT_BASELINE_MODEL="${SHUNT_BASELINE_MODEL:-haiku}"
+# Benchmarks measure tokens and latency, not reasoning, so never pay for a model above sonnet.
+case "$SHUNT_BASELINE_MODEL" in
+  *opus*|*fable*) echo "fidelity-benchmark: SHUNT_BASELINE_MODEL=$SHUNT_BASELINE_MODEL is above sonnet, use haiku or sonnet." >&2; exit 1 ;;
+esac
 SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-300}"
 ITERATIONS="${ITERATIONS:-1}"
 
