@@ -115,12 +115,16 @@ _shunt_http_check_base_url() {
 _SHUNT_HTTP_AGENT="" _SHUNT_HTTP_ID="" _SHUNT_HTTP_ROLE="" _SHUNT_HTTP_REQUEST_BODY=""
 # Optional registry fields of the same entry, empty when absent.
 _SHUNT_HTTP_CONTEXT_TOKENS="" _SHUNT_HTTP_OVERSIZE_POLICY="" _SHUNT_HTTP_ROLE_REQUEST_BODY=""
+# The thinking options of the current mode (thinking_options when thinking is
+# true, thinking_off_options otherwise) as compact JSON, and that field's name.
+_SHUNT_HTTP_THINKING_BODY="" _SHUNT_HTTP_THINKING_FIELD=""
 
 # _shunt_http_clear
 # Forgets the resolved entry so a later call reads the registry afresh.
 _shunt_http_clear() {
   _SHUNT_HTTP_AGENT="" _SHUNT_HTTP_ID="" _SHUNT_HTTP_ROLE="" _SHUNT_HTTP_REQUEST_BODY=""
   _SHUNT_HTTP_CONTEXT_TOKENS="" _SHUNT_HTTP_OVERSIZE_POLICY="" _SHUNT_HTTP_ROLE_REQUEST_BODY=""
+  _SHUNT_HTTP_THINKING_BODY="" _SHUNT_HTTP_THINKING_FIELD=""
   _SHUNT_HTTP_KEY="" _SHUNT_HTTP_HDR_ARGS=() _SHUNT_HTTP_AUTH_READY=0
 }
 
@@ -128,17 +132,20 @@ _shunt_http_clear() {
 # One registry read: finds the model whose bulk-reader or code-writer agent is
 # <agent> and sets _SHUNT_HTTP_ID, _SHUNT_HTTP_ROLE (bulk-reader|code-writer),
 # _SHUNT_HTTP_REQUEST_BODY and _SHUNT_HTTP_ROLE_REQUEST_BODY (compact JSON, {}
-# when unset, merged and validated later by _shunt_http_setup), and the optional
+# when unset, merged and validated later by _shunt_http_setup),
+# _SHUNT_HTTP_THINKING_BODY and _SHUNT_HTTP_THINKING_FIELD (the options of the
+# current thinking mode, "null" when unset; thinking counts as off unless it is
+# true, as for the opencode agent files), and the optional
 # _SHUNT_HTTP_CONTEXT_TOKENS and _SHUNT_HTTP_OVERSIZE_POLICY (empty when
 # absent). Fields are split on the unit separator, a non-whitespace delimiter,
 # so empty fields keep their column. Must run in the current shell, not in
 # $(...). Fails, leaving nothing resolved, when the
 # registry is missing or has no such model.
 _shunt_http_resolve() {
-  local agent="$1" id a rb rrb ct op
+  local agent="$1" id a rb rrb ct op tf tb
   _shunt_http_clear
   shunt_models_available || return 1
-  while IFS=$'\x1f' read -r id a rb rrb ct op; do
+  while IFS=$'\x1f' read -r id a rb rrb ct op tf tb; do
     if [ "$agent" = "$a" ]; then
       _SHUNT_HTTP_ROLE=bulk-reader
     elif [ "$agent" = "$(shunt_models_code_writer_agent_for "$id")" ]; then
@@ -149,8 +156,10 @@ _shunt_http_resolve() {
     _SHUNT_HTTP_AGENT="$agent" _SHUNT_HTTP_ID="$id" _SHUNT_HTTP_REQUEST_BODY="$rb"
     _SHUNT_HTTP_ROLE_REQUEST_BODY="$rrb"
     _SHUNT_HTTP_CONTEXT_TOKENS="$ct" _SHUNT_HTTP_OVERSIZE_POLICY="$op"
+    _SHUNT_HTTP_THINKING_FIELD="$tf" _SHUNT_HTTP_THINKING_BODY="$tb"
     return 0
-  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | tostring), (.oversize_policy // "")] | join("\u001f")' "$SHUNT_MODELS_FILE")
+  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | tostring), (.oversize_policy // ""),
+    (if .thinking == true then "thinking_options", (.thinking_options | tojson) else "thinking_off_options", (.thinking_off_options | tojson) end)] | join("\u001f")' "$SHUNT_MODELS_FILE")
   return 1
 }
 
@@ -267,11 +276,17 @@ _shunt_http_setup() {
     || { echo "shunt: model '$id': request_body must be a JSON object." >&2; return 1; }
   jq -e 'type == "object" and all(.[]; type == "object")' <<<"$_SHUNT_HTTP_ROLE_REQUEST_BODY" >/dev/null 2>&1 \
     || { echo "shunt: model '$id': role_request_body must be a JSON object of JSON objects." >&2; return 1; }
-  # Effective body: request_body, then the role's keys on top (shallow merge).
+  jq -e 'type == "object" or type == "null"' <<<"$_SHUNT_HTTP_THINKING_BODY" >/dev/null 2>&1 \
+    || { echo "shunt: model '$id': $_SHUNT_HTTP_THINKING_FIELD must be a JSON object or null." >&2; return 1; }
+  # Effective body, shallow merges, later wins: the thinking options with their
+  # OpenCode camelCase names turned into snake_case body fields (reasoningEffort
+  # becomes reasoning_effort), then request_body, then the role's keys on top.
   local role_key=bulk-read
   [ "$_SHUNT_HTTP_ROLE" = code-writer ] && role_key=code-write
   _SHUNT_HTTP_REQUEST_BODY=$(jq -c --arg role "$role_key" --argjson rrb "$_SHUNT_HTTP_ROLE_REQUEST_BODY" \
-    '. + ($rrb[$role] // {})' <<<"$_SHUNT_HTTP_REQUEST_BODY") || return 1
+    --argjson think "$_SHUNT_HTTP_THINKING_BODY" \
+    '(($think // {}) | with_entries(.key |= gsub("(?<c>[A-Z])"; "_" + (.c | ascii_downcase))))
+      + . + ($rrb[$role] // {})' <<<"$_SHUNT_HTTP_REQUEST_BODY") || return 1
   _shunt_http_system_prompt "$_SHUNT_HTTP_ROLE" _SHUNT_HTTP_SYSTEM || return 1
   _shunt_http_new_tmp _SHUNT_HTTP_BODY_FILE && _shunt_http_new_tmp _SHUNT_HTTP_RESP_FILE \
     && _shunt_http_new_tmp _SHUNT_HTTP_ERR_FILE || return 1

@@ -220,9 +220,15 @@ scripts/shunt-models request-body <provider/model> [--role <role>] --clear
 Without `--role` this sets `request_body`, extra fields of every HTTP request.
 With `--role` it sets `role_request_body[<role>]`, whose keys win over
 `request_body` for that role only (shallow merge). `model` and `messages`
-can never be overridden. On Ollama's `/v1` endpoint, thinking off is
-`{"reasoning_effort":"none"}`. Measured for bulk-read: same recall, 16s
-instead of 45s. So for an Ollama model, offer
+can never be overridden. Both are merged on top of the fields that the
+model's thinking setting produces, so an explicit request field always wins.
+
+On Ollama's `/v1` endpoint, thinking off is `{"reasoning_effort":"none"}`.
+Measured for bulk-read: same recall, 16s instead of 45s. To turn thinking off
+for every role of a model, use `thinking <id> off '{"reasoningEffort":"none"}'`:
+it works for both transports, and the HTTP transport sends it as
+`reasoning_effort`. To turn it off for bulk-read only, which is what to offer
+for an Ollama model, use
 `request-body <id> --role bulk-read '{"reasoning_effort":"none"}'`. Code-write
 thinking is not measured, so do not change its default.
 
@@ -374,6 +380,11 @@ scripts/shunt-models thinking <provider/model> off '{"reasoningEffort":"none"}'
 - The off options apply to both the bulk-reader and the code-writer agent of
   that model, and only while thinking is off. `thinking <id> on ...` keeps
   them stored but renders the on-options instead.
+- The HTTP transport applies the same options (on-options while thinking is
+  on, off options while it is off) to every request body, with each top-level
+  camelCase key turned into snake_case (nested keys pass through unchanged) (`reasoningEffort` becomes `reasoning_effort`).
+  `request_body` and then `role_request_body` are merged on top, so they win
+  over a thinking-derived field.
 - `off '<json>'` requires a JSON object. `off` with no JSON leaves the stored
   off options unchanged. `off '{}'` removes them. `status` shows
   `thinking_off=set` or `thinking_off=none` per model.

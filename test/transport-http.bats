@@ -174,6 +174,70 @@ write_registry_role() {
   assert_output --partial "role_request_body must be a JSON object of JSON objects"
 }
 
+# write_registry_thinking <thinking> <thinking_options-json> <thinking_off_options-json> [request_body-json] [role_request_body-json]
+write_registry_thinking() {
+  jq -n --argjson t "$1" --argjson on "$2" --argjson off "$3" \
+    --argjson rb "${4:-null}" --argjson rrb "${5:-null}" '{version:1,models:[
+    ({id:"acme/m1",agent:"shunt-bulk-reader-acme-m1",enabled:true,
+      thinking:$t,thinking_options:$on,thinking_off_options:$off}
+      + (if $rb == null then {} else {request_body:$rb} end)
+      + (if $rrb == null then {} else {role_request_body:$rrb} end))]}' >"$SHUNT_MODELS_FILE"
+}
+
+@test "thinking off sends thinking_off_options translated to snake_case body fields" {
+  write_registry_thinking false null '{"reasoningEffort":"none"}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "none" ]
+  [ "$(jq 'has("reasoningEffort")' "$FAKE_CURL_SENT")" = "false" ]
+}
+
+@test "thinking off without off options adds no thinking field" {
+  write_registry_thinking false '{"reasoningEffort":"high"}' null
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -c 'del(.model, .messages)' "$FAKE_CURL_SENT")" = "{}" ]
+}
+
+@test "thinking on sends thinking_options and ignores the off options" {
+  write_registry_thinking true '{"reasoningEffort":"high","budgetTokens":2048}' '{"reasoningEffort":"none"}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "high" ]
+  [ "$(jq -r '.budget_tokens' "$FAKE_CURL_SENT")" = "2048" ]
+}
+
+@test "thinking on with null options adds no thinking field" {
+  write_registry_thinking true null '{"reasoningEffort":"none"}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -c 'del(.model, .messages)' "$FAKE_CURL_SENT")" = "{}" ]
+}
+
+@test "request_body overrides a thinking-derived field" {
+  write_registry_thinking false null '{"reasoningEffort":"none"}' '{"reasoning_effort":"low","temperature":0.2}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "low" ]
+  [ "$(jq -r '.temperature' "$FAKE_CURL_SENT")" = "0.2" ]
+}
+
+@test "role_request_body overrides both request_body and thinking-derived fields" {
+  write_registry_thinking false null '{"reasoningEffort":"none","topK":5}' '{"reasoning_effort":"low"}' \
+    '{"bulk-read":{"reasoning_effort":"medium"}}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "medium" ]
+  [ "$(jq -r '.top_k' "$FAKE_CURL_SENT")" = "5" ]
+}
+
+@test "thinking options that are not an object are a config error" {
+  write_registry_thinking false null '"none"'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_failure
+  assert_output --partial "thinking_off_options must be a JSON object"
+}
+
 @test "request_body cannot replace the model or messages" {
   write_registry '{"model":"evil","messages":[]}'
   run shunt_transport_invoke "$AGENT" "q"
