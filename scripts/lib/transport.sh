@@ -42,6 +42,11 @@ SHUNT_TRY_INVOKE_DEADLINE=5
 # fault either: the failover loop tries the next candidate without a breaker
 # failure, and when no candidate can take the input, Claude reads it itself.
 SHUNT_TRY_INVOKE_OVERSIZE=6
+# A config problem of this model (missing or unresolvable key, invalid base_url,
+# request_body, oversize policy or total timeout, missing context_tokens or role
+# prompt). Nothing was sent and it says nothing about the model's health, so the
+# failover loop explains it, tries the next candidate and records no breaker failure.
+SHUNT_TRY_INVOKE_CONFIG=7
 
 # What `opencode run -f <file>` keeps of an attached file. OpenCode reads an
 # attachment with its read tool, which stops after DEFAULT_READ_LIMIT lines or
@@ -164,7 +169,7 @@ _shunt_transport_opencode() {
   # </dev/null: opencode reads stdin, and this runs inside shunt_invoke_with_failover's
   # `while read ... <<<"$candidates"` loop, where it would swallow the remaining candidates.
   XDG_CONFIG_HOME="$iso_config" shunt_run_with_timeout \
-    "$SHUNT_OPENCODE_BIN" run --agent "$agent" "$question" "${file_args[@]}" --format json \
+    "$SHUNT_OPENCODE_BIN" run --agent "$agent" "$question" ${file_args[@]+"${file_args[@]}"} --format json \
     </dev/null >"$raw" 2>/dev/null || status=$?
 
   if [ "$status" -ne 0 ] || [ ! -s "$raw" ]; then

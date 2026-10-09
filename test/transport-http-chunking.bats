@@ -407,3 +407,23 @@ rebuild_from_plan() {
   [[ "$stderr" == *"model acme/m1: total deadline of 15s"* ]]
   [[ "$stderr" == *"model acme/m2: total deadline of 15s"* ]]
 }
+
+# ---- hostile server bodies in the map/reduce usage totals ----------------------
+
+@test "hostile: a usage token count of x[\$(cmd)] in a chunk reply runs no command (arithmetic injection)" {
+  lines_file "$TEST_TMPDIR/big.txt" 300
+  export SHUNT_PWNED="$TEST_TMPDIR/pwned"
+  jq -n '{choices:[{message:{role:"assistant",content:"ok"},finish_reason:"stop"}],
+    usage:{prompt_tokens:"x[$(date>$SHUNT_PWNED)]",completion_tokens:1}}' >"$FAKE_CURL_BODY"
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
+  [ ! -e "$SHUNT_PWNED" ]
+}
+
+@test "hostile: a fractional usage token count in chunk replies does not break the chunked call" {
+  lines_file "$TEST_TMPDIR/big.txt" 300
+  jq -n '{choices:[{message:{role:"assistant",content:"ok"},finish_reason:"stop"}],
+    usage:{prompt_tokens:1.5,completion_tokens:1}}' >"$FAKE_CURL_BODY"
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
+  assert_success
+  [ "$(jq -r '.text' "$output")" = "ok" ]
+}

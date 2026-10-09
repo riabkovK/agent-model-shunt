@@ -217,12 +217,19 @@ write_registry_thinking() {
   [ "$(jq -c 'del(.model, .messages)' "$FAKE_CURL_SENT")" = "{}" ]
 }
 
-@test "request_body overrides a thinking-derived field" {
+@test "a thinking-derived field wins over the same field in request_body, other fields stay" {
   write_registry_thinking false null '{"reasoningEffort":"none"}' '{"reasoning_effort":"low","temperature":0.2}'
   run shunt_transport_invoke "$AGENT" "q"
   assert_success
-  [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "low" ]
+  [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "none" ]
   [ "$(jq -r '.temperature' "$FAKE_CURL_SENT")" = "0.2" ]
+}
+
+@test "thinking on: the on options win over request_body.reasoning_effort" {
+  write_registry_thinking true '{"reasoningEffort":"high"}' '{"reasoningEffort":"none"}' '{"reasoning_effort":"low"}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.reasoning_effort' "$FAKE_CURL_SENT")" = "high" ]
 }
 
 @test "role_request_body overrides both request_body and thinking-derived fields" {
@@ -267,7 +274,7 @@ write_registry_thinking() {
 @test "a missing role prompt file is a config error and sends no request" {
   export SHUNT_PROMPTS_DIR="$TEST_TMPDIR/no-prompts"
   run shunt_transport_invoke "$AGENT" "q"
-  assert_failure 1
+  assert_failure "$SHUNT_TRY_INVOKE_CONFIG"
   assert_output --partial "bulk-reader prompt is missing"
   [ ! -e "$FAKE_CURL_ARGV" ]
 }
@@ -622,7 +629,7 @@ big_question() {
 @test "guard: no context_tokens and a big request fails with the config message" {
   write_sized_registry null '"fail"'
   run shunt_transport_invoke "$AGENT" "$(big_question 20000)"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
   assert_output --partial "model acme/m1 has no context_tokens"
   assert_output --partial "shunt-models detect-context acme/m1 --write"
   assert_output --partial "shunt-models set-context acme/m1 <tokens>"
@@ -634,7 +641,7 @@ big_question() {
   _SHUNT_HTTP_ID="acme/m1" _SHUNT_HTTP_ROLE=bulk-reader
   _SHUNT_HTTP_CONTEXT_TOKENS=1000 _SHUNT_HTTP_OVERSIZE_POLICY=bogus
   run _shunt_http_guard_size 6000
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
   assert_output --partial "invalid oversize_policy"
   [ ! -f "$FAKE_CURL_ARGV" ]
 }
@@ -995,7 +1002,7 @@ max_time_of() {
   local v
   for v in 0 abc -5 1.5 ' 3' 0000 1234567890; do
     SHUNT_TOTAL_TIMEOUT_SECONDS="$v" run --separate-stderr shunt_transport_invoke "$AGENT" "q"
-    [ "$status" -eq 1 ]
+    [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
     [[ "$stderr" == *"SHUNT_TOTAL_TIMEOUT_SECONDS must be a positive whole number"* ]]
   done
   [ ! -f "$FAKE_CURL_ARGV" ]
@@ -1014,4 +1021,164 @@ max_time_of() {
   run --separate-stderr shunt_invoke_with_failover "q"
   assert_failure
   [[ "$stderr" == *"shunt: acme/m1 failed: timed out after 300s"* ]]
+}
+
+# ---- adversarial: hostile usage fields and breaker accounting -----------------
+
+@test "hostile: a non-numeric usage token count is not passed on as a string to the usage log" {
+  ok_body 'hi' stop '{"usage":{"prompt_tokens":"lots","completion_tokens":{"a":1}}}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.usage.input | type' "$output")" = "number" ]
+  [ "$(jq -r '.usage.output | type' "$output")" = "number" ]
+}
+
+@test "hostile: one reply with a string token count does not break usage-report for the whole log" {
+  export SHUNT_DEBUG_LOG_PATH="$TEST_TMPDIR/usage.jsonl"
+  echo 'some file' >"$TEST_TMPDIR/f.txt"
+  ok_body 'hi' stop
+  out1=$(shunt_transport_invoke "$AGENT" "q")
+  shunt_log_usage "acme/m1" "$out1" "q" "$TEST_TMPDIR/f.txt"
+  ok_body 'hi' stop '{"usage":{"prompt_tokens":"lots","completion_tokens":5}}'
+  out2=$(shunt_transport_invoke "$AGENT" "q")
+  shunt_log_usage "acme/m1" "$out2" "q" "$TEST_TMPDIR/f.txt"
+  run "$REPO_ROOT/scripts/usage-report" "$SHUNT_DEBUG_LOG_PATH"
+  assert_success
+}
+
+two_http_models() {
+  jq -n '{version:1,models:[
+    {id:"acme/m1",agent:"shunt-bulk-reader-acme-m1",enabled:true,priority:1},
+    {id:"acme/m2",agent:"shunt-bulk-reader-acme-m2",enabled:true,priority:2}]}' >"$SHUNT_MODELS_FILE"
+}
+
+breaker_failures() {
+  jq -r --arg k "$1" '.[$k].failures // .models[$k].failures // 0' "$SHUNT_BREAKER_STATE_FILE" 2>/dev/null || echo 0
+}
+
+@test "breaker: an unset key env var is not counted as a model failure (like a 401 is not)" {
+  two_http_models
+  unset ACME_KEY
+  run --separate-stderr shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
+  assert_failure
+  [ "$(breaker_failures acme/m1)" = 0 ]
+  [ "$(breaker_failures acme/m2)" = 0 ]
+}
+
+@test "breaker: an invalid SHUNT_TOTAL_TIMEOUT_SECONDS is not counted as a model failure" {
+  two_http_models
+  export SHUNT_TOTAL_TIMEOUT_SECONDS=abc
+  run --separate-stderr shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
+  assert_failure
+  [ "$(breaker_failures acme/m1)" = 0 ]
+  [ "$(breaker_failures acme/m2)" = 0 ]
+}
+
+# ---- fixes: usage cleaning, CONFIG status, bash 3.2 set -u ---------------------
+
+@test "usage: fractional, negative and huge token counts become whole non-negative numbers" {
+  ok_body 'hi' stop '{"usage":{"prompt_tokens":12.7,"completion_tokens":-3},"cost":-1}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -c '.usage' "$output")" = '{"input":12,"output":0}' ]
+  [ "$(jq 'has("cost")' "$output")" = "false" ]
+}
+
+@test "usage: a command substitution in a token count never reaches bash arithmetic" {
+  export SHUNT_PWNED="$TEST_TMPDIR/pwned"
+  ok_body 'hi' stop '{"usage":{"prompt_tokens":"x[$(date>$SHUNT_PWNED)]","completion_tokens":2}}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ ! -e "$SHUNT_PWNED" ]
+  [ "$(jq -c '.usage' "$output")" = '{"input":0,"output":2}' ]
+}
+
+@test "agg_add: a non-numeric value in a normalized file counts as 0 and runs nothing" {
+  export SHUNT_PWNED="$TEST_TMPDIR/pwned"
+  jq -n '{text:"t",finish_reason:"stop",usage:{input:"x[$(date>$SHUNT_PWNED)]",output:"1.5"}}' >"$TEST_TMPDIR/n.json"
+  _shunt_http_agg_reset
+  _shunt_http_agg_add "$TEST_TMPDIR/n.json"
+  [ ! -e "$SHUNT_PWNED" ]
+  [ "$_SHUNT_HTTP_AGG_IN" = 0 ]
+  [ "$_SHUNT_HTTP_AGG_OUT" = 0 ]
+}
+
+@test "config: a missing key returns the CONFIG status and sends nothing" {
+  unset ACME_KEY
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
+  [ ! -e "$FAKE_CURL_COUNT" ]
+}
+
+@test "config: a CONFIG failure fails over to the next model and records no breaker failure" {
+  two_http_models
+  unset ACME_KEY
+  run --separate-stderr shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
+  assert_failure
+  [[ "$stderr" == *"shunt: acme/m1 failed: config problem"* ]]
+  [[ "$stderr" == *"shunt: acme/m2 failed: config problem"* ]]
+  [ "$(breaker_failures acme/m1)" = 0 ]
+}
+
+@test "config: a real model failure (HTTP 500) still records a breaker failure" {
+  two_http_models
+  export FAKE_CURL_CODE=500
+  run --separate-stderr shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
+  assert_failure
+  [ "$(breaker_failures acme/m1)" = 1 ]
+}
+
+@test "config: the non-failover path names an http failure, not opencode" {
+  export FAKE_CURL_CODE=500
+  run --separate-stderr shunt_invoke "$AGENT" "q"
+  assert_failure
+  [[ "$stderr" != *"opencode run failed"* ]]
+  [[ "$stderr" == *"HTTP request"* ]]
+}
+
+@test "set -u: a call with key type none (empty header array) works under nounset" {
+  write_providers "https://api.acme.test/v1" '{"type":"none"}'
+  run bash -uc '
+    source "$1/scripts/lib/opencode.sh"
+    out=$(shunt_transport_invoke "$2" "q") && jq -r .text "$out"
+  ' _ "$REPO_ROOT" "$AGENT"
+  assert_success
+  assert_output "hello there"
+}
+
+# ---- review fixes: auth temp file failure, status 1 wording, context_tokens ---
+
+@test "auth: a failing mktemp for the header file returns ERROR with a clear message" {
+  printf '#!/bin/bash\ncase "$*" in *shunt-auth*) exit 1 ;; esac\nexec /usr/bin/env -i PATH="%s" mktemp "$@"\n' "$ORIG_PATH" >"$TEST_TMPDIR/bin/mktemp"
+  chmod +x "$TEST_TMPDIR/bin/mktemp"
+  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"cannot create a temp file for the auth header"* ]]
+  [[ "$stderr" != *"$SECRET"* ]]
+  [ ! -e "$FAKE_CURL_COUNT" ]
+}
+
+@test "invoke: status 1 (unknown agent) does not claim an HTTP request failed" {
+  run --separate-stderr shunt_invoke "shunt-bulk-reader-nope" "q"
+  [ "$status" -eq 1 ]
+  [[ "$stderr" != *"HTTP request"* ]]
+  [[ "$stderr" == *"could not be run"* ]]
+}
+
+@test "guard: a non-plain context_tokens (1e30) is rejected by the registry validation" {
+  write_sized_registry 1e30 null
+  run shunt_models_validate
+  [ "$status" -ne 0 ]
+  assert_output --partial "invalid context_tokens"
+}
+
+@test "guard: a non-plain context_tokens reaching the guard returns CONFIG, no arithmetic error" {
+  local v
+  for v in 1e+30 1.5 -3 abc 1234567890123; do
+    _SHUNT_HTTP_ID=acme/m1 _SHUNT_HTTP_CONTEXT_TOKENS="$v" _SHUNT_HTTP_ROLE=bulk-reader
+    run --separate-stderr _shunt_http_guard_size 100
+    [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
+    [[ "$stderr" == *"invalid context_tokens"* ]]
+    [[ "$stderr" != *"syntax error"* ]]
+  done
 }

@@ -98,8 +98,8 @@ _shunt_models_sizing_error() {
   jq -r '
     [.models[] | . as $m
       | if has("context_tokens") and ((.context_tokens | type) != "number"
-            or .context_tokens < 1 or .context_tokens != (.context_tokens | floor))
-        then "model \"\($m.id)\" has invalid context_tokens: must be a positive integer."
+            or .context_tokens < 1 or .context_tokens >= 1e12 or .context_tokens != (.context_tokens | floor))
+        then "model \"\($m.id)\" has invalid context_tokens: must be a positive integer below 10^12."
         elif has("oversize_policy") and (.oversize_policy | IN("map_reduce", "fail") | not)
         then "model \"\($m.id)\" has invalid oversize_policy: must be \"map_reduce\" or \"fail\"."
         else empty end

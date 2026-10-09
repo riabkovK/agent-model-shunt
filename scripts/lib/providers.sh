@@ -298,7 +298,9 @@ shunt_provider_key_resolve() {
 # Writes `Authorization: Bearer <key>` to a 0600 temp file for curl -H @file
 # and prints its path. The caller removes it. Type none creates no file and
 # prints nothing (no Authorization header). A key with a line break is refused
-# so it cannot smuggle extra headers.
+# so it cannot smuggle extra headers. Returns 1 when the key cannot be resolved
+# or is refused, 2 when the temp file cannot be created or written (an
+# environment failure, not a config one).
 shunt_provider_write_auth_header_file() {
   local provider="$1" key file
   key=$(shunt_provider_key_resolve "$provider") || return 1
@@ -306,9 +308,15 @@ shunt_provider_write_auth_header_file() {
   case "$key" in
     *$'\n'* | *$'\r'*) echo "shunt: provider '$provider': the key contains a line break." >&2; return 1 ;;
   esac
-  file=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-auth.XXXXXX") || return 1
-  chmod 600 "$file"
-  printf 'Authorization: Bearer %s\n' "$key" >"$file"
+  if ! file=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-auth.XXXXXX" 2>/dev/null); then
+    echo "shunt: provider '$provider': cannot create a temp file for the auth header in ${TMPDIR:-/tmp}." >&2
+    return 2
+  fi
+  if ! { chmod 600 "$file" && printf 'Authorization: Bearer %s\n' "$key" >"$file"; } 2>/dev/null; then
+    rm -f "$file"
+    echo "shunt: provider '$provider': cannot write the auth header file." >&2
+    return 2
+  fi
   echo "$file"
 }
 

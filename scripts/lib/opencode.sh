@@ -136,6 +136,7 @@ _shunt_note_failure() {
     "$SHUNT_TRY_INVOKE_EMPTY") reason="empty output" ;;
     "$SHUNT_TRY_INVOKE_AUTH") reason="auth failed" ;;
     "$SHUNT_TRY_INVOKE_OVERSIZE") reason="input too large for this model" ;;
+    "$SHUNT_TRY_INVOKE_CONFIG") reason="config problem (see above), skipped" ;;
     *) return 0 ;;
   esac
   echo "shunt: $id failed: $reason" >&2
@@ -153,7 +154,15 @@ shunt_invoke() {
   out=$(shunt_try_invoke "$agent" "$question" "$@") || status=$?
   if [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]; then
     shunt_report_error "no delegate model can take this input (too large for agent '$agent'). Read the file directly instead, in sections with offset/limit."
+  elif [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]; then
+    shunt_report_error "the model for agent '$agent' has a config problem (explained above), nothing was sent."
+  elif [ "$status" -eq 1 ]; then
+    shunt_report_error "agent '$agent' could not be run: it is not prepared, has no model in the registry, or its transport is unknown."
   elif [ "$status" -ne 0 ]; then
+    if [ "$(shunt_transport_for_agent "$agent" 2>/dev/null)" = http ]; then
+      _shunt_note_failure "$agent" "$status" "$agent"
+      shunt_report_error "the HTTP request for agent '$agent' failed (reason above)."
+    fi
     shunt_report_error "opencode run failed for agent '$agent' (not found, timed out after ${SHUNT_TIMEOUT_SECONDS}s, exited non-zero, or produced no output)."
   fi
   echo "$out"
@@ -172,7 +181,7 @@ shunt_invoke_with_failover() {
   local files=("$@")
 
   if ! shunt_models_available; then
-    SHUNT_INVOKE_OUT_FILE=$(shunt_invoke "$SHUNT_BULK_READER_AGENT" "$question" "${files[@]}")
+    SHUNT_INVOKE_OUT_FILE=$(shunt_invoke "$SHUNT_BULK_READER_AGENT" "$question" ${files[@]+"${files[@]}"})
     SHUNT_INVOKE_AGENT_USED="$SHUNT_BULK_READER_AGENT"
     return 0
   fi
@@ -180,7 +189,7 @@ shunt_invoke_with_failover() {
   # The role failover looks the candidates up quietly (its callers do their own
   # lookup first), so this is where an unknown `active` model gets reported.
   shunt_models_candidates bulk-read >/dev/null || true
-  shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "$question" "${files[@]}"
+  shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "$question" ${files[@]+"${files[@]}"}
 }
 
 # _shunt_breaker_record <success|failure> <key>
@@ -204,8 +213,9 @@ _shunt_breaker_record() {
 # for bulk-read and "<id>#<role>" for any other role (shunt_breaker_key), so
 # each role pauses a model on its own. A model that fails to run (timeout,
 # opencode error, empty output) gets one "shunt: <id> failed: <reason>" line
-# on stderr. A model that refuses the input as too large (OVERSIZE) or whose
-# key is rejected (AUTH) is skipped without a breaker failure. When no model
+# on stderr. A model that refuses the input as too large (OVERSIZE), whose
+# key is rejected (AUTH) or that has a config problem (CONFIG) is skipped
+# without a breaker failure. When no model
 # succeeds and at least one refused as oversize, the call ends with "no
 # delegate model can take this input" (see _shunt_report_no_delegate).
 # <agent-fn> is called with a model id
@@ -247,7 +257,7 @@ shunt_invoke_role_with_failover() {
     tried_any=1
     agent=$("$agent_fn" "$id")
     try_status=0
-    out=$(shunt_try_invoke "$agent" "$question" "${files[@]}") || try_status=$?
+    out=$(shunt_try_invoke "$agent" "$question" ${files[@]+"${files[@]}"}) || try_status=$?
     if [ "$try_status" -eq 0 ]; then
       verdict=0
       [ -z "$accept_fn" ] || "$accept_fn" "$out" "$id" || verdict=$?
@@ -266,9 +276,10 @@ shunt_invoke_role_with_failover() {
       esac
     else
       _shunt_note_failure "$id" "$try_status" "$agent"
-      # A rejected key or an input too large for the model says nothing about
-      # the model: try the next candidate without counting a breaker failure.
+      # A rejected key, a config problem or an input too large for the model says
+      # nothing about the model: try the next candidate without counting a breaker failure.
       [ "$try_status" -ne "$SHUNT_TRY_INVOKE_AUTH" ] || continue
+      [ "$try_status" -ne "$SHUNT_TRY_INVOKE_CONFIG" ] || continue
       if [ "$try_status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]; then
         oversize=$(( oversize + 1 ))
         continue
