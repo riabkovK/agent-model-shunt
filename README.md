@@ -236,8 +236,13 @@ Each model has a `context_tokens` value, from `shunt-models detect-context
 --write` or `shunt-models set-context`. It is never guessed, and without it
 only small requests are sent. `oversize_policy` decides what happens to input
 that does not fit: `map_reduce` (default) splits it into overlapping chunks and
-merges the answers, `fail` refuses. `code-write` always fails on oversize
-input. Set it with `shunt-models oversize-policy <provider/model>
+merges the answers, `fail` makes this model refuse so the next model in the
+failover order is tried. `code-write` always refuses oversize input. A refusal
+for size is not the model's fault, so it never counts toward the circuit
+breaker. When no model can take the input, bulk-read says so ("no delegate
+model can take this input") and Claude reads the file itself. Models on the
+`opencode` transport refuse a file over 2000 lines, 50 KB or a 2000-character
+line, since `opencode run -f` would silently cut it. Set it with `shunt-models oversize-policy <provider/model>
 <map_reduce|fail|--clear>`. A chunked call is bounded by the timeouts
 `SHUNT_TIMEOUT_SECONDS` and `SHUNT_TOTAL_TIMEOUT_SECONDS` in the
 [Configuration](#configuration) table. See

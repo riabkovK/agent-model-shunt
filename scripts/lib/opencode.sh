@@ -113,20 +113,29 @@ shunt_try_invoke() {
   shunt_transport_invoke "$@"
 }
 
-# _shunt_note_failure <model-id> <try-invoke-status>
+# _shunt_note_failure <model-id> <try-invoke-status> [agent]
 # Prints one stderr line saying why a candidate failed, for the statuses
-# shunt_try_invoke names. Control characters are stripped from the id so a
-# hand-edited registry cannot inject terminal escapes. Prints nothing for
-# status 1 (the agent could not be prepared, already reported).
+# shunt_try_invoke names. A generic ERROR names the agent's transport ("opencode
+# error", "HTTP request error"), "request error" when the agent is not given or
+# its transport cannot be looked up. Control characters are stripped from the
+# id so a hand-edited registry cannot inject terminal escapes. Prints nothing
+# for status 1 (the agent could not be prepared, already reported).
 _shunt_note_failure() {
   local id reason
   id=$(printf '%s' "$1" | tr -d '[:cntrl:]')
   case "$2" in
     "$SHUNT_TRY_INVOKE_TIMEOUT") reason="timed out after ${SHUNT_TIMEOUT_SECONDS}s" ;;
     "$SHUNT_TRY_INVOKE_DEADLINE") reason="total deadline reached (SHUNT_TOTAL_TIMEOUT_SECONDS)" ;;
-    "$SHUNT_TRY_INVOKE_ERROR") reason="opencode error" ;;
+    "$SHUNT_TRY_INVOKE_ERROR")
+      case "$( [ -z "${3:-}" ] || shunt_transport_for_agent "$3" 2>/dev/null)" in
+        opencode) reason="opencode error" ;;
+        http) reason="HTTP request error" ;;
+        *) reason="request error" ;;
+      esac
+      ;;
     "$SHUNT_TRY_INVOKE_EMPTY") reason="empty output" ;;
     "$SHUNT_TRY_INVOKE_AUTH") reason="auth failed" ;;
+    "$SHUNT_TRY_INVOKE_OVERSIZE") reason="input too large for this model" ;;
     *) return 0 ;;
   esac
   echo "shunt: $id failed: $reason" >&2
@@ -140,8 +149,11 @@ _shunt_note_failure() {
 shunt_invoke() {
   local agent="$1" question="$2"
   shift 2
-  local out
-  if ! out=$(shunt_try_invoke "$agent" "$question" "$@"); then
+  local out status=0
+  out=$(shunt_try_invoke "$agent" "$question" "$@") || status=$?
+  if [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]; then
+    shunt_report_error "no delegate model can take this input (too large for agent '$agent'). Read the file directly instead, in sections with offset/limit."
+  elif [ "$status" -ne 0 ]; then
     shunt_report_error "opencode run failed for agent '$agent' (not found, timed out after ${SHUNT_TIMEOUT_SECONDS}s, exited non-zero, or produced no output)."
   fi
   echo "$out"
@@ -192,7 +204,11 @@ _shunt_breaker_record() {
 # for bulk-read and "<id>#<role>" for any other role (shunt_breaker_key), so
 # each role pauses a model on its own. A model that fails to run (timeout,
 # opencode error, empty output) gets one "shunt: <id> failed: <reason>" line
-# on stderr. <agent-fn> is called with a model id
+# on stderr. A model that refuses the input as too large (OVERSIZE) or whose
+# key is rejected (AUTH) is skipped without a breaker failure. When no model
+# succeeds and at least one refused as oversize, the call ends with "no
+# delegate model can take this input" (see _shunt_report_no_delegate).
+# <agent-fn> is called with a model id
 # and prints the agent to run for it. <accept-fn>, when non-empty, is called
 # with the output file and the model id and judges the answer, so a role can
 # count an unusable answer as a model failure:
@@ -223,7 +239,7 @@ shunt_invoke_role_with_failover() {
     shunt_report_error "no enabled delegate models with the $role role in the registry at $(shunt_models_file).$hint"
   fi
 
-  local id key agent out verdict try_status tried_any=""
+  local id key agent out verdict try_status tried_any="" oversize=0
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     key=$(shunt_breaker_key "$id" "$role")
@@ -249,10 +265,14 @@ shunt_invoke_role_with_failover() {
           ;;
       esac
     else
-      _shunt_note_failure "$id" "$try_status"
-      # A rejected key says nothing about the model: try the next candidate
-      # without counting a breaker failure.
+      _shunt_note_failure "$id" "$try_status" "$agent"
+      # A rejected key or an input too large for the model says nothing about
+      # the model: try the next candidate without counting a breaker failure.
       [ "$try_status" -ne "$SHUNT_TRY_INVOKE_AUTH" ] || continue
+      if [ "$try_status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]; then
+        oversize=$(( oversize + 1 ))
+        continue
+      fi
     fi
     _shunt_breaker_record failure "$key"
   done <<<"$candidates"
@@ -260,7 +280,19 @@ shunt_invoke_role_with_failover() {
   if [ -z "$tried_any" ]; then
     shunt_report_error "every delegate model in the registry is currently paused (circuit breaker open); no candidates available."
   fi
+  [ "$oversize" -eq 0 ] || _shunt_report_no_delegate "$role" "$oversize"
   shunt_report_error "all delegate models in the registry failed for this call."
+}
+
+# _shunt_report_no_delegate <role> <oversize-count>
+# Ends a call in which no candidate took the input and at least one refused it
+# as too large. For bulk-read this is the "Claude reads it itself" outcome: the
+# message tells Claude to read the file directly, in offset/limit sections,
+# which the check-file-size hook always lets through.
+_shunt_report_no_delegate() {
+  local hint=""
+  [ "$1" != "bulk-read" ] || hint=" Read the file directly instead, in sections with offset/limit."
+  shunt_report_error "no delegate model can take this input ($2 refused it as too large, the others failed or are paused).$hint"
 }
 
 # shunt_extract_text <response-file>

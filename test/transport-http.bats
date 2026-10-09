@@ -558,10 +558,10 @@ big_question() {
   [ -f "$FAKE_CURL_SENT" ]
 }
 
-@test "guard: too big with oversize_policy fail returns ERROR and sends nothing" {
+@test "guard: too big with oversize_policy fail returns OVERSIZE and sends nothing" {
   write_sized_registry 1000 '"fail"'
   run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "acme/m1"
   assert_output --partial "too large"
   assert_output --partial "budget 600"
@@ -571,7 +571,7 @@ big_question() {
 @test "guard: a question that alone exceeds the budget fails without chunking (no policy)" {
   write_sized_registry 1000 null
   run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "leave no room"
   refute_output --partial "not implemented"
   [ ! -f "$FAKE_CURL_ARGV" ]
@@ -580,7 +580,7 @@ big_question() {
 @test "guard: explicit fail does not mention chunking" {
   write_sized_registry 1000 '"fail"'
   run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   refute_output --partial "chunk"
 }
 
@@ -598,7 +598,7 @@ big_question() {
 @test "guard: a question that alone exceeds the budget fails without chunking (map_reduce)" {
   write_sized_registry 1000 '"map_reduce"'
   run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "leave no room"
   [ ! -f "$FAKE_CURL_ARGV" ]
 }
@@ -606,7 +606,7 @@ big_question() {
 @test "guard: the code-writer role always fails when too big, even with map_reduce" {
   write_sized_registry 1000 '"map_reduce"'
   run shunt_transport_invoke "shunt-code-writer-acme-m1" "$(big_question 6000)"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "too large"
   refute_output --partial "not implemented"
   [ ! -f "$FAKE_CURL_ARGV" ]
@@ -860,7 +860,7 @@ sent_text_bytes() {
   write_sized_registry 6000 null
   make_lines "$TEST_TMPDIR/big.txt" 300
   run shunt_transport_invoke "shunt-code-writer-acme-m1" "q" "$TEST_TMPDIR/big.txt"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   [ ! -f "$FAKE_CURL_ARGV" ]
 }
 
@@ -868,7 +868,7 @@ sent_text_bytes() {
   write_sized_registry 6000 '"fail"'
   make_lines "$TEST_TMPDIR/big.txt" 300
   run shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   [ ! -f "$FAKE_CURL_ARGV" ]
 }
 
@@ -892,7 +892,7 @@ sent_text_bytes() {
   write_sized_registry 6000 null
   make_lines "$TEST_TMPDIR/huge.txt" 12000
   run shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/huge.txt"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "limit"
   [ ! -f "$FAKE_CURL_ARGV" ]
 }

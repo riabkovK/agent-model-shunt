@@ -24,6 +24,18 @@ silently.
   `map_reduce`, an unknown value is rejected. `code-write` is always `fail`,
   since a partial view of the input would produce wrong files
   ([ADR 0015](0015-code-write-create-only-and-tag-protocol.md)).
+- `fail` means "this model refuses, try the next one". Input too large for a
+  model is not the model's fault: the refusal sends nothing, records no breaker
+  failure and starts no cooldown, and the failover moves to the next candidate.
+  The same holds when `map_reduce` cannot fit the input either (the question
+  alone leaves no room, or more chunks than the limit would be needed). When no
+  candidate takes the input, bulk-read ends with "no delegate model can take
+  this input" and Claude reads the file itself, in offset/limit sections.
+- The `opencode` transport refuses the same way. `opencode run -f` keeps at most
+  2000 lines, 50 KB and 2000 characters per line of an attached file and
+  silently drops the rest, so a file over any of these limits, or an input over
+  the model's context budget when `context_tokens` is known, is refused before
+  opencode is called.
 - The size check estimates tokens from bytes and compares them with a fixed
   percentage of `context_tokens`, leaving room for the answer.
 - `map_reduce`: the input is split into chunks that fit that budget. Chunks of

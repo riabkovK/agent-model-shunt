@@ -280,8 +280,10 @@ scripts/shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>
   answer with `set-context`. Never invent a value.
 - `oversize_policy` decides what bulk-read does with input too large for
   the context: `map_reduce` (default, also when unset) splits it into
-  chunks, `fail` refuses. Code-write always fails on oversize input,
-  whatever the policy.
+  chunks, `fail` means "this model refuses, try the next one". Code-write
+  always refuses oversize input, whatever the policy. A refusal for size is
+  not a model failure: it does not touch the circuit breaker. If no model
+  can take the input, Claude reads the file itself.
 - Saving with `set-context`, `detect-context --write` or `oversize-policy`
   resets that model's circuit breaker, since a missing context or a bad
   policy was counted as a model failure.

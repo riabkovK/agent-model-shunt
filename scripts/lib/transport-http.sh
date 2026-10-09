@@ -16,6 +16,8 @@
 #   2xx, finish_reason not "stop"       ERROR (an answer cut off, e.g. "length",
 #                                       is unusable and another model may do better)
 #   2xx, not a chat completion          ERROR
+#   input over the context budget       OVERSIZE (nothing sent, not the model's
+#                                       fault: the failover loop skips the breaker)
 # Secret rules: the key only ever lives in a 0600 header file handed to curl as
 # -H @file, never in argv or on stderr. Redirects are never followed (no -L), so
 # the Authorization header cannot be replayed to another host.
@@ -210,9 +212,11 @@ _shunt_http_build_chunk_prompt() {
 # Checks the estimated request size against the resolved model's context budget.
 # Returns 0 when the request may be sent. Returns SHUNT_HTTP_NEEDS_CHUNKING when it
 # is too big for a bulk-reader whose policy is map_reduce (nothing said yet, the
-# caller chunks). Otherwise explains on stderr and returns SHUNT_TRY_INVOKE_ERROR
-# (a model or config failure, nothing is sent). An absent oversize_policy means
-# SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY. Code-write always fails when too big,
+# caller chunks). Otherwise explains on stderr, sends nothing and returns
+# SHUNT_TRY_INVOKE_OVERSIZE when the input is too big (policy fail, or
+# code-write), or SHUNT_TRY_INVOKE_ERROR for a config problem (no context_tokens,
+# invalid policy). An absent oversize_policy means
+# SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY. Code-write always refuses when too big,
 # before the policy is looked at.
 _shunt_http_guard_size() {
   local id="$_SHUNT_HTTP_ID" ct="$_SHUNT_HTTP_CONTEXT_TOKENS" policy="$_SHUNT_HTTP_OVERSIZE_POLICY"
@@ -230,11 +234,12 @@ _shunt_http_guard_size() {
   fi
   echo "shunt: model $id: input is too large for the model (about $tokens tokens, budget $budget), no request sent." >&2
   case "${policy:-$SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY}" in
-    fail) ;;
-    map_reduce) ;;
-    *) echo "shunt: model $id has an invalid oversize_policy (config problem)." >&2 ;;
+    fail | map_reduce) return "$SHUNT_TRY_INVOKE_OVERSIZE" ;;
+    *)
+      echo "shunt: model $id has an invalid oversize_policy (config problem)." >&2
+      return "$SHUNT_TRY_INVOKE_ERROR"
+      ;;
   esac
-  return "$SHUNT_TRY_INVOKE_ERROR"
 }
 
 # _shunt_http_normalize <response-file>
@@ -656,8 +661,9 @@ _shunt_http_chunk_overhead() {
 }
 
 # _shunt_http_plan_all <question> <file>...
-# Fills the chunk plan. Fails when the role prompt and question leave too little
-# room for file content.
+# Fills the chunk plan. Refuses with SHUNT_TRY_INVOKE_OVERSIZE when the role
+# prompt and question leave too little room for file content, or the input
+# needs more than SHUNT_HTTP_MAX_CHUNKS chunks.
 _shunt_http_plan_all() {
   local question="$1" f room overhead probe empty
   shift
@@ -670,7 +676,7 @@ _shunt_http_plan_all() {
     room=$(( $(_shunt_http_budget_bytes) - overhead ))
     if [ "$room" -lt "$SHUNT_HTTP_MIN_CHUNK_BYTES" ]; then
       echo "shunt: model $_SHUNT_HTTP_ID: the role prompt and the question leave no room for file content in the context budget (no request sent)." >&2
-      return "$SHUNT_TRY_INVOKE_ERROR"
+      return "$SHUNT_TRY_INVOKE_OVERSIZE"
     fi
     [ -z "$f" ] || _shunt_http_plan_file "$f" "$room" || return 1
     [ "${#_CH_FILE[@]}" -le "$SHUNT_HTTP_MAX_CHUNKS" ] || break
@@ -678,7 +684,7 @@ _shunt_http_plan_all() {
   rm -f "$probe" "$empty"
   if [ "${#_CH_FILE[@]}" -gt "$SHUNT_HTTP_MAX_CHUNKS" ]; then
     echo "shunt: model $_SHUNT_HTTP_ID: the input needs more chunks than the limit of $SHUNT_HTTP_MAX_CHUNKS (no request sent)." >&2
-    return "$SHUNT_TRY_INVOKE_ERROR"
+    return "$SHUNT_TRY_INVOKE_OVERSIZE"
   elif [ "${#_CH_FILE[@]}" -eq 0 ]; then
     echo "shunt: model $_SHUNT_HTTP_ID: the input gives no chunks to send (no request sent)." >&2
     return "$SHUNT_TRY_INVOKE_ERROR"

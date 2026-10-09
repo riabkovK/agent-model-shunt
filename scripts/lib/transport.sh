@@ -35,6 +35,20 @@ SHUNT_TRY_INVOKE_AUTH=4
 # The http transport's total deadline (SHUNT_TOTAL_TIMEOUT_SECONDS) ended the
 # call, as opposed to one request running past SHUNT_TIMEOUT_SECONDS (TIMEOUT).
 SHUNT_TRY_INVOKE_DEADLINE=5
+# The input is too large for this model, nothing was sent. Not the model's
+# fault either: the failover loop tries the next candidate without a breaker
+# failure, and when no candidate can take the input, Claude reads it itself.
+SHUNT_TRY_INVOKE_OVERSIZE=6
+
+# What `opencode run -f <file>` keeps of an attached file. OpenCode reads an
+# attachment with its read tool, which stops after DEFAULT_READ_LIMIT lines or
+# MAX_BYTES bytes and cuts each line at MAX_LINE_LENGTH characters, without
+# failing (packages/opencode/src/tool/read.ts, checked in the opencode 1.18.18
+# binary: 2000 lines, 51200 bytes, 2000 characters). The model then answers
+# from a silently truncated file, so a file over any of these is refused.
+SHUNT_OPENCODE_MAX_FILE_LINES=2000
+SHUNT_OPENCODE_MAX_FILE_BYTES=51200
+SHUNT_OPENCODE_MAX_LINE_CHARS=2000
 
 _SHUNT_TRANSPORT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=providers.sh
@@ -73,6 +87,53 @@ shunt_opencode_normalize() {
     || echo '{"text":"","finish_reason":""}'
 }
 
+# _shunt_opencode_file_too_big <file>
+# Prints why OpenCode would truncate the attached file and succeeds, or fails
+# (prints nothing) when the file fits. An unreadable file is left to opencode.
+_shunt_opencode_file_too_big() {
+  local f="$1" bytes stats lines longest
+  [ -f "$f" ] && [ -r "$f" ] || return 1
+  bytes=$(wc -c <"$f" | tr -d ' ')
+  stats=$(awk '{ if (length($0) > m) m = length($0) } END { print NR, m + 0 }' "$f")
+  lines=${stats% *} longest=${stats#* }
+  if [ "$lines" -gt "$SHUNT_OPENCODE_MAX_FILE_LINES" ]; then
+    echo "$lines lines, opencode keeps $SHUNT_OPENCODE_MAX_FILE_LINES"
+  elif [ "$bytes" -gt "$SHUNT_OPENCODE_MAX_FILE_BYTES" ]; then
+    echo "$bytes bytes, opencode keeps $SHUNT_OPENCODE_MAX_FILE_BYTES"
+  elif [ "$longest" -gt "$SHUNT_OPENCODE_MAX_LINE_CHARS" ]; then
+    echo "a line of $longest characters, opencode keeps $SHUNT_OPENCODE_MAX_LINE_CHARS"
+  else
+    return 1
+  fi
+}
+
+# _shunt_opencode_guard_size <agent> <question> [file...]
+# Refuses, with SHUNT_TRY_INVOKE_OVERSIZE and one stderr line, an input that
+# opencode would truncate (see SHUNT_OPENCODE_MAX_FILE_LINES) or that exceeds
+# the model's context budget when its context_tokens is known (the same
+# estimate as the http transport's guard). Nothing is sent then.
+_shunt_opencode_guard_size() {
+  local agent="$1" question="$2" name f why bytes tokens budget
+  shift 2
+  name="${_SHUNT_HTTP_ID:-$agent}"
+  for f in "$@"; do
+    why=$(_shunt_opencode_file_too_big "$f") || continue
+    echo "shunt: model $name: '$f' is too large for the opencode transport ($why), no request sent." >&2
+    return "$SHUNT_TRY_INVOKE_OVERSIZE"
+  done
+  [ -n "${_SHUNT_HTTP_CONTEXT_TOKENS:-}" ] || return 0
+  bytes=$(printf '%s' "$question" | wc -c | tr -d ' ')
+  for f in "$@"; do
+    [ -r "$f" ] || continue
+    bytes=$(( bytes + $(wc -c <"$f" | tr -d ' ') ))
+  done
+  tokens=$(( (bytes + SHUNT_HTTP_BYTES_PER_TOKEN - 1) / SHUNT_HTTP_BYTES_PER_TOKEN ))
+  budget=$(( _SHUNT_HTTP_CONTEXT_TOKENS * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 ))
+  [ "$tokens" -le "$budget" ] && return 0
+  echo "shunt: model $name: input is too large for the model (about $tokens tokens, budget $budget), no request sent." >&2
+  return "$SHUNT_TRY_INVOKE_OVERSIZE"
+}
+
 # _shunt_transport_opencode <agent> <question> [file...]
 # Runs `opencode run --agent <agent> "<question>" -f <file> ... --format json`
 # against an isolated OpenCode config (see shunt_prepare_isolated_config) and
@@ -89,6 +150,8 @@ _shunt_transport_opencode() {
     case "$f" in -*) f="./$f" ;; esac
     file_args+=(-f "$f")
   done
+
+  _shunt_opencode_guard_size "$agent" "$question" "$@" || return $?
 
   local iso_config
   iso_config=$(shunt_prepare_isolated_config "$agent") || return 1

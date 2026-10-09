@@ -57,6 +57,10 @@ usage line to stderr. Treat the answer as informative but unverified: for
 anything load-bearing (a fact you will act on irreversibly), spot-check it
 against the file yourself with a targeted `offset`/`limit` read.
 
+If the script fails with "no delegate model can take this input", the file is
+too large for every configured model. Read it yourself instead, in sections
+with `offset`/`limit`.
+
 ## Configuration
 
 See the project README for the `bulk-reader` OpenCode agent setup and the
