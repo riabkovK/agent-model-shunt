@@ -1,0 +1,507 @@
+# Model Config reference
+
+Detailed per-command reference for the `/model-config` skill. SKILL.md holds
+the hard rules, the dashboard and the first-run wizard. Read only the section
+for the action the user picked. Paths like `scripts/shunt-models` are
+relative to the plugin root (the directory two levels above this file). All
+hard rules in SKILL.md apply here too.
+
+Sections:
+
+- Dashboard details
+- Terminology
+- Editing the model registry
+- Roles, per model (adding a model, the code-write self-fix offer)
+- Extra request fields, per model and per role (HTTP transport)
+- Providers and keys (HTTP transport)
+- Context window and oversize policy (HTTP transport)
+- Adding an HTTP model, in order
+- Migrating providers from OpenCode to the HTTP transport
+- Thinking/extended-reasoning, per model (off by default)
+- Editing retry/failover behavior (circuit breaker)
+- Editing the code-write self-fix loop's retry count
+- Precedence, for context if the user asks how a value took effect
+
+## Dashboard details
+
+`scripts/shunt-models dashboard` replaces the separate `status`,
+`provider list`, `key status`, `shunt-breaker-config show` and
+`shunt-codewrite-config show` calls. Those commands still exist and still
+work. Use them when the user asks for one of them by name.
+
+Line format (one record per line, space separated, never a key value):
+
+- `registry: ok|missing|invalid`. `missing` is legacy single-agent mode.
+  `invalid` means a hand-edit broke `models.json`; `status` prints the reason.
+- `providers_file: ok|missing|invalid`.
+- `provider <name> transport=<t> base_url=<url|-> key=<type|env:VAR> key_present=yes|no|unknown`.
+  `key_present` only says whether a key resolves. It is `yes` for key type
+  `none`, and `unknown` while `providers.json` is invalid.
+- `provider <name> invalid`: that entry is broken. `provider list` names why.
+- `model <id> enabled= active= roles= thinking=on|off thinking_off=set|none context_tokens=<n|unset> oversize_policy=<policy> provider_transport=<t>`.
+  `oversize_policy=map_reduce(default)` means unset. `thinking_off=set` is an
+  explicit stored off setting, `none` is just the unset default.
+- `breaker threshold=<n> default=3 cooldown_seconds=<n> default=300 status=enabled|disabled`.
+- `breaker_state <id> bulk-read|code-write failures=<n> open=true|false`, one
+  line per role the model has. `open=true` means the model is paused for that
+  role.
+- `self_fix_retries=<n> default=1`.
+- `first_choice bulk-read|code-write <id|none>`: the model the next call tries
+  first. `none` for code-write means code-write is unavailable.
+- `opencode config=present|absent importable=<names|none>`: OpenCode providers
+  of registry models that the migration would move to HTTP.
+- `issue <code> <subject>`: `key-missing <provider>`,
+  `context-missing <model>`, `no-models -`, `no-bulk-read-model -`,
+  `registry-invalid models.json`, `providers-invalid providers.json`,
+  `provider-invalid <provider>`.
+- `setup: empty|opencode-importable|incomplete|ok`, always the last line.
+
+Rendering rules carried over from the old dashboard:
+
+- Show every model, not just the active one, one row per model. Do not omit
+  a model because its thinking is off or it is not active.
+- With `registry: missing` the breaker does not apply yet (legacy
+  single-agent mode). Say so plainly and skip its numbers, they would be
+  misleading.
+- Show the self-fix retry count once (it is global, not per model), even
+  when no model has the `code-write` role yet. It takes effect the moment a
+  model gains the role.
+- Annotate the breaker values and the self-fix count with their defaults,
+  for example "Порог: 5 (по умолчанию 3)" / "Threshold: 5 (default: 3)" and
+  "Повторные попытки self-fix: 1 (по умолчанию 1)" / "Self-fix retries: 1
+  (default: 1)". There is no stored "was this overridden" flag.
+
+## Terminology
+
+Internally (code, tests, env vars) this is called a "circuit breaker":
+that term is fine once you're explaining what it does, but still lead with
+the *behavior*, not the name: "how many failed attempts before shunt stops
+using a model for a while, and how long before it tries that model again."
+
+## Editing the model registry
+
+Drive `scripts/shunt-models`:
+
+```bash
+scripts/shunt-models add <provider/model> [<role>[,<role>...]]   # roles default to both, also materializes its OpenCode agent files
+scripts/shunt-models remove <provider/model>
+scripts/shunt-models reorder <provider/model> <1-based position>
+scripts/shunt-models activate <provider/model>
+scripts/shunt-models disable <provider/model>    # keep it, but stop using it
+scripts/shunt-models enable <provider/model>
+scripts/shunt-models roles <provider/model> <role>[,<role>...]   # bulk-read, code-write
+scripts/shunt-models list
+scripts/shunt-models status                      # id, agent, enabled/disabled, thinking flag, thinking_off=set|none, roles, active marker, then the first choice
+scripts/shunt-models sync                         # re-materialize all agent files (bulk-reader, and code-writer for models with that role)
+```
+
+`remove` also deletes that model's materialized agent files (bulk-reader and
+code-writer) and its retry/failover
+state, so nothing stale is left behind and a later re-add starts clean. If the
+removed model was the active one, `active` becomes unset and no other model is
+promoted automatically. Removing the last model is allowed: the registry then
+holds zero models, and shunt stops redirecting large reads (Claude reads files
+directly again) until a model is added or enabled.
+
+`disable` / `enable` are the reversible alternative to `remove`. A disabled
+model stays in the registry with its position, agent file, thinking settings and
+active marker, but is never tried for a call and never counts toward the
+"is any model usable" check that lets reads through. It costs nothing per call,
+because it is filtered out before any retry/failover state is looked at. A
+disabled model cannot be made active until it is enabled. If every model is
+disabled, the effect is the same as an empty registry. `status` marks a disabled
+active model as `active (skipped, disabled)` and ends with a `first choice:` line
+naming the model the next call tries first (or saying no model is enabled), so
+report that line when the user asks which model is the default now. Prefer `disable` when the
+user wants a model out of rotation for a while, and `remove` when they are done
+with it.
+
+`add` requires the model's provider to exist. For a provider on the HTTP
+transport, an entry made with `provider set` is enough, nothing is needed in
+`opencode.json`. Any other provider is called through OpenCode, so it must be
+in the OpenCode config's `provider` block (`$SHUNT_OPENCODE_CONFIG_HOME/opencode.json`
+or `~/.config/opencode/opencode.json`). If it is missing, the command fails
+with a clear message rather than materializing an agent that can't run.
+
+## Roles, per model
+
+Each model can be limited to the jobs it may do. There are two roles:
+`bulk-read` (answering questions about large files, what `/bulk-reader` uses)
+and `code-write` (generating new files, what `scripts/code-write` uses). A model
+with no `roles` set has both,
+so registries written before roles existed keep working unchanged.
+
+### Adding a model: let the user pick its roles
+
+Before running `add`, ask which roles the new model should have, with the
+`AskUserQuestion` tool as a multi-select (`multiSelect: true`), one option per
+role: `bulk-read` and `code-write`. Both are the default, so label both options
+"(Recommended)" and say in the question text that both are on unless the user
+unticks one, for example: "Which jobs may this model do? Keep both unless you
+want to limit it." The tool cannot pre-tick options, so treat the selection as
+the roles to keep:
+
+- Both selected: run `add <provider/model>` with no roles argument (same as
+  passing both).
+- One selected: run `add <provider/model> <that-role>`.
+- Nothing selected: a model needs at least one role, so ask again instead of
+  guessing.
+
+### Adding a model with the `code-write` role: offer the self-fix loop settings
+
+Whenever the roles just given to `add` (or a later `roles` call) include
+`code-write`, follow up with a plain yes/no question: "Хотите настроить
+параметры self-fix-цикла (сколько раз code-write пытается сам исправить
+неудачную сборку/тест, прежде чем передать это вам)?" / "Want to configure
+the self-fix loop's settings (how many times code-write retries a failed
+build/test itself before handing it back to you)?" Ask this once per `add`
+or `roles` call that grants the role, not on every dashboard view, the
+no-argument dashboard already shows the current value passively (its
+`self_fix_retries` line).
+
+- No: do nothing further. The model uses whatever `self_fix_retries` value
+  is already configured (global, not per-model, see "Editing the code-write
+  self-fix loop's retry count").
+- Yes: show the current value from `scripts/shunt-codewrite-config show`,
+  then offer the retry count as a choice (e.g. `AskUserQuestion` with a few
+  common values like 0/1/2/3 plus free text), and apply it with
+  `scripts/shunt-codewrite-config set self-fix-retries <n>`. Make clear
+  before asking that this is a single global setting, not specific to the
+  model just added: changing it here changes it for every model with the
+  `code-write` role.
+
+Only ask when the user did not already name the roles in the request. If they
+did ("add X for reading only"), pass those roles and skip the question.
+
+```bash
+scripts/shunt-models roles <provider/model> bulk-read              # reading only
+scripts/shunt-models roles <provider/model> code-write             # writing only
+scripts/shunt-models roles <provider/model> bulk-read,code-write   # both
+```
+
+- `roles` replaces the model's whole role list. Order is kept and duplicates
+  are dropped. An empty list or an unknown role is refused and the registry is
+  left as it was.
+- There is one `active` pointer and one priority order for every role. For a
+  given role, the candidates are the `active` model first (only if it is
+  enabled and has that role), then the other enabled models that have the role,
+  in registry order. A model that lacks the role is simply skipped for it and
+  keeps its `active` marker.
+- The role list is the only way to say "this model only reads" or "this model
+  only writes". It cannot express "A first for reading, B first for writing"
+  while both stay fallbacks for both jobs. If the user wants that, restrict each
+  model to its role.
+- If no enabled model has `bulk-read`, large reads are not redirected, exactly
+  as with an empty registry, and `status` says so. `status` shows each model's
+  effective roles (`roles=bulk-read,code-write` when none are set) and its
+  `first choice:` line is the first choice for `bulk-read`. A second line,
+  `code-write first choice:`, is the first choice for `code-write`, or says that
+  no enabled model has that role (code-write is then unavailable and
+  `scripts/code-write` stops with a clear error before calling any model).
+- An invalid `roles` value in the registry (for example a hand-edit typo like
+  `bulk_read`) makes the whole registry invalid, so shunt falls back to legacy
+  single-agent mode. `status` and `list` then print the reason. Run
+  `scripts/shunt-models roles <provider/model> <role>[,<role>...]` on the
+  offending model to repair it.
+- Each model with the `code-write` role gets a second materialized agent,
+  `shunt-code-writer-<slug>`, next to its bulk-reader agent. It has every tool
+  disabled and a low temperature, because `scripts/code-write` writes the file
+  itself and the model only returns text. `add`, `sync`, `thinking` and `roles`
+  keep it consistent with the registry: it is created when the role is present
+  and deleted when the role is dropped. `roles` does not touch retry/failover
+  state. After updating the plugin, run `scripts/shunt-models sync` once so
+  registries written earlier get their code-writer agents, and so existing
+  code-writer agents get the current reply protocol prompt (with its example
+  reply).
+- `code-write` keeps its own failure counter per model, separate from
+  `bulk-read`'s. A model that keeps failing writes is paused for `code-write`
+  only and stays usable for reading, and the other way round. `status` shows
+  each model's code-write state on `code-write breaker <id>:` lines, and
+  `scripts/shunt-breaker-config show` lists it as `<id> (code-write):` under the
+  model's own line. Counters recorded before this split are the `bulk-read`
+  ones, so nothing needs migrating, and `remove` clears both.
+
+## Extra request fields, per model and per role (HTTP transport)
+
+```bash
+scripts/shunt-models request-body <provider/model> '<json-object>'
+scripts/shunt-models request-body <provider/model> --role <bulk-read|code-write> '<json-object>'
+scripts/shunt-models request-body <provider/model> [--role <role>] --clear
+```
+
+Without `--role` this sets `request_body`, extra fields of every HTTP request.
+With `--role` it sets `role_request_body[<role>]`, whose keys win over
+`request_body` for that role only (shallow merge). `model` and `messages`
+can never be overridden. Both are merged on top of the fields that the
+model's thinking setting produces, so an explicit request field always wins.
+
+On Ollama's `/v1` endpoint, thinking off is `{"reasoning_effort":"none"}`.
+Measured for bulk-read: same recall, 16s instead of 45s. To turn thinking off
+for every role of a model, use `thinking <id> off '{"reasoningEffort":"none"}'`:
+it works for both transports, and the HTTP transport sends it as
+`reasoning_effort`. To turn it off for bulk-read only, which is what to offer
+for an Ollama model, use
+`request-body <id> --role bulk-read '{"reasoning_effort":"none"}'`. Code-write
+thinking is not measured, so do not change its default.
+
+## Providers and keys (HTTP transport)
+
+```bash
+scripts/shunt-models provider set <name> --transport http --base-url <url> --key <keyring|plaintext|none|env:VARNAME>
+scripts/shunt-models provider set <name> --base-url <url>   # update, other fields kept
+scripts/shunt-models provider list
+scripts/shunt-models key status <provider>                  # yes/no and type, never the value
+```
+
+`provider set` writes `providers.json`. An http provider needs a base_url
+starting with `http://` or `https://` and naming a host, with no
+`user:password@`, whitespace or control characters (put credentials in the
+key, never in the URL). Changing the key type away from
+plaintext drops a stored plaintext key.
+
+Key storage trade-offs:
+
+- `env:VARNAME`: the key lives in the user's shell environment. Nothing is
+  stored by the plugin, but the variable must be exported where Claude Code
+  runs.
+- `keyring`: OS keyring (secret-tool, security, kwallet-query). Best default
+  when a backend exists.
+- `plaintext`: stored in `providers.json` (mode 600). Last resort.
+- `none`: local endpoints without auth (e.g. Ollama).
+
+Never ask the user to paste a key into chat, and never put a key on a
+command line. For keyring and plaintext, run
+`<plugin-root>/scripts/shunt-key-dialog <provider>` yourself with a Bash
+timeout above 120 s (for example 150000 ms) and tell the user a password
+window has opened on their desktop. The key goes from that window straight
+into `key set`, never through chat or tool output. Exit codes:
+- 0: stored.
+- 3: cancelled or empty input, nothing stored.
+- 4: the window timed out. Offer a retry.
+- 5: no dialog available (no zenity, kdialog or osascript with a display,
+  or a headless or SSH session). Only then show the fallback line the
+  script prints, `! <plugin-root>/scripts/shunt-models key set <provider>`,
+  and ask the user to run it. It reads the key from a hidden prompt.
+- 1, 2, 6: refused provider, usage error, storing failed. Show the message.
+
+Never read a stored key back, in any form: no secret-tool, kwallet or
+security lookup, no length, no prefix, no comparison with an env variable.
+The only way to check a key is a provider call. After storing, run
+`scripts/shunt-models detect-context <provider/model>` (no `--write`). On an
+auth failure (401/403 hint), tell the user the key was rejected and reopen
+the dialog once.
+
+Confirm with `key status <provider>`. Spell out `<plugin-root>` as the
+absolute path of this plugin (two directories above this SKILL.md, the
+`${CLAUDE_PLUGIN_ROOT}` of the hooks). A `!` command runs in the user's
+project directory, where the relative `scripts/shunt-models` does not exist.
+The auth-failure hint of the HTTP transport already prints the absolute
+path. If the user pastes a key into chat anyway, tell them it is now in the
+transcript and they should rotate it, then enter the new one through the
+dialog.
+
+## Context window and oversize policy (HTTP transport)
+
+```bash
+scripts/shunt-models detect-context <provider/model> [--write]
+scripts/shunt-models set-context <provider/model> <tokens>
+scripts/shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>
+```
+
+- Run `detect-context` first. It asks the provider and never guesses. If
+  it fails, ASK the user for the model's context window and store the
+  answer with `set-context`. Never invent a value.
+- `oversize_policy` decides what bulk-read does with input too large for
+  the context: `map_reduce` (default, also when unset) splits it into
+  chunks, `fail` means "this model refuses, try the next one". Code-write
+  always refuses oversize input, whatever the policy. A refusal for size is
+  not a model failure: it does not touch the circuit breaker. If no model
+  can take the input, Claude reads the file itself.
+- Saving with `set-context`, `detect-context --write` or `oversize-policy`
+  resets that model's circuit breaker, since a missing context or a bad
+  policy was counted as a model failure.
+
+## Adding an HTTP model, in order
+
+1. Provider: `provider set <name> --transport http --base-url <url> --key <type>`.
+2. Key (keyring/plaintext): run `<plugin-root>/scripts/shunt-key-dialog <name>`
+   (Bash timeout above 120 s) and tell the user a password window is open.
+   Use the `!` fallback only on exit code 5. For env, the user exports the
+   variable. Then confirm with `key status <name>`.
+3. `scripts/shunt-models add <provider/model>`, then check connectivity
+   with `detect-context <provider/model> --write`.
+4. If detection fails, ask the user for the context window and run
+   `set-context`. Never guess.
+5. `oversize-policy` if the user wants `fail` instead of the `map_reduce`
+   default.
+6. Thinking and extra request fields: `thinking`, `request-body` (see the
+   sections on them).
+
+## Migrating providers from OpenCode to the HTTP transport
+
+```bash
+scripts/shunt-models --migrate-from-opencode                      # dry run, prints the plan
+scripts/shunt-models --migrate-from-opencode --apply --yes [--key-storage keyring|env|plaintext|skip]
+```
+
+Never dry run and apply in the same step. The order is fixed:
+
+1. Run the dry run.
+2. Show the user the plan, summarized per provider and per model, in the
+   user's language.
+3. Ask for confirmation with AskUserQuestion.
+4. Only after a yes, run `--apply --yes`.
+
+Without a tty, `--apply` refuses unless `--yes` is given. On a tty it asks
+"Proceed? [y/N]" unless `--yes` is given. The dry run reads `opencode.json`
+and covers only providers used by a registry model. Per provider it sets
+`transport: http`, `base_url` and the key. Per model it turns a
+`reasoningEffort` into `request_body {"reasoning_effort": ...}` (only when
+`request_body` is unset) and fills `context_tokens` (detected from the provider,
+else the opencode `limit.context`, labelled "not verified"). `--apply` backs up
+`models.json` and `providers.json` (`.bak-<timestamp>`) first. Running it
+again reports nothing to do.
+
+Key storage for a literal `apiKey`: `keyring` (default when a backend exists),
+`env` (`SHUNT_<PROVIDER>_KEY`, the user must export it, nothing is copied),
+`plaintext` (in `providers.json`, mode 600, with a warning) or `skip` (the
+provider stays on opencode, then run `<plugin-root>/scripts/shunt-key-dialog <provider>`
+and re-run, using the `!` fallback only if it exits 5). `{env:NAME}` becomes an env key and no `apiKey` becomes type none.
+Without a tty and without `--key-storage` a literal key counts as skip. The key
+is never shown, logged or put in a command line, and never removed from
+`opencode.json`, so do not ask for or print it.
+
+## Thinking/extended-reasoning, per model (off by default)
+
+Delegate models that support a "thinking" mode have it off by default:
+bulk-read is a summarize/extract task, not deep reasoning, and thinking
+tokens cost time and money without a clear fidelity benefit. Never turn it
+on unprompted; only in response to the user asking about a specific model.
+
+```bash
+scripts/shunt-models thinking <provider/model> on '<options-json>'
+scripts/shunt-models thinking <provider/model> off
+scripts/shunt-models thinking <provider/model> off '<off-options-json>'
+```
+
+- When a model is added, thinking is off and no reasoning-related
+  frontmatter is written to its agent file at all.
+- To turn it on for one model, ask a plain yes/no question first (never a
+  global switch): "Include <model>'s extended-reasoning mode? It costs more
+  time and tokens per call." Only proceed on yes.
+- `on` requires the caller to also supply the provider's own reasoning
+  option(s) as a flat JSON object, e.g. `'{"reasoningEffort":"high"}'` for
+  an OpenAI-style provider or whatever key/value the user's provider
+  expects, shunt doesn't hardcode one provider's shape, it merges these
+  keys verbatim into the agent's frontmatter. If the user doesn't know
+  their provider's exact option name, say so plainly and ask them to check
+  `opencode models <provider>` or their provider's docs rather than
+  guessing a key that might silently do nothing.
+- `off` without options clears the flag and any stored on-options, and
+  keeps any stored off options. It re-materializes the agent with the off
+  options if there are any, otherwise without reasoning fields.
+- Either direction re-materializes that one model's agent file
+  immediately, so no separate `sync` is needed. `scripts/shunt-models sync`
+  regenerates every agent file from the registry, including the off options.
+
+### Explicit off options (hybrid reasoning models)
+
+Omitting the reasoning fields does not turn thinking off on a hybrid
+reasoning model, which keeps reasoning on its own default. To really switch it
+off, store the provider's own "off" option as a flat JSON object:
+
+```bash
+scripts/shunt-models thinking <provider/model> off '{"reasoningEffort":"none"}'
+```
+
+- Tested on Ollama and other `@ai-sdk/openai-compatible` providers:
+  `reasoningEffort: none` in the agent frontmatter cut a qwen model from about
+  7300 to about 4500 output tokens on a large file (280 s to 139 s), and let
+  DeepSeek finish in 95 s where it had timed out at 300 s.
+- This is provider dependent. Verify it per provider and per model: some
+  servers ignore the parameter and some reject it with an error. If a model
+  still reasons after this, or a call starts failing, clear it with
+  `thinking <provider/model> off '{}'` and tell the user the provider does not
+  support it. shunt cannot detect a provider silently ignoring the request.
+- The off options apply to both the bulk-reader and the code-writer agent of
+  that model, and only while thinking is off. `thinking <id> on ...` keeps
+  them stored but renders the on-options instead.
+- The HTTP transport applies the same options (on-options while thinking is
+  on, off options while it is off) to every request body, with each top-level
+  camelCase key turned into snake_case (nested keys pass through unchanged) (`reasoningEffort` becomes `reasoning_effort`).
+  `request_body` and then `role_request_body` are merged on top, so they win
+  over a thinking-derived field.
+- `off '<json>'` requires a JSON object. `off` with no JSON leaves the stored
+  off options unchanged. `off '{}'` removes them. `status` shows
+  `thinking_off=set` or `thinking_off=none` per model.
+- Only set this when the user asks for it or when a model is measurably slow
+  because it reasons. It is opt-in per model, never a global default.
+
+## Editing retry/failover behavior (circuit breaker)
+
+Drive `scripts/shunt-breaker-config`:
+
+```bash
+scripts/shunt-breaker-config show                  # effective values + per-model status
+scripts/shunt-breaker-config set threshold <N>      # positive integer: consecutive failures before pausing a model
+scripts/shunt-breaker-config set cooldown <N>       # non-negative integer, seconds, before retrying a paused model
+scripts/shunt-breaker-config disable                # presets an unreachable threshold; never pauses a model
+scripts/shunt-breaker-config reset                  # deletes the config file, restores hardcoded defaults (3 / 300s)
+```
+
+- `show`'s output always includes numeric `threshold=`/`cooldown_seconds=`
+  lines (useful for debugging), these are part of the default dashboard
+  now, so always state the actual numbers, not just whether they're
+  customized.
+- If `show`'s output contains "not applicable" (no models registry
+  configured yet, legacy single-agent mode, `registry: missing` in the
+  dashboard), tell the user plainly that
+  this doesn't apply yet because no delegate models are configured, and
+  skip showing threshold/cooldown numbers, they'd be misleading in a mode
+  where the breaker never actually engages.
+- Present each value annotated with its default inline, e.g. "Порог: 5 (по
+  умолчанию 3)" / "Threshold: 5 (default: 3)", there is no stored "was
+  this overridden" flag; `show`'s `(default: N)` suffix is a live
+  comparison against the hardcoded constant, not persisted state.
+- Validation (non-integer, threshold < 1, cooldown < 0) happens inside
+  `shunt-breaker-config` itself, surface its error message rather than
+  pre-validating in the skill.
+- "Turn the breaker off" maps to `disable`, not a new flag, it's an
+  extreme-value preset on the same two-field schema, not a new state in
+  the JSON or in `scripts/lib/breaker.sh`'s branching logic.
+
+## Editing the code-write self-fix loop's retry count
+
+Drive `scripts/shunt-codewrite-config`:
+
+```bash
+scripts/shunt-codewrite-config show                              # effective value
+scripts/shunt-codewrite-config set self-fix-retries <N>           # non-negative integer; 0 disables the loop
+scripts/shunt-codewrite-config reset                              # deletes the config file, restores the hardcoded default (1)
+```
+
+- This is a global setting, not per-model or per-role: it controls how many
+  times `skills/code-writer/SKILL.md`'s orchestration re-calls `code-write`
+  on a mechanical build/test failure, for any model with the `code-write`
+  role, before falling back to Claude fixing the file by hand.
+- Present the value annotated with its default, same convention as the
+  breaker: "Повторные попытки self-fix: 2 (по умолчанию 1)" / "Self-fix
+  retries: 2 (default: 1)".
+- `0` is a valid, deliberate value: it means the first generation is never
+  retried automatically, so any build/test failure goes straight to Claude.
+  It is not an error and needs no separate `disable` subcommand.
+- Validation (non-integer, negative) happens inside `shunt-codewrite-config`
+  itself, surface its error message rather than pre-validating in the
+  skill.
+- This setting never touches the circuit breaker's threshold/cooldown or
+  its per-model failure counters; the two are unrelated (see Terminology).
+
+## Precedence, for context if the user asks how a value took effect
+
+Circuit breaker: hardcoded default (3 failures / 300s) → `breaker-config.json`
+(if present) → `SHUNT_BREAKER_THRESHOLD`/`SHUNT_BREAKER_COOLDOWN_SECONDS` env
+vars, which remain the top override for a single session or test run.
+
+Self-fix retry count: hardcoded default (1) → `code-write-self-fix-config.json`
+(if present) → `SHUNT_CODE_WRITE_SELF_FIX_RETRIES` env var, same override relationship.
+

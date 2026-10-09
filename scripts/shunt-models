@@ -8,6 +8,7 @@
 # Usage:
 #   shunt-models list
 #   shunt-models status
+#   shunt-models dashboard   (everything /model-config shows, one call, see lib/dashboard.sh)
 #   shunt-models add <provider/model> [<role>[,<role>...]]
 #   shunt-models remove <provider/model>
 #   shunt-models reorder <provider/model> <1-based position>
@@ -54,6 +55,10 @@ source "$SCRIPT_DIR/lib/providers.sh"
 source "$SCRIPT_DIR/lib/context-detect.sh"
 # shellcheck source=lib/migrate.sh
 source "$SCRIPT_DIR/lib/migrate.sh"
+# shellcheck source=lib/selffix.sh
+source "$SCRIPT_DIR/lib/selffix.sh"
+# shellcheck source=lib/dashboard.sh
+source "$SCRIPT_DIR/lib/dashboard.sh"
 
 # shunt_models_read_or_empty
 # Prints the current registry JSON, or an empty-but-valid-shaped registry
@@ -704,7 +709,7 @@ cmd_key_set() {
 }
 
 subcommand="${1:-}"
-[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|request-body|roles|set-context|detect-context|oversize-policy|sync|provider|key|--migrate-from-opencode> [args...]"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|dashboard|add|remove|reorder|activate|enable|disable|thinking|request-body|roles|set-context|detect-context|oversize-policy|sync|provider|key|--migrate-from-opencode> [args...]"
 shift
 
 case "$subcommand" in
@@ -723,6 +728,7 @@ case "$subcommand" in
   provider) cmd_provider "$@" ;;
   list) cmd_list "$@" ;;
   status) cmd_status "$@" ;;
+  dashboard) cmd_dashboard "$@" ;;
   sync) cmd_sync "$@" ;;
   key) cmd_key "$@" ;;
   --migrate-from-opencode) cmd_migrate_from_opencode "$@" ;;
