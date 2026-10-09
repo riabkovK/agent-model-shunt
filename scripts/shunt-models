@@ -34,10 +34,11 @@
 #   shunt-models provider list           (name, transport, base_url, key type)
 #   shunt-models key set <provider>      (hidden prompt, or one line on piped stdin)
 #   shunt-models key status <provider>   (yes/no and key type, never the value)
-#   shunt-models --migrate-from-opencode [--apply] [--key-storage keyring|env|plaintext|skip]
+#   shunt-models --migrate-from-opencode [--apply [--yes]] [--key-storage keyring|env|plaintext|skip]
 #     Moves the registry's providers from the OpenCode config to the HTTP transport.
 #     Dry run by default (prints the plan). --apply backs up models.json and
-#     providers.json, then writes. A literal apiKey is copied only to the chosen
+#     providers.json, then writes. Without a tty --apply needs --yes (the
+#     caller confirms the dry-run plan first); --yes skips the y/N prompt. A literal apiKey is copied only to the chosen
 #     storage and never shown.
 
 set -euo pipefail

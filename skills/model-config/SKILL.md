@@ -272,6 +272,13 @@ into `key set`, never through chat or tool output. Exit codes:
   and ask the user to run it. It reads the key from a hidden prompt.
 - 1, 2, 6: refused provider, usage error, storing failed. Show the message.
 
+Never read a stored key back, in any form: no secret-tool, kwallet or
+security lookup, no length, no prefix, no comparison with an env variable.
+The only way to check a key is a provider call. After storing, run
+`scripts/shunt-models detect-context <provider/model>` (no `--write`). On an
+auth failure (401/403 hint), tell the user the key was rejected and reopen
+the dialog once.
+
 Confirm with `key status <provider>`. Spell out `<plugin-root>` as the
 absolute path of this plugin (two directories above this SKILL.md, the
 `${CLAUDE_PLUGIN_ROOT}` of the hooks). A `!` command runs in the user's
@@ -322,17 +329,26 @@ scripts/shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>
 
 ```bash
 scripts/shunt-models --migrate-from-opencode                      # dry run, prints the plan
-scripts/shunt-models --migrate-from-opencode --apply [--key-storage keyring|env|plaintext|skip]
+scripts/shunt-models --migrate-from-opencode --apply --yes [--key-storage keyring|env|plaintext|skip]
 ```
 
-Always run the dry run first and show the user the plan. It reads
-`opencode.json` and covers only providers used by a registry model. Per
-provider it sets `transport: http`, `base_url` and the key. Per model it turns a
+Never dry run and apply in the same step. The order is fixed:
+
+1. Run the dry run.
+2. Show the user the plan, summarized per provider and per model, in the
+   user's language.
+3. Ask for confirmation with AskUserQuestion.
+4. Only after a yes, run `--apply --yes`.
+
+Without a tty, `--apply` refuses unless `--yes` is given. On a tty it asks
+"Proceed? [y/N]" unless `--yes` is given. The dry run reads `opencode.json`
+and covers only providers used by a registry model. Per provider it sets
+`transport: http`, `base_url` and the key. Per model it turns a
 `reasoningEffort` into `request_body {"reasoning_effort": ...}` (only when
 `request_body` is unset) and fills `context_tokens` (detected from the provider,
-else the opencode `limit.context`, labelled "not verified"). `--apply` asks
-"Proceed? [y/N]" on a tty and backs up `models.json` and `providers.json`
-(`.bak-<timestamp>`) first. Running it again reports nothing to do.
+else the opencode `limit.context`, labelled "not verified"). `--apply` backs up
+`models.json` and `providers.json` (`.bak-<timestamp>`) first. Running it
+again reports nothing to do.
 
 Key storage for a literal `apiKey`: `keyring` (default when a backend exists),
 `env` (`SHUNT_<PROVIDER>_KEY`, the user must export it, nothing is copied),

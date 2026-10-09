@@ -146,3 +146,44 @@ stored_key() { jq -r '.providers.plain.key.ref // ""' "$SHUNT_PROVIDERS_FILE"; }
   run "$DIALOG_BIN"
   [ "$status" -eq 2 ]
 }
+
+@test "a key wrapped in double quotes is stored unquoted" {
+  STUB_KEY="\"$SECRET\"" run --separate-stderr "$DIALOG_BIN" plain
+  assert_success
+  [ "$(stored_key)" = "$SECRET" ]
+}
+
+@test "a key wrapped in single quotes is stored unquoted" {
+  STUB_KEY="'$SECRET'" run --separate-stderr "$DIALOG_BIN" plain
+  assert_success
+  [ "$(stored_key)" = "$SECRET" ]
+}
+
+@test "surrounding whitespace, tabs and CR are trimmed, also around quotes" {
+  STUB_KEY=$' \t "'"$SECRET"$'" \r' run --separate-stderr "$DIALOG_BIN" plain
+  assert_success
+  [ "$(stored_key)" = "$SECRET" ]
+}
+
+@test "internal and unmatched quotes are preserved" {
+  STUB_KEY="ab\"cd'ef" run "$DIALOG_BIN" plain
+  assert_success
+  [ "$(stored_key)" = "ab\"cd'ef" ]
+  STUB_KEY="\"abc'" run "$DIALOG_BIN" plain
+  assert_success
+  [ "$(stored_key)" = "\"abc'" ]
+}
+
+@test "a key that is only whitespace or empty quotes counts as no key" {
+  STUB_KEY=$'  \t ' run "$DIALOG_BIN" plain
+  [ "$status" -eq 3 ]
+  STUB_KEY='""' run "$DIALOG_BIN" plain
+  [ "$status" -eq 3 ]
+  [ -z "$(stored_key)" ]
+}
+
+@test "a quoted key never appears in output" {
+  STUB_KEY="\"$SECRET\"" run --separate-stderr "$DIALOG_BIN" plain
+  [[ "$output" != *"$SECRET"* ]]
+  [[ "$stderr" != *"$SECRET"* ]]
+}

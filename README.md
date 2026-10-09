@@ -108,7 +108,9 @@ In this order (the `/model-config` skill walks through it):
 
 Already on OpenCode providers? `scripts/shunt-models --migrate-from-opencode`
 is a dry run that prints the plan. `--migrate-from-opencode --apply` writes it
-and backs up `models.json` and `providers.json` first. See
+and backs up `models.json` and `providers.json` first. It asks y/N in a
+terminal. Without a terminal (for example when Claude runs it) it refuses
+unless `--yes` is passed. See
 [Key storage](#key-storage-http-transport) for where keys go.
 
 ### 2. Create the `bulk-reader` OpenCode agent (opencode transport)

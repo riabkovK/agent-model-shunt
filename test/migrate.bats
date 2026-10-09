@@ -86,7 +86,7 @@ no_secret_anywhere_but() {
 
 @test "apply with keyring writes providers and models, backs up, key only via stdin" {
   before=$(cat "$SHUNT_MODELS_FILE")
-  run --separate-stderr migrate --apply --key-storage keyring
+  run --separate-stderr migrate --apply --yes --key-storage keyring
   assert_success
   refute_output --partial "$SECRET"
   [ "$(cat "$FAKE_STORE")" = "$SECRET" ]
@@ -102,7 +102,7 @@ no_secret_anywhere_but() {
 }
 
 @test "apply with plaintext stores the key mode 600 and warns" {
-  run --separate-stderr migrate --apply --key-storage plaintext
+  run --separate-stderr migrate --apply --yes --key-storage plaintext
   assert_success
   refute_output --partial "$SECRET"
   assert_output --partial "plain text"
@@ -113,7 +113,7 @@ no_secret_anywhere_but() {
 }
 
 @test "apply with env uses SHUNT_<PROVIDER>_KEY and copies nothing" {
-  run --separate-stderr migrate --apply --key-storage env
+  run --separate-stderr migrate --apply --yes --key-storage env
   assert_success
   assert_output --partial "SHUNT_ACME_KEY"
   run jq -c '.providers.acme.key' "$SHUNT_PROVIDERS_FILE"
@@ -123,7 +123,7 @@ no_secret_anywhere_but() {
 
 @test "apply with skip leaves the transport opencode, key pending, models untouched" {
   before=$(cat "$SHUNT_MODELS_FILE")
-  run --separate-stderr migrate --apply --key-storage skip
+  run --separate-stderr migrate --apply --yes --key-storage skip
   assert_success
   assert_output --partial "key set acme"
   run jq -c '.providers.acme | [.transport, .key.type]' "$SHUNT_PROVIDERS_FILE"
@@ -131,13 +131,13 @@ no_secret_anywhere_but() {
   [ "$(cat "$SHUNT_MODELS_FILE")" = "$before" ]
   no_secret_anywhere_but ""
   # a second run has nothing new to write
-  run --separate-stderr migrate --apply --key-storage skip
+  run --separate-stderr migrate --apply --yes --key-storage skip
   assert_output --partial "nothing to do"
 }
 
 @test "{env:NAME} becomes an env key with that ref" {
   write_opencode '{env:MY_ACME_TOKEN}'
-  run --separate-stderr migrate --apply
+  run --separate-stderr migrate --apply --yes
   assert_success
   run jq -c '.providers.acme | [.transport, .key]' "$SHUNT_PROVIDERS_FILE"
   assert_output '["http",{"type":"env","ref":"MY_ACME_TOKEN"}]'
@@ -145,14 +145,14 @@ no_secret_anywhere_but() {
 
 @test "no apiKey gives key type none" {
   write_opencode -
-  run --separate-stderr migrate --apply
+  run --separate-stderr migrate --apply --yes
   assert_success
   run jq -c '.providers.acme.key' "$SHUNT_PROVIDERS_FILE"
   assert_output '{"type":"none"}'
 }
 
 @test "non-tty without --key-storage treats a literal key as skip and says so" {
-  run --separate-stderr migrate --apply
+  run --separate-stderr migrate --apply --yes
   assert_success
   [[ "$stderr" == *"treating it as skip"* ]]
   run jq -r '.providers.acme.transport' "$SHUNT_PROVIDERS_FILE"
@@ -162,7 +162,7 @@ no_secret_anywhere_but() {
 
 @test "a bad base_url skips the provider with a message" {
   write_opencode - "ftp://api.acme.test/v1"
-  run --separate-stderr migrate --apply
+  run --separate-stderr migrate --apply --yes
   assert_success
   assert_output --partial "skipped"
   assert_output --partial "scheme"
@@ -170,9 +170,9 @@ no_secret_anywhere_but() {
 }
 
 @test "second run reports nothing to do" {
-  run --separate-stderr migrate --apply --key-storage keyring
+  run --separate-stderr migrate --apply --yes --key-storage keyring
   assert_success
-  run --separate-stderr migrate --apply --key-storage keyring
+  run --separate-stderr migrate --apply --yes --key-storage keyring
   assert_success
   assert_output --partial "nothing to do"
   run migrate
@@ -182,7 +182,7 @@ no_secret_anywhere_but() {
 @test "unrelated providers, existing request_body and context_tokens are preserved" {
   jq -n '{version:1,providers:{keep:{transport:"http",base_url:"https://k.test/v1",key:{type:"none"}}}}' >"$SHUNT_PROVIDERS_FILE"
   jq '.models[0] += {request_body:{"reasoning_effort":"none"},context_tokens:1000}' "$SHUNT_MODELS_FILE" >"$TEST_TMPDIR/m" && mv "$TEST_TMPDIR/m" "$SHUNT_MODELS_FILE"
-  run --separate-stderr migrate --apply --key-storage env
+  run --separate-stderr migrate --apply --yes --key-storage env
   assert_success
   run jq -c '.providers.keep' "$SHUNT_PROVIDERS_FILE"
   assert_output '{"transport":"http","base_url":"https://k.test/v1","key":{"type":"none"}}'
@@ -194,7 +194,7 @@ no_secret_anywhere_but() {
 @test "context comes from the provider when it reports one" {
   write_opencode -
   printf '%s' '{"id":"m1","context_length":131072}' >"$FAKE_ROUTES/v1_models_m1"
-  run --separate-stderr migrate --apply
+  run --separate-stderr migrate --apply --yes
   assert_success
   assert_output --partial "131072 (detected from the provider)"
   run jq '.models[0].context_tokens' "$SHUNT_MODELS_FILE"
@@ -204,7 +204,7 @@ no_secret_anywhere_but() {
 @test "reasoning effort in the registry thinking_options is converted" {
   write_opencode -
   jq '.models[0] += {thinking:true,thinking_options:{reasoningEffort:"high"}}' "$SHUNT_MODELS_FILE" >"$TEST_TMPDIR/m" && mv "$TEST_TMPDIR/m" "$SHUNT_MODELS_FILE"
-  run --separate-stderr migrate --apply
+  run --separate-stderr migrate --apply --yes
   assert_success
   run jq -c '.models[0].request_body' "$SHUNT_MODELS_FILE"
   assert_output '{"reasoning_effort":"high"}'
@@ -213,4 +213,20 @@ no_secret_anywhere_but() {
 @test "an unknown --key-storage is refused" {
   run --separate-stderr migrate --key-storage vault
   assert_failure
+}
+
+@test "apply without a tty and without --yes refuses and writes nothing" {
+  before=$(cat "$SHUNT_MODELS_FILE")
+  run --separate-stderr migrate --apply --key-storage keyring
+  assert_failure
+  [[ "$stderr" == *"--yes"* ]]
+  [ "$(cat "$SHUNT_MODELS_FILE")" = "$before" ]
+  [ -z "$(ls "$SHUNT_MODELS_FILE".bak-* 2>/dev/null)" ]
+  [ ! -e "$FAKE_STORE" ]
+}
+
+@test "apply with --yes applies without a tty" {
+  run --separate-stderr migrate --apply --yes --key-storage keyring
+  assert_success
+  [ "$(cat "$FAKE_STORE")" = "$SECRET" ]
 }

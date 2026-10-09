@@ -133,6 +133,18 @@ if [ "$rc" -ne 0 ] || [ -z "$key" ]; then
   exit "$EXIT_NO_KEY"
 fi
 
+# Pasted keys often carry whitespace or one pair of wrapping quotes. Strip both.
+key="${key#"${key%%[![:space:]]*}"}"
+key="${key%"${key##*[![:space:]]}"}"
+case "$key" in
+  \"*\" | \'*\') [ "${#key}" -ge 2 ] && key="${key:1:${#key}-2}" ;;
+esac
+if [ -z "$key" ]; then
+  unset key
+  echo "shunt: no key entered, nothing stored." >&2
+  exit "$EXIT_NO_KEY"
+fi
+
 store_rc=0
 printf '%s\n' "$key" | "$MODELS_BIN" key set "$provider" >/dev/null 2>&1 || store_rc=$?
 unset key

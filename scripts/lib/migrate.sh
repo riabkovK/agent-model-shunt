@@ -290,17 +290,18 @@ _migrate_has_changes() {
     || [ "$(jq -S -c . "$SHUNT_MODELS_FILE")" != "$(_migrate_models_doc | jq -S -c .)" ]
 }
 
-# cmd_migrate_from_opencode [--apply] [--key-storage keyring|env|plaintext|skip]
+# cmd_migrate_from_opencode [--apply [--yes]] [--key-storage keyring|env|plaintext|skip]
 cmd_migrate_from_opencode() {
-  local apply=0 flag="" answer
+  local apply=0 yes=0 flag="" answer
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --apply) apply=1; shift ;;
+      --yes) yes=1; shift ;;
       --key-storage)
         [ -n "${2:-}" ] && case " $MIGRATE_STORAGE_CHOICES " in *" $2 "*) true ;; *) false ;; esac \
           || shunt_report_error "--key-storage takes one of: $MIGRATE_STORAGE_CHOICES."
         flag="$2"; shift 2 ;;
-      *) shunt_report_error "usage: shunt-models --migrate-from-opencode [--apply] [--key-storage $(echo "$MIGRATE_STORAGE_CHOICES" | tr ' ' '|')]" ;;
+      *) shunt_report_error "usage: shunt-models --migrate-from-opencode [--apply [--yes]] [--key-storage $(echo "$MIGRATE_STORAGE_CHOICES" | tr ' ' '|')]" ;;
     esac
   done
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
@@ -318,7 +319,11 @@ cmd_migrate_from_opencode() {
     echo "shunt: re-run with --apply to write it (a backup of models.json and providers.json is made first)."
     return 0
   fi
-  if [ -t 0 ]; then
+  if [ "$yes" != 1 ]; then
+    if [ ! -t 0 ]; then
+      echo "shunt: refusing to apply without a terminal or --yes. Show the dry-run plan above to the user, and re-run with --apply --yes after they confirm." >&2
+      exit 1
+    fi
     read -r -p "Proceed? [y/N] " answer
     case "$answer" in y | Y | yes | YES) ;; *) echo "shunt: aborted, nothing changed."; return 0 ;; esac
   fi
