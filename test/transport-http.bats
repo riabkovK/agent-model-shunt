@@ -345,14 +345,14 @@ write_registry_thinking() {
   done
 }
 
-@test "401 and 403 map to the AUTH status with a check-key message" {
+@test "401 and 403 map to the AUTH status with a re-enter-key message" {
   local code
   for code in 401 403; do
     FAKE_CURL_CODE=$code run --separate-stderr shunt_transport_invoke "$AGENT" "q"
     [ "$status" -eq "$SHUNT_TRY_INVOKE_AUTH" ]
     [[ "$stderr" == *"auth failed for provider acme"* ]]
     # Absolute path: hooks run in the user's project, not the plugin root.
-    [[ "$stderr" == *"$REPO_ROOT/scripts/shunt-models key status acme"* ]]
+    [[ "$stderr" == *"/model-config"* ]]
     [[ "$stderr" == *"! $REPO_ROOT/scripts/shunt-models key set acme"* ]]
     [[ "$stderr" != *"$SECRET"* ]]
   done

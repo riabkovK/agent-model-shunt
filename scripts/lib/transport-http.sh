@@ -342,7 +342,7 @@ _shunt_http_check_reply() {
   case "$http_code" in
     2??) ;;
     401 | 403)
-      echo "shunt: auth failed for provider $provider. Check the key with: $_SHUNT_HTTP_MODELS_CMD key status $provider (set it with: ! $_SHUNT_HTTP_MODELS_CMD key set $provider)" >&2
+      echo "shunt: auth failed for provider $provider: the key was rejected or is missing. Re-enter it through /model-config (it opens a password window), or without a desktop: ! $_SHUNT_HTTP_MODELS_CMD key set $provider" >&2
       return "$SHUNT_TRY_INVOKE_AUTH"
       ;;
     400 | 404 | 413)

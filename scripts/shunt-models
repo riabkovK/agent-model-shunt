@@ -549,7 +549,7 @@ cmd_provider_set() {
   echo "shunt: provider '$name' saved ($(echo "$updated" | jq -r --arg n "$name" \
     '.providers[$n] | "transport \(.transport // "opencode"), key \(.key.type)"'))."
   case "$_shunt_key_type" in
-    keyring | plaintext) echo "shunt: store the key yourself (hidden prompt, never paste it into chat): ! $SHUNT_MODELS_HINT_CMD key set $name" ;;
+    keyring | plaintext) echo "shunt: enter the key through /model-config (it opens a password window), or without a desktop: ! $SHUNT_MODELS_HINT_CMD key set $name. Never paste it into chat." ;;
   esac
 }
 
