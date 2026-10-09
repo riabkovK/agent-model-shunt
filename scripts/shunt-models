@@ -27,6 +27,11 @@
 #   shunt-models sync
 #   shunt-models key set <provider>      (hidden prompt, or one line on piped stdin)
 #   shunt-models key status <provider>   (yes/no and key type, never the value)
+#   shunt-models --migrate-from-opencode [--apply] [--key-storage keyring|env|plaintext|skip]
+#     Moves the registry's providers from the OpenCode config to the HTTP transport.
+#     Dry run by default (prints the plan). --apply backs up models.json and
+#     providers.json, then writes. A literal apiKey is copied only to the chosen
+#     storage and never shown.
 
 set -euo pipefail
 
@@ -39,6 +44,8 @@ source "$SCRIPT_DIR/lib/models.sh"
 source "$SCRIPT_DIR/lib/providers.sh"
 # shellcheck source=lib/context-detect.sh
 source "$SCRIPT_DIR/lib/context-detect.sh"
+# shellcheck source=lib/migrate.sh
+source "$SCRIPT_DIR/lib/migrate.sh"
 
 # shunt_models_read_or_empty
 # Prints the current registry JSON, or an empty-but-valid-shaped registry
@@ -537,7 +544,7 @@ cmd_key_set() {
 }
 
 subcommand="${1:-}"
-[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|request-body|roles|set-context|detect-context|sync|key> [args...]"
+[ -n "$subcommand" ] || shunt_report_error "usage: shunt-models <list|status|add|remove|reorder|activate|enable|disable|thinking|request-body|roles|set-context|detect-context|sync|key|--migrate-from-opencode> [args...]"
 shift
 
 case "$subcommand" in
@@ -556,5 +563,6 @@ case "$subcommand" in
   status) cmd_status "$@" ;;
   sync) cmd_sync "$@" ;;
   key) cmd_key "$@" ;;
+  --migrate-from-opencode) cmd_migrate_from_opencode "$@" ;;
   *) shunt_report_error "unknown subcommand: $subcommand" ;;
 esac

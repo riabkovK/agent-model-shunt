@@ -222,6 +222,31 @@ instead of 45s. So for an Ollama model, offer
 `request-body <id> --role bulk-read '{"reasoning_effort":"none"}'`. Code-write
 thinking is not measured, so do not change its default.
 
+## Migrating providers from OpenCode to the HTTP transport
+
+```bash
+scripts/shunt-models --migrate-from-opencode                      # dry run, prints the plan
+scripts/shunt-models --migrate-from-opencode --apply [--key-storage keyring|env|plaintext|skip]
+```
+
+Always run the dry run first and show the user the plan. It reads
+`opencode.json` and covers only providers used by a registry model. Per
+provider it sets `transport: http`, `base_url` and the key. Per model it turns a
+`reasoningEffort` into `request_body {"reasoning_effort": ...}` (only when
+`request_body` is unset) and fills `context_tokens` (detected from the provider,
+else the opencode `limit.context`, labelled "not verified"). `--apply` asks
+"Proceed? [y/N]" on a tty and backs up `models.json` and `providers.json`
+(`.bak-<timestamp>`) first. Running it again reports nothing to do.
+
+Key storage for a literal `apiKey`: `keyring` (default when a backend exists),
+`env` (`SHUNT_<PROVIDER>_KEY`, the user must export it, nothing is copied),
+`plaintext` (in `providers.json`, mode 600, with a warning) or `skip` (the
+provider stays on opencode, then run `! scripts/shunt-models key set <provider>`
+and re-run). `{env:NAME}` becomes an env key and no `apiKey` becomes type none.
+Without a tty and without `--key-storage` a literal key counts as skip. The key
+is never shown, logged or put in a command line, and never removed from
+`opencode.json`, so do not ask for or print it.
+
 ## Thinking/extended-reasoning, per model (off by default)
 
 Delegate models that support a "thinking" mode have it off by default —
