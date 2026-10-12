@@ -145,7 +145,7 @@ _mc_run() {
   done <<<"$ids"
 
   local duration_ms=$(( $(_mc_now_ms) - start_ms ))
-  _mc_emit_ok "$total" "$killed" "$survived" "$invalid" "$duration_ms" "${survived_ids[@]}"
+  _mc_emit_ok "$total" "$killed" "$survived" "$invalid" "$duration_ms" ${survived_ids[@]+"${survived_ids[@]}"}
 }
 
 # _mc_validate <gotest-dir> <run-dir-name> <source-basename>: exits 2 with a

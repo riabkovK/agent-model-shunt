@@ -77,11 +77,9 @@ _shunt_http_add_chunk() {
 # is the writer here, so the pipe never ends in SIGPIPE. Fails when head cannot
 # read the file (status 141 when a later reader closes the pipe early).
 _shunt_http_lines() {
-  local -a st
-  head -n "$3" "$1" | tail -n "+$2"
-  st=("${PIPESTATUS[@]}")
-  [ "${st[0]}" -eq 0 ] || return "${st[0]}"
-  return "${st[1]}"
+  # pipefail in a subshell instead of PIPESTATUS: a DEBUG trap on bash 3.2
+  # clears PIPESTATUS before it can be read.
+  ( set -o pipefail; head -n "$3" "$1" | tail -n "+$2" )
 }
 
 # _shunt_http_line_ranges <file> <budget>
@@ -288,17 +286,19 @@ _shunt_http_chunk_note() {
 # was started with SIGPIPE ignored. Both are fine, as the readability of the
 # source is checked up front. The final head -c writes the file and must succeed.
 _shunt_http_write_chunk() {
-  local i="$1" f="${_CH_FILE[$1]}" s
-  local -a st
-  [ -r "$f" ] || { echo "shunt: cannot read $f to cut a chunk from it." >&2; return 1; }
+  local i="$1" f="${_CH_FILE[$1]}" got
+  [ -f "$f" ] && [ -r "$f" ] || { echo "shunt: cannot read $f to cut a chunk from it." >&2; return 1; }
   if [ "${_CH_OFF[i]}" -ge 0 ]; then
+    # Only the status of the last stage counts, see above. No PIPESTATUS or
+    # pipefail: a reader closing the pipe early must not fail the chunk.
+    # The planned length is exact, so the written size is the real check.
     _shunt_http_lines "$f" "${_CH_START[i]}" "${_CH_START[i]}" 2>/dev/null | tail -c +$(( _CH_OFF[i] + 1 )) 2>/dev/null \
-      | head -c "${_CH_LEN[i]}" >"$2"
-    st=("${PIPESTATUS[@]}")
-    for s in "${st[0]}" "${st[1]}"; do
-      [ "$s" -eq 0 ] || [ "$s" -eq 1 ] || [ "$s" -eq 141 ] || return 1
-    done
-    [ "${st[2]}" -eq 0 ]
+      | head -c "${_CH_LEN[i]}" >"$2" || return 1
+    got=$(wc -c <"$2" | tr -d '[:space:]')
+    if [ "$got" != "${_CH_LEN[i]}" ]; then
+      echo "shunt: reading $f gave $got bytes, expected ${_CH_LEN[i]} bytes (changed or unreadable after planning)." >&2
+      return 1
+    fi
   else
     _shunt_http_lines "$f" "${_CH_START[i]}" "${_CH_END[i]}" >"$2"
   fi

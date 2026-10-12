@@ -185,9 +185,10 @@ write_go() {
   # test image's busybox diff defaults to unified-diff markers (---/+++/@@)
   # instead of the classic </> ed-style markers, so a portable line-count
   # comparison is used instead of grepping diff's output.
-  local src_lines out_lines idx changed=0
-  mapfile -t src_lines <"$src"
-  mapfile -t out_lines <"$out"
+  local -a src_lines=() out_lines=()
+  local _l idx changed=0
+  while IFS= read -r _l || [ -n "$_l" ]; do src_lines+=("$_l"); done <"$src"
+  while IFS= read -r _l || [ -n "$_l" ]; do out_lines+=("$_l"); done <"$out"
   assert_equal "${#out_lines[@]}" "${#src_lines[@]}"
   for ((idx = 0; idx < ${#src_lines[@]}; idx++)); do
     if [ "${src_lines[idx]}" != "${out_lines[idx]}" ]; then
@@ -205,8 +206,8 @@ write_go() {
   assert_success
   [ -f "$out" ]
 
-  local out_lines
-  mapfile -t out_lines <"$out"
+  local _l; local -a out_lines=()
+  while IFS= read -r _l || [ -n "$_l" ]; do out_lines+=("$_l"); done <"$out"
   assert_equal "${out_lines[1]}" $'\tif !(ready) {'
 }
 

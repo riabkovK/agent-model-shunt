@@ -48,6 +48,31 @@ shunt_provider_name_refuse() {
 SHUNT_PROVIDERS_LOCK_TIMEOUT="${SHUNT_PROVIDERS_LOCK_TIMEOUT:-10}"
 _SHUNT_PROVIDERS_LOCK_DEPTH=0 _SHUNT_PROVIDERS_LOCK_FD="" _SHUNT_PROVIDERS_LOCK_DIR=""
 
+# _shunt_open_lock_fd <lockfile>
+# Opens <lockfile> for append on a file descriptor that is not in use and sets
+# _SHUNT_PROVIDERS_LOCK_FD to it. Bash 4.1+ allocates one. Older bash scans
+# fds 8 to 19 for a free one, so a caller's open fd is never clobbered.
+_shunt_open_lock_fd() {
+  local lock="$1" n
+  if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 1 ]; }; then
+    eval 'exec {_SHUNT_PROVIDERS_LOCK_FD}>>"$lock"' || { _SHUNT_PROVIDERS_LOCK_FD=""; return 1; }
+    return 0
+  fi
+  for n in 8 9 10 11 12 13 14 15 16 17 18 19; do
+    if ! { true >&"$n"; } 2>/dev/null; then
+      eval 'exec '"$n"'>>"$lock"' || return 1
+      _SHUNT_PROVIDERS_LOCK_FD=$n
+      return 0
+    fi
+  done
+  return 1
+}
+
+_shunt_close_lock_fd() {
+  eval "exec ${_SHUNT_PROVIDERS_LOCK_FD}>&-"
+  _SHUNT_PROVIDERS_LOCK_FD=""
+}
+
 # _shunt_guard_install <prefix> <cleanup-command>
 # Runs <cleanup-command> when the shell exits, including on INT, TERM and HUP,
 # and then still runs the caller's own EXIT trap. The caller's EXIT, INT, TERM
@@ -67,11 +92,14 @@ _shunt_guard_install() {
   done
   # The trap text only acts in the process that installed it: a subshell that
   # inherits it (trap -p reports the parent's traps) must not run the cleanup.
-  local pid="${BASHPID:-$$}"
+  # BASHPID needs bash 4. Without it, $$ plus BASH_SUBSHELL (bash 3.0+, one
+  # more per subshell level) tells the installing shell from its subshells.
+  # It must be expanded inline: a command substitution would add a level.
+  local pid="${BASHPID:-$$.$BASH_SUBSHELL}"
   # shellcheck disable=SC2064 # pid and the commands are meant to be expanded now
   # The caller's trap goes on its own lines: a trailing comment in it must not
   # swallow the closing "fi".
-  trap "if [ \"\${BASHPID:-\$\$}\" = $pid ]; then
+  trap "if [ \"\${BASHPID:-\$\$.\$BASH_SUBSHELL}\" = $pid ]; then
 $cleanup
 ${old_exit:+$old_exit
 }fi" EXIT
@@ -185,20 +213,19 @@ shunt_providers_lock() {
   local lock="$SHUNT_PROVIDERS_FILE.lock" tries
   mkdir -p "$(dirname "$SHUNT_PROVIDERS_FILE")" || return 1
   tries=$((SHUNT_PROVIDERS_LOCK_TIMEOUT * 10))
-  # flock on a fixed fd works on every bash. The `{fd}>` form needs bash 4.1.
+  # The lock fd is picked by _shunt_open_lock_fd so a caller's fds survive.
   # Polls with -n instead of -w: BusyBox flock has no -w.
   if command -v flock >/dev/null 2>&1; then
-    exec 8>>"$lock" || return 1
-    until flock -x -n 8; do
+    _shunt_open_lock_fd "$lock" || return 1
+    until flock -x -n "$_SHUNT_PROVIDERS_LOCK_FD"; do
       tries=$((tries - 1))
       if [ "$tries" -le 0 ]; then
-        exec 8>&-
+        _shunt_close_lock_fd
         echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE." >&2
         return 1
       fi
       sleep 0.1
     done
-    _SHUNT_PROVIDERS_LOCK_FD=8
   else
     until mkdir "$lock.d" 2>/dev/null; do
       tries=$((tries - 1))
@@ -219,8 +246,7 @@ shunt_providers_unlock() {
   _SHUNT_PROVIDERS_LOCK_DEPTH=$((_SHUNT_PROVIDERS_LOCK_DEPTH - 1))
   [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -eq 0 ] || return 0
   if [ -n "$_SHUNT_PROVIDERS_LOCK_FD" ]; then
-    exec 8>&-
-    _SHUNT_PROVIDERS_LOCK_FD=""
+    _shunt_close_lock_fd
   elif [ -n "$_SHUNT_PROVIDERS_LOCK_DIR" ]; then
     rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null
     _shunt_guard_remove _SHUNT_PL

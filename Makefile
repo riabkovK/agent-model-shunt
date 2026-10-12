@@ -1,6 +1,7 @@
-.PHONY: test test-docker test-local
+.PHONY: test test-docker test-local test-bash32
 
 TEST_IMAGE := agent-model-shunt-tests
+TEST_IMAGE_BASH32 := agent-model-shunt-tests-bash32
 
 # Default: run in a container (bats/bats + jq) so contributors and CI don't
 # need bats-core installed on the host. Falls back to a local `bats` binary
@@ -21,3 +22,8 @@ test-docker:
 
 test-local:
 	bats test
+
+# The same suite under bash 3.2 (the macOS system bash).
+test-bash32:
+	docker build -q -t $(TEST_IMAGE_BASH32) -f test/Dockerfile.bash32 .
+	docker run --rm -v "$(CURDIR):/code" -w /code $(TEST_IMAGE_BASH32) -j 4 test

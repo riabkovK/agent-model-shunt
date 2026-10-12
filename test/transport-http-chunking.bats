@@ -461,6 +461,23 @@ rebuild_from_plan() {
   [[ "$stderr" == *"cannot read"* ]]
 }
 
+@test "write_chunk: a directory as the source is rejected" {
+  mkdir "$TEST_TMPDIR/d"
+  _CH_FILE[0]="$TEST_TMPDIR/d" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=100 _CH_OFF[0]=2
+  run --separate-stderr _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  assert_failure
+  [[ "$stderr" == *"cannot read"* ]]
+}
+
+@test "write_chunk: a file truncated after planning fails instead of writing a short chunk" {
+  local f="$TEST_TMPDIR/short.txt"
+  printf 'abcdef\n' >"$f"
+  _CH_FILE[0]="$f" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=100 _CH_OFF[0]=2
+  run --separate-stderr _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  assert_failure
+  [[ "$stderr" == *"expected 100 bytes"* ]]
+}
+
 @test "plan_long_line fails when the line cannot be read" {
   run _shunt_http_plan_long_line "$TEST_TMPDIR/missing.txt" 1 100
   assert_failure

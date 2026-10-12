@@ -80,7 +80,9 @@ write_providers() {
 
 # ok_body <text> <finish_reason> [extra-json-object-merged-into-root]
 ok_body() {
-  jq -n --arg t "$1" --arg f "$2" --argjson x "${3:-{\}}" \
+  local extra="${3:-}"
+  [ -n "$extra" ] || extra='{}'
+  jq -n --arg t "$1" --arg f "$2" --argjson x "$extra" \
     '{choices:[{message:{role:"assistant",content:$t},finish_reason:$f}],
       usage:{prompt_tokens:12,completion_tokens:5}} + $x' >"$FAKE_CURL_BODY"
 }
