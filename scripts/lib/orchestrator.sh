@@ -23,7 +23,11 @@ SHUNT_ORCHESTRATOR_DEFAULT_MIN_LINES=350
 SHUNT_ORCHESTRATOR_ROLE_MAX_CHARS=32
 
 # Plugin root, derived without a subshell.
-_SHUNT_ORCHESTRATOR_ROOT="${BASH_SOURCE[0]%/*}/../.."
+_SHUNT_ORCHESTRATOR_SELF="${BASH_SOURCE[0]}"
+case "$_SHUNT_ORCHESTRATOR_SELF" in
+  */*) _SHUNT_ORCHESTRATOR_ROOT="${_SHUNT_ORCHESTRATOR_SELF%/*}/../.." ;;
+  *) _SHUNT_ORCHESTRATOR_ROOT="./../.." ;;
+esac
 
 # Results of the last _shunt_orchestrator_load call.
 _SHUNT_ORCHESTRATOR_ROLE=""
@@ -61,11 +65,18 @@ _shunt_orchestrator_sanitize() {
   wj=$(printf '\342\201[\240-\257]')
   bom=$(printf '\357\273\277')
   tag=$(printf '\363\240[\200-\201][\200-\277]')
+  # Order matters. Control bytes are deleted first (ESC and BEL kept for the
+  # ANSI pass), so one inserted inside a UTF-8 sequence cannot hide it from a
+  # later pass. ESC and BEL are deleted just before the invisible-code-point
+  # pass, which loops until nothing changes so nested splits cannot reassemble.
   head -c $((SHUNT_ORCHESTRATOR_MAX_FILE_BYTES + 1)) <"$1" | tr '\t' ' ' | tr -d '\r' \
+    | tr -d '\000-\006\010\013-\032\034-\037\177' \
     | LC_ALL=C sed -e "s|${esc}\\][^${esc}${bel}]*${bel}||g" -e "s|${esc}\\][^${esc}${bel}]*${esc}\\\\||g" \
       -e "s|${esc}\\[[0-9;?]*[ -/]*[@-~]||g" -e "s|${esc}[@-Z\\\\-_]||g" \
+    | tr -d '\033\007' \
+    | LC_ALL=C sed -e ':again' \
       -e "s|${c1}||g" -e "s|${zw}||g" -e "s|${sep}||g" -e "s|${wj}||g" -e "s|${bom}||g" -e "s|${tag}||g" \
-    | tr -d '\000-\010\013-\037\177'
+      -e 't again'
 }
 
 # _shunt_orchestrator_load <file> [min_lines]
@@ -126,6 +137,7 @@ EOT
 # shunt_orchestrator_role <file>
 # Prints the fragment's role (empty line if it declares none). Non-zero and no
 # output when the fragment is invalid.
+# Public API for tests and tooling (custom skills later), not used by the hook.
 shunt_orchestrator_role() {
   _shunt_orchestrator_load "$1" || return 1
   printf '%s\n' "$_SHUNT_ORCHESTRATOR_ROLE"
@@ -134,6 +146,7 @@ shunt_orchestrator_role() {
 # shunt_orchestrator_body <file> [min_lines]
 # Prints the sanitized bullet lines with {{MIN_LINES}} substituted. Non-zero
 # and no output when the fragment is invalid.
+# Public API for tests and tooling (custom skills later), not used by the hook.
 shunt_orchestrator_body() {
   _shunt_orchestrator_load "$1" "${2:-}" || return 1
   printf '%s\n' "$_SHUNT_ORCHESTRATOR_BODY"
@@ -153,16 +166,45 @@ shunt_orchestrator_user_dir() {
   printf '%s\n' "${SHUNT_ORCHESTRATOR_DIR:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/agent-model-shunt/orchestrator.d}"
 }
 
+SHUNT_ORCHESTRATOR_MAX_ANCESTORS=64
+
+# _shunt_orchestrator_loose <path> [sticky_ok]
+# True when <path> is group- or world-writable. With a second argument, a
+# directory with the sticky bit (like /tmp) does not count.
+_shunt_orchestrator_loose() {
+  local out
+  if [ -n "${2:-}" ]; then
+    out=$(find "$1" -prune \( -perm -020 -o -perm -002 \) ! -perm -1000 -print 2>/dev/null)
+  else
+    out=$(find "$1" -prune \( -perm -020 -o -perm -002 \) -print 2>/dev/null)
+  fi
+  [ -n "$out" ]
+}
+
 # _shunt_orchestrator_dir_trusted <dir>
 # True when <dir> is an absolute path owned by the current user and not
-# group- or world-writable. Fragments are injected as trusted rules, so a
-# relative path (resolved against the project) or a shared directory is refused.
+# group- or world-writable, and no ancestor up to / is group- or
+# world-writable without the sticky bit. Fragments are injected as trusted
+# rules, so a relative path (resolved against the project) or a shared
+# directory is refused. Ancestors are walked textually and tested through
+# "<ancestor>/." so a symlinked ancestor is judged by its target. The walk is
+# bounded, and a deeper path is refused.
 _shunt_orchestrator_dir_trusted() {
-  local d="$1" loose
+  local d="$1" p n=0
   case "$d" in /*) ;; *) return 1 ;; esac
   [ -d "$d" ] && [ -r "$d" ] && [ -O "$d" ] || return 1
-  loose=$(find "$d" -prune \( -perm -020 -o -perm -002 \) -print 2>/dev/null)
-  [ -z "$loose" ]
+  # A symlink leaf (even with a trailing slash, which makes find follow it)
+  # would skip the walk of its target's real parents.
+  [ ! -L "${d%/}" ] || return 1
+  ! _shunt_orchestrator_loose "$d" || return 1
+  p="$d"
+  while [ "$p" != / ]; do
+    p="${p%/*}"
+    [ -n "$p" ] || p=/
+    n=$((n + 1))
+    [ "$n" -le "$SHUNT_ORCHESTRATOR_MAX_ANCESTORS" ] || return 1
+    ! _shunt_orchestrator_loose "$p/." sticky_ok || return 1
+  done
 }
 
 # shunt_orchestrator_list [plugin_root]
@@ -185,6 +227,7 @@ shunt_orchestrator_list() {
       case "$f" in *$'\n'*) continue ;; esac
       [ -L "$f" ] && continue
       [ -f "$f" ] && [ -O "$f" ] || continue
+      ! _shunt_orchestrator_loose "$f" || continue
       seen=$((seen + 1))
       _shunt_orchestrator_load "$f" || { [ "$seen" -lt "$SHUNT_ORCHESTRATOR_MAX_USER_CANDIDATES" ] && continue || break; }
       users+=("$f")
@@ -232,6 +275,54 @@ EOT
   fi
 }
 
+# _shunt_orchestrator_emit_fragment <role>
+# Appends the rows for the fragment just loaded to the caller's rows array.
+# Needs the caller's locals: rows, seen, states_done. One registry and breaker
+# lookup per role, and one state row per role however many fragments share it.
+_shunt_orchestrator_emit_fragment() {
+  local role="$1" state=ready line
+  if [ -n "$role" ]; then
+    case "$seen" in
+      *"|$role="*) state="${seen#*"|$role="}"; state="${state%%|*}" ;;
+      *)
+        _shunt_orchestrator_role_state "$role" || return 1
+        state="$REPLY"
+        seen="$seen|$role=$state|"
+        ;;
+    esac
+  fi
+  case "$state" in
+    unavailable|open)
+      case "$states_done" in *"|$role|"*) return 0 ;; esac
+      states_done="$states_done|$role|"
+      if [ "$state" = unavailable ]; then
+        rows+=("$role: unavailable, handle directly.")
+      else
+        rows+=("$role: breaker open, handle directly until cooldown.")
+      fi
+      ;;
+    *)
+      while IFS= read -r line; do rows+=("$line"); done <<EOT
+$_SHUNT_ORCHESTRATOR_BODY
+EOT
+      ;;
+  esac
+}
+
+# _shunt_orchestrator_cap_rows
+# Prints the caller's rows array joined by newlines, dropping whole trailing
+# lines once MAX_RENDER_CHARS would be exceeded.
+_shunt_orchestrator_cap_rows() {
+  local out="" line total=0 n
+  for line in "${rows[@]}"; do
+    n=$((${#line} + 1))
+    [ $((total + n)) -le "$SHUNT_ORCHESTRATOR_MAX_RENDER_CHARS" ] || break
+    out="$out$line"$'\n'
+    total=$((total + n))
+  done
+  printf '%s' "$out"
+}
+
 # shunt_orchestrator_render [plugin_root]
 # Prints the plain-text delegation rule for session start. Needs models.sh and
 # breaker.sh sourced. Only fixed state strings and fragment text are printed,
@@ -239,7 +330,7 @@ EOT
 # non-zero when the registry exists but cannot be read. Output is capped at
 # MAX_RENDER_CHARS by dropping whole trailing lines.
 shunt_orchestrator_render() {
-  local root="${1:-$_SHUNT_ORCHESTRATOR_ROOT}" min_lines f role state seen="" out line total=0 n
+  local root="${1:-$_SHUNT_ORCHESTRATOR_ROOT}" min_lines f role seen="" states_done=""
   local header='Shunt delegation (cheap models; Claude keeps judgment).'
   local -a rows=("$header")
 
@@ -259,38 +350,11 @@ shunt_orchestrator_render() {
       role="$_SHUNT_ORCHESTRATOR_ROLE"
       # A role the registry does not know is treated like an invalid fragment.
       [ -z "$role" ] || shunt_models_role_known "$role" || continue
-      state=ready
-      if [ -n "$role" ]; then
-        # One registry and breaker lookup per role, however many fragments share it.
-        case "$seen" in
-          *"|$role="*) state="${seen#*"|$role="}"; state="${state%%|*}" ;;
-          *)
-            _shunt_orchestrator_role_state "$role" || return 1
-            state="$REPLY"
-            seen="$seen|$role=$state|"
-            ;;
-        esac
-      fi
-      case "$state" in
-        unavailable) rows+=("$role: unavailable, handle directly.") ;;
-        open) rows+=("$role: breaker open, handle directly until cooldown.") ;;
-        *)
-          while IFS= read -r line; do rows+=("$line"); done <<EOT
-$_SHUNT_ORCHESTRATOR_BODY
-EOT
-          ;;
-      esac
+      _shunt_orchestrator_emit_fragment "$role" || return 1
     done <<EOT
 $(shunt_orchestrator_list "$root")
 EOT
   fi
 
-  out=""
-  for line in "${rows[@]}"; do
-    n=$((${#line} + 1))
-    [ $((total + n)) -le "$SHUNT_ORCHESTRATOR_MAX_RENDER_CHARS" ] || break
-    out="$out$line"$'\n'
-    total=$((total + n))
-  done
-  printf '%s' "$out"
+  _shunt_orchestrator_cap_rows
 }

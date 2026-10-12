@@ -420,3 +420,70 @@ udir_frag() {
     shunt_models_role_known "$output" || { echo "unknown role '$output' in $f"; return 1; }
   done
 }
+
+@test "a user dir under a group/world-writable non-sticky ancestor is ignored" {
+  local parent="$TEST_TMPDIR/shared"
+  mkdir -p "$parent"
+  export SHUNT_ORCHESTRATOR_DIR="$parent/orch"
+  udir_frag mine.md -- '- mine\n'
+  chmod 700 "$SHUNT_ORCHESTRATOR_DIR"
+  chmod 777 "$parent"
+  run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "a user dir under a sticky world-writable ancestor is accepted" {
+  local parent="$TEST_TMPDIR/shared"
+  mkdir -p "$parent"
+  export SHUNT_ORCHESTRATOR_DIR="$parent/orch"
+  udir_frag mine.md -- '- mine\n'
+  chmod 700 "$SHUNT_ORCHESTRATOR_DIR"
+  chmod 1777 "$parent"
+  run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "a user dir reached through a symlinked ancestor is judged by the target" {
+  local parent="$TEST_TMPDIR/shared"
+  mkdir -p "$parent"
+  export SHUNT_ORCHESTRATOR_DIR="$parent/orch"
+  udir_frag mine.md -- '- mine\n'
+  chmod 700 "$SHUNT_ORCHESTRATOR_DIR"
+  ln -s "$parent" "$TEST_TMPDIR/link"
+  SHUNT_ORCHESTRATOR_DIR="$TEST_TMPDIR/link/orch" run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 3 ]
+  chmod 777 "$parent"
+  SHUNT_ORCHESTRATOR_DIR="$TEST_TMPDIR/link/orch" run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "a group- or world-writable user fragment file is ignored" {
+  udir_frag mine.md -- '- mine\n'
+  chmod 666 "$SHUNT_ORCHESTRATOR_DIR/mine.md"
+  run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 2 ]
+  chmod 620 "$SHUNT_ORCHESTRATOR_DIR/mine.md"
+  run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 2 ]
+  chmod 644 "$SHUNT_ORCHESTRATOR_DIR/mine.md"
+  run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "sourcing by bare name from its own directory resolves the plugin root" {
+  cd "$REPO_ROOT/scripts/lib"
+  run bash -c 'source orchestrator.sh && shunt_orchestrator_list'
+  assert_success
+  assert_line --regexp 'skills/bulk-reader/orchestrator.md$'
+}
+
+@test "a symlinked user dir leaf is refused, with or without a trailing slash" {
+  mkdir -p "$TEST_TMPDIR/real"
+  chmod 700 "$TEST_TMPDIR/real"
+  printf -- '- mine\n' >"$TEST_TMPDIR/real/mine.md"
+  ln -s "$TEST_TMPDIR/real" "$TEST_TMPDIR/viaLink"
+  SHUNT_ORCHESTRATOR_DIR="$TEST_TMPDIR/viaLink/" run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 2 ]
+  SHUNT_ORCHESTRATOR_DIR="$TEST_TMPDIR/viaLink" run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 2 ]
+}

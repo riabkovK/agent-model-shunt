@@ -334,3 +334,39 @@ registry_bulk_only() {
   jq -e '.hooks.PreToolUse | length == 2' "$f" >/dev/null
   [ -x "$REPO_ROOT/hooks/session-start-orchestrator" ]
 }
+
+@test "hook: a control byte inside a forbidden UTF-8 sequence cannot reassemble it" {
+  registry_all
+  mkdir -p "$SHUNT_ORCHESTRATOR_DIR"
+  printf '%b' '- zero\342\200\001\213width and \302\002\205 c1 end\n' >"$SHUNT_ORCHESTRATOR_DIR/mine.md"
+  run ctx
+  assert_success
+  assert_output --partial 'zerowidth'
+  local hex
+  hex=$(printf '%s' "$output" | od -An -tx1 | tr -d ' \n')
+  case "$hex" in *e2808b*) echo "zero width space survived"; return 1 ;; esac
+  case "$hex" in *c285*) echo "NEL survived"; return 1 ;; esac
+}
+
+@test "render: two fragments sharing an unavailable role print one state row" {
+  registry_bulk_only
+  mkdir -p "$SHUNT_ORCHESTRATOR_DIR"
+  printf 'role: code-write\n- extra code wording\n' >"$SHUNT_ORCHESTRATOR_DIR/extra.md"
+  run shunt_orchestrator_render
+  assert_success
+  local n
+  n=$(printf '%s\n' "$output" | grep -c '^code-write: unavailable, handle directly\.$')
+  [ "$n" -eq 1 ]
+}
+
+@test "render: two fragments sharing a breaker-open role print one state row" {
+  registry_all
+  mkdir -p "$SHUNT_ORCHESTRATOR_DIR"
+  printf 'role: code-write\n- extra code wording\n' >"$SHUNT_ORCHESTRATOR_DIR/extra.md"
+  shunt_breaker_any_closed() { return 1; }
+  run shunt_orchestrator_render
+  assert_success
+  local n
+  n=$(printf '%s\n' "$output" | grep -c '^code-write: breaker open')
+  [ "$n" -eq 1 ]
+}

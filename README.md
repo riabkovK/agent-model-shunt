@@ -361,8 +361,9 @@ You can add or override fragments without touching the plugin. Put `*.md` files
 in `$SHUNT_ORCHESTRATOR_DIR`, by default
 `${XDG_CONFIG_HOME:-$HOME/.config}/agent-model-shunt/orchestrator.d`. The
 directory is used only if it is an absolute path, owned by you, and not group or
-world writable. Only regular, non-symlink `.md` files owned by you are read
-(dotfiles are skipped), at most 16 valid fragments from at most 64 examined files.
+world writable, and no ancestor up to `/` is group or world writable unless it
+has the sticky bit (like `/tmp`). Only regular, non-symlink `.md` files owned by
+you and not group or world writable are read (dotfiles are skipped), at most 16 valid fragments from at most 64 examined files.
 
 A user file named `<skill-dir-name>.md` (for example `bulk-reader.md`) replaces
 that built-in fragment. If the override is invalid, it is silently skipped and
