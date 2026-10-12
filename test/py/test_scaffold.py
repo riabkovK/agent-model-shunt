@@ -1,5 +1,8 @@
 import json
+import io
+import os
 import subprocess
+import sys
 
 import pytest
 
@@ -63,3 +66,35 @@ def test_b_flag_leaves_no_pycache(run_shunt):
     run_shunt("version")
 
     assert not list(PY_DIR.rglob("__pycache__"))
+
+
+def test_run_writes_utf8_whatever_the_stream_encoding(tmp_path, monkeypatch):
+    registry = tmp_path / "models.json"
+    registry.write_text(json.dumps({"models": [{"id": "p/m", "agent": "агент"}]}), encoding="utf-8")
+    raw = io.BytesIO()
+    stdout = io.TextIOWrapper(raw, encoding="ascii", errors="strict")
+    monkeypatch.setattr(sys, "stdout", stdout)
+    monkeypatch.setattr(sys, "argv", ["shunt_main.py", "models", "agent-for", "p/m"])
+    monkeypatch.setenv("SHUNT_MODELS_FILE", str(registry))
+
+    code = shunt_main.run()
+
+    stdout.flush()
+    assert code == 0
+    assert raw.getvalue() == "агент\n".encode("utf-8")
+
+
+def test_broken_pipe_exits_141_quietly(tmp_path):
+    registry = tmp_path / "models.json"
+    registry.write_text(json.dumps({"models": [{"id": "p/m"}]}))
+    read_fd, write_fd = os.pipe()
+    os.close(read_fd)  # nobody reads: the first write hits EPIPE
+
+    result = subprocess.run(
+        [sys.executable, "-I", "-B", str(PY_DIR / "shunt_main.py"), "models", "agent-for", "p/m"],
+        stdout=write_fd, stderr=subprocess.PIPE, text=True, check=False,
+        env={**os.environ, "SHUNT_MODELS_FILE": str(registry)})
+    os.close(write_fd)
+
+    assert result.returncode == 141
+    assert result.stderr == ""

@@ -126,3 +126,51 @@ def test_nested_lock_via_relative_and_absolute_path_does_not_deadlock(tmp_path, 
     with file_lock(tmp_path / "f.json", timeout=0.3):
         with file_lock("f.json", timeout=0.3):
             pass
+
+
+@pytest.mark.parametrize("timeout", [-1, float("nan"), float("inf")])
+def test_bad_timeout_is_rejected_before_the_lock_file_is_created(tmp_path, timeout):
+    target = tmp_path / "f.json"
+    with pytest.raises(ValueError):
+        with file_lock(target, timeout=timeout):
+            pass
+    assert not (tmp_path / "f.json.lock").exists()
+
+
+def test_bad_timeout_is_rejected_on_the_nested_path_too(tmp_path):
+    with file_lock(tmp_path / "f.json", timeout=0.3):
+        with pytest.raises(ValueError):
+            with file_lock(tmp_path / "f.json", timeout=-1):
+                pass
+
+
+def test_symlink_lock_path_is_refused(tmp_path):
+    (tmp_path / "elsewhere").write_text("keep")
+    (tmp_path / "f.json.lock").symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(OSError):
+        with file_lock(tmp_path / "f.json", timeout=0.3):
+            pass
+    assert (tmp_path / "elsewhere").read_text() == "keep"
+
+
+def test_fifo_lock_path_errors_instead_of_hanging(tmp_path):
+    fifo = tmp_path / "f.json.lock"
+    os.mkfifo(fifo)
+    reader = os.open(fifo, os.O_RDONLY | os.O_NONBLOCK)  # lets the O_WRONLY open succeed
+    try:
+        with pytest.raises(OSError):
+            with file_lock(tmp_path / "f.json", timeout=0.3):
+                pass
+    finally:
+        os.close(reader)
+
+
+def test_lock_fd_is_blocking_after_open(tmp_path):
+    import fcntl
+    from shunt import lockfile
+
+    fd = lockfile._open_lock(tmp_path / "x.lock")
+    try:
+        assert not fcntl.fcntl(fd, fcntl.F_GETFL) & os.O_NONBLOCK
+    finally:
+        os.close(fd)

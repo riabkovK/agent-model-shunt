@@ -34,6 +34,9 @@ _SLUG_NON_ALNUM = re.compile(r"[^a-z0-9]+")
 _ASCII_LOWER = {c: c + 32 for c in range(ord("A"), ord("Z") + 1)}
 
 
+PathArg = str | os.PathLike[str]  # raw env strings are passed through so messages echo them as bash did
+
+
 class ShuntError(Exception):
     """A user-facing failure: printed as `shunt: <message>` on stderr, exit 1."""
 
@@ -80,7 +83,7 @@ def code_writer_agent_for(model_id: str) -> str:
 
 # ---------------------------------------------------------------- registry access
 
-def _load(path: Path) -> Any:
+def _load(path: PathArg) -> Any:
     try:
         return read_json(path)
     except JsonReadError as exc:
@@ -113,7 +116,36 @@ def _enabled(model: Mapping[str, Any]) -> bool:
 
 # ---------------------------------------------------------------- validation
 
-def _duplicate_error(models: list[dict[str, Any]], path: Path) -> str | None:
+def has_control_char(text: str) -> bool:
+    """True when text holds U+0000-U+001F or U+007F, which would break out of YAML frontmatter."""
+    return any(ord(c) < 0x20 or ord(c) == 0x7F for c in text)
+
+
+def _frontmatter_strings(model: Mapping[str, Any]) -> list[tuple[str, str]]:
+    """(field label, text) for every model string that is rendered into agent frontmatter."""
+    found: list[tuple[str, str]] = []
+    if isinstance(model.get("id"), str):
+        found.append(("id", model["id"]))
+    for field in ("thinking_options", "thinking_off_options"):
+        options = model.get(field)
+        if not isinstance(options, dict):
+            continue
+        for key, value in options.items():
+            found.append((f"{field} key", key))
+            if isinstance(value, str):
+                found.append((f"{field} value for {_tojson(key)}", value))
+    return found
+
+
+def _control_char_error(models: list[dict[str, Any]]) -> str | None:
+    for model in models:
+        for label, text in _frontmatter_strings(model):
+            if has_control_char(text):
+                return (f"model {_tojson(_interp(model.get('id')))} has a control character in its "
+                        f"{label}: control characters would break the agent file frontmatter.")
+    return None
+
+def _duplicate_error(models: list[dict[str, Any]], path: str) -> str | None:
     seen: dict[str, Any] = {}
     dupes: dict[str, Any] = {}
     for model in models:
@@ -155,7 +187,9 @@ def _agent_name_error(models: list[dict[str, Any]]) -> str | None:
             return f'model "{mid}" derives an empty agent name.'
         agent_field = model.get("agent")
         agent = BULK_PREFIX + core if agent_field is None or agent_field is False or agent_field in ("", "-") else _interp(agent_field)
-        writer = WRITER_PREFIX + core if "code-write" in _roles_of(model) else ""
+        # Reserved for every model, whatever its roles: materialize unlinks the
+        # code-writer file of a model without the role, so no other model may own it.
+        writer = WRITER_PREFIX + core
         if not AGENT_NAME_RE.fullmatch(agent):
             return (f'model "{mid}" has an invalid agent name "{agent}": '
                     "use lowercase letters, digits and dashes.")
@@ -183,39 +217,43 @@ def _sizing_error(models: list[dict[str, Any]]) -> str | None:
     return None
 
 
-def validate(path: Path) -> str | None:
-    """Return the one-line reason the registry is invalid, or None when it is valid."""
-    if not path.is_file():
-        return f"models registry not found at {path}"
+def validate(path: str | os.PathLike[str]) -> str | None:
+    """Return the one-line reason the registry is invalid, or None when it is valid.
+
+    Messages echo path exactly as given, so pass the raw SHUNT_MODELS_FILE string.
+    """
+    shown = os.fspath(path)
+    if not Path(path).is_file():
+        return f"models registry not found at {shown}"
     try:
         doc = read_json(path)
     except JsonReadError:
         doc = None
     if doc is None or doc is False:  # jq -e . rejects null and false too
-        return f"models registry at {path} contains invalid JSON."
+        return f"models registry at {shown} contains invalid JSON."
 
     try:
         models = _entries(doc)
     except RegistryUnreadable:
         # The duplicate, roles and agent-name stages skipped silently on a jq error.
-        return f"models registry at {path}: cannot read context_tokens and oversize_policy."
-    reason = _duplicate_error(models, path)
+        return f"models registry at {shown}: cannot read context_tokens and oversize_policy."
+    reason = _duplicate_error(models, shown)
     if reason:
         return reason
-    for check in (_roles_error, _agent_name_error, _sizing_error):
+    for check in (_control_char_error, _roles_error, _agent_name_error, _sizing_error):
         reason = check(models)
         if reason:
-            return f"models registry at {path}: {reason}"
+            return f"models registry at {shown}: {reason}"
     return None
 
 
-def available(path: Path) -> bool:
-    return path.is_file() and validate(path) is None
+def available(path: str | os.PathLike[str]) -> bool:
+    return Path(path).is_file() and validate(path) is None
 
 
 # ---------------------------------------------------------------- lookups
 
-def candidates(path: Path, role: str) -> tuple[str, list[str]]:
+def candidates(path: PathArg, role: str) -> tuple[str, list[str]]:
     """Return (active id that is not in the registry or "", ids to try in order)."""
     doc = _load(path)
     models = _entries(doc)
@@ -229,7 +267,7 @@ def candidates(path: Path, role: str) -> tuple[str, list[str]]:
     return unknown, [_interp(i) for i in ordered]
 
 
-def agent_for(path: Path, model_id: str) -> str:
+def agent_for(path: PathArg, model_id: str) -> str:
     """The registered agent name, the derived one for an entry without it, "" for an unknown id."""
     found = _matching(_entries(_load(path)), model_id)
     if not found:
@@ -240,20 +278,20 @@ def agent_for(path: Path, model_id: str) -> str:
     return "" if agent == "-" else _raw(agent)
 
 
-def _field_values(path: Path, model_id: str, field: str, default: Any) -> list[Any]:
+def _field_values(path: PathArg, model_id: str, field: str, default: Any) -> list[Any]:
     found = _matching(_entries(_load(path)), model_id)
     return [default if m.get(field) is None or m[field] is False and default is None else m[field] for m in found]
 
 
-def thinking_for(path: Path, model_id: str) -> list[str]:
+def thinking_for(path: PathArg, model_id: str) -> list[str]:
     return [_raw(v) for v in _field_values(path, model_id, "thinking", False)]
 
 
-def thinking_options_for(path: Path, model_id: str, field: str = "thinking_options") -> list[str]:
+def thinking_options_for(path: PathArg, model_id: str, field: str = "thinking_options") -> list[str]:
     return [_tojson(v) for v in _field_values(path, model_id, field, None)]
 
 
-def has_role(path: Path, model_id: str, role: str) -> bool:
+def has_role(path: PathArg, model_id: str, role: str) -> bool:
     try:
         found = _matching(_entries(_load(path)), model_id)
     except RegistryUnreadable:
@@ -263,7 +301,13 @@ def has_role(path: Path, model_id: str, role: str) -> bool:
 
 # ---------------------------------------------------------------- agent files
 
-def thinking_block(path: Path, model_id: str) -> str:
+def _refuse_control_chars(text: str, what: str) -> None:
+    """Defence in depth for materialize, which can run without validate."""
+    if has_control_char(text):
+        raise ShuntError(f"refusing to render {what}: it contains a control character.")
+
+
+def thinking_block(path: PathArg, model_id: str) -> str:
     """Extra agent frontmatter lines for the model's current thinking state, or ""."""
     models = _matching(_entries(_load(path)), model_id)
     if not models:
@@ -273,7 +317,10 @@ def thinking_block(path: Path, model_id: str) -> str:
     options = model.get("thinking_options" if thinking_on else "thinking_off_options")
     if not isinstance(options, dict):
         return ""
-    return "\n".join(f"{key}: {_interp(value)}" for key, value in options.items()).rstrip("\n")
+    lines = [f"{key}: {_interp(value)}" for key, value in options.items()]
+    for line in lines:
+        _refuse_control_chars(line, f"a thinking option of model {_tojson(model_id)}")
+    return "\n".join(lines).rstrip("\n")
 
 
 _BULK_TOOLS = """\
@@ -334,11 +381,11 @@ def render_code_writer(model_id: str, block: str, prompt: bytes) -> bytes:
     return _render(_WRITER_HEAD, _WRITER_TOOLS, model_id, block, prompt)
 
 
-def require_prompts(prompts_dir: Path, roles: Sequence[str]) -> None:
+def require_prompts(prompts_dir: PathArg, roles: Sequence[str]) -> None:
     """Raise unless the role prompt files are readable (bulk-reader.md always)."""
     names = ["bulk-reader"] + (["code-writer"] if "code-write" in roles else [])
     for name in names:
-        file = prompts_dir / f"{name}.md"
+        file = f"{os.fspath(prompts_dir)}/{name}.md"  # raw string: bash printed "$SHUNT_PROMPTS_DIR/..."
         if not os.access(file, os.R_OK):
             raise ShuntError(f"the role prompt file {file} is missing or unreadable, nothing was changed.")
 
@@ -349,33 +396,45 @@ def _agent_file(agents_dir: Path, name: str) -> Path:
     return agents_dir / f"{name}.md"
 
 
-def materialize_agent(path: Path, agents_dir: Path, prompts_dir: Path, model_id: str) -> None:
+def _bulk_agent_files(path: PathArg, agents_dir: Path) -> set[Path]:
+    """The bulk agent file of every registry entry, so none of them is ever unlinked as a stale writer."""
+    files: set[Path] = set()
+    for entry in _entries(_load(path)):
+        entry_id = entry.get("id")
+        name = agent_for(path, entry_id) if isinstance(entry_id, str) else ""
+        if name and AGENT_NAME_RE.fullmatch(name):
+            files.add(agents_dir / f"{name}.md")
+    return files
+
+
+def materialize_agent(path: PathArg, agents_dir: Path, prompts_dir: PathArg, model_id: str) -> None:
     """Render the model's agent files, dropping a code-writer file for a dropped role."""
     writes_code = has_role(path, model_id, "code-write")
     require_prompts(prompts_dir, ["code-write"] if writes_code else [])
     agent = agent_for(path, model_id)
     if not agent:
         raise ShuntError(f"no registered agent name for model '{model_id}'.")
+    _refuse_control_chars(model_id, "a model id")
     block = thinking_block(path, model_id)
     agents_dir.mkdir(parents=True, exist_ok=True)
 
-    bulk_prompt = (prompts_dir / "bulk-reader.md").read_bytes()
+    prompts = Path(prompts_dir)
+    bulk_prompt = (prompts / "bulk-reader.md").read_bytes()
     write_bytes_atomic(_agent_file(agents_dir, agent), render_bulk_reader(model_id, block, bulk_prompt),
                        AGENT_FILE_MODE)
     writer_file = _agent_file(agents_dir, code_writer_agent_for(model_id))
     if writes_code:
-        writer_prompt = (prompts_dir / "code-writer.md").read_bytes()
+        writer_prompt = (prompts / "code-writer.md").read_bytes()
         write_bytes_atomic(writer_file, render_code_writer(model_id, block, writer_prompt),
                            AGENT_FILE_MODE)
-    else:
+    elif writer_file not in _bulk_agent_files(path, agents_dir):
         writer_file.unlink(missing_ok=True)
 
 
 # ---------------------------------------------------------------- command line
 
-def _prompts_dir(environ: Mapping[str, str]) -> Path:
-    default = Path(__file__).resolve().parents[3] / "prompts"
-    return Path(environ.get("SHUNT_PROMPTS_DIR") or default)
+def _prompts_dir(environ: Mapping[str, str]) -> str:
+    return environ.get("SHUNT_PROMPTS_DIR") or str(Path(__file__).resolve().parents[3] / "prompts")
 
 
 def _out(lines: Sequence[str]) -> None:
@@ -384,7 +443,7 @@ def _out(lines: Sequence[str]) -> None:
 
 
 def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
-    path = env.models_file(environ)
+    path = env.models_file_text(environ)
     cmd = args.models_command
     if cmd == "validate":
         reason = validate(path)
@@ -459,4 +518,4 @@ def register(subparsers: Any) -> None:
     has = sub.add_parser("has-role")
     has.add_argument("id")
     has.add_argument("role")
-    sub.add_parser("require-prompts").add_argument("roles", nargs="*")
+    sub.add_parser("require-prompts").add_argument("roles", nargs="*")  # bash passes `-- roles...`

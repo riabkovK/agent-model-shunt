@@ -61,9 +61,20 @@ shunt_models_file() {
 # Success (0) if a registry file exists and is valid; failure (1) otherwise
 # (missing file, or present but invalid). Never prints an error: this is
 # the legacy-mode detection point, not a place to surface validation noise.
+#
+# The interpreter itself failing (not found 127, not executable 126, too old 2)
+# is not "no registry": it still returns 1 so callers take the safe legacy
+# path, but prints one warning line on stderr so the fallback is not silent.
 shunt_models_available() {
   [ -f "$SHUNT_MODELS_FILE" ] || return 1
-  _shunt_models_py available >/dev/null 2>&1
+  local rc=0
+  _shunt_models_py available >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) return 0 ;;
+    1) return 1 ;;
+  esac
+  echo "shunt: the Python interpreter is unusable (exit $rc), treating the models registry as absent." >&2
+  return 1
 }
 
 # shunt_models_validate
@@ -188,7 +199,7 @@ _shunt_models_thinking_block() {
 # only when the roles given include code-write. Run it before a registry write,
 # so a missing prompt cannot leave the registry changed.
 shunt_models_require_prompts() {
-  _shunt_models_py require-prompts "$@" || exit 1
+  _shunt_models_py require-prompts -- "$@" || exit 1
 }
 
 # shunt_models_materialize_agent <id>

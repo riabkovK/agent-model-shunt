@@ -140,9 +140,9 @@ def test_validate_agent_names_rejected(reg, entries, fragment):
 
 def test_validate_agent_names_accepted(reg):
     assert _reason(reg, [{"id": "p/x", "agent": "bulk-reader"}, {"id": "p/y", "agent": "a2"}]) is None
-    shared_only_one_writer = [{"id": "p/a.b", "agent": "x1", "roles": ["bulk-read"]},
-                              {"id": "p/a-b", "agent": "x2"}]
-    assert _reason(reg, shared_only_one_writer) is None
+    # The code-writer name is reserved for every model, even one without the role.
+    assert "shunt-code-writer-p-a-b" in _reason(reg, [{"id": "p/a.b", "agent": "x1", "roles": ["bulk-read"]},
+                                                      {"id": "p/a-b", "agent": "x2"}])
     assert _reason(reg, [{"id": "p/m", "agent": "-"}]) is None  # "-" means derived
 
 
@@ -381,3 +381,105 @@ def test_models_paths_default_to_home_config(tmp_path, monkeypatch):
 def test_models_parser_registered():
     args = build_parser().parse_args(["models", "slug", "a/b"])
     assert args.models_command == "slug" and args.id == "a/b"
+
+
+# ---- fixes after review 1-3
+
+BAD_CHARS = ["\n", "\r", "\x00", "\x1b", "\x7f", "\t"]
+
+
+@pytest.mark.parametrize("char", BAD_CHARS)
+def test_validate_rejects_control_char_in_id(reg, char):
+    reg.write([{"id": f"p/m{char}x: y"}])
+    reason = models.validate(reg.file)
+    assert reason and "control character" in reason and "its id" in reason
+    assert "\n" not in reason and "\x1b" not in reason
+    out = reg.cli("validate")
+    assert out.returncode == 1 and out.stdout.startswith("shunt: models registry at ")
+
+
+@pytest.mark.parametrize("field", ["thinking_options", "thinking_off_options"])
+@pytest.mark.parametrize("where", ["key", "value"])
+def test_validate_rejects_control_char_in_thinking_options(reg, field, where):
+    opts = {"k\nx": "v"} if where == "key" else {"k": "v\nthinking: injected"}
+    reg.write([{"id": "p/m", field: opts}])
+    reason = models.validate(reg.file)
+    assert reason and "control character" in reason and field in reason
+
+
+def test_validate_accepts_colon_slash_and_json_scalars_in_options(reg):
+    reg.write([{"id": "p/m:free", "thinking_options": {"a/b": "x: y", "n": 1, "o": {"q": "\n"}}}])
+    assert models.validate(reg.file) is None
+
+
+def test_materialize_refuses_control_char_without_validate(reg):
+    reg.write([{"id": "p/m", "thinking": True, "thinking_options": {"k": "v\nmodel: evil"}}])
+    result = reg.cli("materialize", "p/m")
+    assert result.returncode == 1
+    assert result.stderr.startswith("shunt: refusing to render")
+    assert not reg.agents.exists() or not list(reg.agents.iterdir())
+
+
+def test_materialize_refuses_control_char_in_id(reg):
+    reg.write([{"id": "p/m\nx"}])
+    result = reg.cli("materialize", "p/m\nx")
+    assert result.returncode == 1 and "refusing to render" in result.stderr
+
+
+def test_validate_reserves_code_writer_name_of_model_without_the_role(reg):
+    reg.write([{"id": "a", "roles": ["bulk-read"]}, {"id": "b", "agent": "shunt-code-writer-a"}])
+    reason = models.validate(reg.file)
+    assert reason and 'would share the agent name "shunt-code-writer-a"' in reason
+
+
+def test_materialize_never_deletes_another_models_bulk_agent_file(reg):
+    reg.write([{"id": "a", "roles": ["bulk-read"]}, {"id": "b", "agent": "shunt-code-writer-a"}])
+    reg.agents.mkdir()
+    victim = reg.agents / "shunt-code-writer-a.md"
+    victim.write_text("b's agent")
+    assert reg.cli("materialize", "a").returncode == 0
+    assert victim.read_text() == "b's agent"
+
+
+def test_materialize_still_removes_a_stale_code_writer(reg):
+    reg.write([{"id": "a", "roles": ["bulk-read"]}])
+    reg.agents.mkdir()
+    stale = reg.agents / "shunt-code-writer-a.md"
+    stale.write_text("stale")
+    assert reg.cli("materialize", "a").returncode == 0
+    assert not stale.exists()
+
+
+def test_validate_messages_echo_the_raw_env_path(reg, tmp_path):
+    env = {**os.environ, "SHUNT_MODELS_FILE": "./nope//x.json"}
+    result = subprocess.run([sys.executable, "-I", "-B", str(SHUNT_MAIN), "models", "validate"],
+                            capture_output=True, text=True, env=env, cwd=tmp_path, check=False)
+    assert result.stdout == "shunt: models registry not found at ./nope//x.json\n"
+    reg.file.write_text("nope")
+    assert models.validate("./a//b/../models.json") == "models registry not found at ./a//b/../models.json"
+
+
+def test_require_prompts_message_echoes_the_raw_prompts_dir(reg):
+    env = {**os.environ, "SHUNT_PROMPTS_DIR": "./nope//p"}
+    result = subprocess.run([sys.executable, "-I", "-B", str(SHUNT_MAIN), "models", "require-prompts"],
+                            capture_output=True, text=True, env=env, check=False)
+    assert result.returncode == 1
+    assert "./nope//p/bulk-reader.md is missing" in result.stderr
+
+
+def test_require_prompts_accepts_double_dash(reg):
+    assert reg.cli("require-prompts", "--").returncode == 0
+    assert reg.cli("require-prompts", "--", "code-write").returncode == 0
+    (reg.prompts / "code-writer.md").unlink()
+    assert reg.cli("require-prompts", "--", "code-write").returncode == 1
+
+
+@pytest.mark.parametrize("content", ["", "nope", "{", '{"models": 3}', '{"models": [1]}', "1" * 6000,
+                                     "[" * 200000, '{"models":' + "[" * 200000],
+                         ids=["empty", "nonjson", "open-brace", "models-int", "models-nonobject",
+                              "digit-limit", "deep-array", "deep-models"])
+def test_available_exits_0_or_1_never_2_for_odd_registries(reg, content):
+    reg.file.write_text(content)
+    assert reg.cli("available").returncode == 1
+    assert reg.cli("validate").returncode == 1
+    assert "Traceback" not in reg.cli("validate").stderr

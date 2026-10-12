@@ -15,16 +15,18 @@ class JsonReadError(Exception):
 
 def read_json(path: str | os.PathLike[str], default: Any = None) -> Any:
     """Return the parsed JSON in path, or default when the file does not exist."""
-    p = Path(path)
+    p = os.fspath(path)  # echoed as given, not pathlib-normalised
     try:
-        text = p.read_text(encoding="utf-8")
+        text = Path(p).read_text(encoding="utf-8")
     except FileNotFoundError:
         return default
     except (OSError, UnicodeDecodeError) as exc:
         raise JsonReadError(f"cannot read {p}: {exc}") from exc
     try:
         return json.loads(text)
-    except json.JSONDecodeError as exc:
+    except RecursionError as exc:
+        raise JsonReadError(f"{p} contains invalid JSON: nested too deeply") from exc
+    except ValueError as exc:  # JSONDecodeError, and int conversion past the digit limit
         raise JsonReadError(f"{p} contains invalid JSON: {exc}") from exc
 
 

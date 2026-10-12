@@ -424,14 +424,14 @@ write_failing_opencode() {
   assert_output --partial "shunt: p/two failed: opencode error"
 }
 
-@test "control characters in a model id are stripped from the reason line" {
+@test "a model id with a control character makes the registry invalid, so it is never used" {
   write_models_registry "p/one"
-  jq '.models[0].id = "p/on\u001be"' "$SHUNT_MODELS_FILE" >"$TEST_TMPDIR/m.json" && mv "$TEST_TMPDIR/m.json" "$SHUNT_MODELS_FILE"
-  jq '.active = null' "$SHUNT_MODELS_FILE" >"$TEST_TMPDIR/m.json" && mv "$TEST_TMPDIR/m.json" "$SHUNT_MODELS_FILE"
-  write_failing_opencode error
-  run shunt_invoke_with_failover "question"
+  jq '.models[0].id = "p/on\u001be" | .active = null' "$SHUNT_MODELS_FILE" >"$TEST_TMPDIR/m.json" && mv "$TEST_TMPDIR/m.json" "$SHUNT_MODELS_FILE"
+  run shunt_models_available
   assert_failure
-  assert_output --partial "shunt: p/one failed: opencode error"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "control character"
 }
 
 # --- the unknown-active warning is printed once per call -----------------------

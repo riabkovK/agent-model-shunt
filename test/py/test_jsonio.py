@@ -142,3 +142,19 @@ def test_write_rejects_nan_and_leaves_no_file(tmp_path):
         write_json_atomic(d / "f.json", {"x": float("nan")})
 
     assert list(d.iterdir()) == []
+
+
+@pytest.mark.parametrize("text", ["1" * 6000, "[" * 200000])
+def test_read_json_wraps_digit_limit_and_recursion_errors(tmp_path, text):
+    path = tmp_path / "f.json"
+    path.write_text(text)
+    with pytest.raises(JsonReadError, match="invalid JSON"):
+        read_json(path)
+
+
+def test_read_json_message_echoes_raw_path(tmp_path):
+    (tmp_path / "bad.json").write_text("{")
+    raw = f"{tmp_path}//./bad.json"
+    with pytest.raises(JsonReadError) as info:
+        read_json(raw)
+    assert raw in str(info.value)

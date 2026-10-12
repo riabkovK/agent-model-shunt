@@ -1,4 +1,5 @@
 load 'test_helper'
+bats_require_minimum_version 1.5.0
 
 setup() {
   shunt_test_setup
@@ -749,10 +750,25 @@ JSON
   assert_success
 }
 
-@test "shunt_models_validate allows a shared derived code-writer name when only one model has code-write" {
+@test "shunt_models_validate rejects a shared derived code-writer name even when only one model has code-write" {
   echo '{"version":1,"active":null,"models":[{"id":"p/a.b","agent":"x1","roles":["bulk-read"]},{"id":"p/a-b","agent":"x2"}]}' >"$SHUNT_MODELS_FILE"
   run shunt_models_validate
-  assert_success
+  assert_failure
+  assert_output --partial 'would share the agent name "shunt-code-writer-p-a-b"'
+}
+
+@test "shunt_models_validate rejects another model's agent that equals a roleless model's code-writer name" {
+  echo '{"version":1,"active":null,"models":[{"id":"a","roles":["bulk-read"]},{"id":"b","agent":"shunt-code-writer-a"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial 'would share the agent name "shunt-code-writer-a"'
+}
+
+@test "shunt_models_validate rejects a control character in a model id" {
+  jq -n '{version:1,active:null,models:[{id:"p/a\nmodel: evil"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "control character"
 }
 
 @test "shunt_models_validate rejects a shared derived code-writer name when both have code-write" {
@@ -760,4 +776,47 @@ JSON
   run shunt_models_validate
   assert_failure
   assert_output --partial "shunt-code-writer-p-a-b"
+}
+
+@test "shunt_models_available warns on stderr and returns 1 when the interpreter is missing" {
+  echo '{"version":1,"active":null,"models":[]}' >"$SHUNT_MODELS_FILE"
+  export SHUNT_PYTHON="$TEST_TMPDIR/no-such-python"
+  run --separate-stderr shunt_models_available
+  assert_failure 1
+  assert_output ""
+  [[ "$stderr" == "shunt: the Python interpreter is unusable (exit 127)"* ]]
+  [ "$(printf '%s\n' "$stderr" | wc -l)" -eq 1 ]
+}
+
+@test "shunt_models_available stays silent for an invalid registry" {
+  echo 'not json' >"$SHUNT_MODELS_FILE"
+  run --separate-stderr shunt_models_available
+  assert_failure 1
+  assert_output ""
+  assert_equal "$stderr" ""
+}
+
+@test "shunt_models_require_prompts passes roles through after a double dash" {
+  mkdir -p "$TEST_TMPDIR/prompts"
+  echo p >"$TEST_TMPDIR/prompts/bulk-reader.md"
+  export SHUNT_PROMPTS_DIR="$TEST_TMPDIR/prompts"
+  run shunt_models_require_prompts code-write
+  assert_failure
+  assert_output --partial "$TEST_TMPDIR/prompts/code-writer.md"
+  run shunt_models_require_prompts
+  assert_success
+}
+
+@test "a raw SHUNT_PROMPTS_DIR is echoed unnormalised" {
+  export SHUNT_PROMPTS_DIR="./nope//x"
+  run shunt_models_require_prompts
+  assert_failure
+  assert_output --partial "./nope//x/bulk-reader.md"
+}
+
+@test "a raw SHUNT_MODELS_FILE is echoed unnormalised by validate" {
+  export SHUNT_MODELS_FILE="./nope//x.json"
+  run shunt_models_validate
+  assert_failure
+  assert_output "shunt: models registry not found at ./nope//x.json"
 }

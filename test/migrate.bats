@@ -242,10 +242,10 @@ no_secret_anywhere_but() {
 @test "two providers whose names differ only in punctuation get distinct env refs" {
   jq -n --arg k "$SECRET" '{provider:{
       "a-b":{options:{baseURL:"https://ab1.test/v1",apiKey:$k},models:{m:{}}},
-      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{m:{}}}}}' \
+      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{n:{}}}}}' \
     >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
   jq -n '{version:1,active:null,models:[
-    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/m",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
+    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/n",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
   run --separate-stderr migrate --apply --yes --key-storage env
   assert_success
   run jq -r '.providers["a-b"].key.ref, .providers["a.b"].key.ref' "$SHUNT_PROVIDERS_FILE"
@@ -348,10 +348,10 @@ SH
 @test "a clashing default env ref gets a suffix and the plan says so" {
   jq -n --arg k "$SECRET" '{provider:{
       "a-b":{options:{baseURL:"https://ab1.test/v1",apiKey:$k},models:{m:{}}},
-      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{m:{}}}}}' \
+      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{n:{}}}}}' \
     >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
   jq -n '{version:1,active:null,models:[
-    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/m",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
+    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/n",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
   run --separate-stderr migrate --key-storage env
   assert_success
   assert_output --partial "SHUNT_A_B_KEY_2"

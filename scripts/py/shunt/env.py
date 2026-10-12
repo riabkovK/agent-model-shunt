@@ -42,6 +42,11 @@ def _override(env: Mapping[str, str] | None, name: str, default: Path) -> Path:
     return Path(_get(env, name, str(default)))
 
 
+def models_file_text(env: Mapping[str, str] | None = None) -> str:
+    """SHUNT_MODELS_FILE exactly as set (messages echo it unnormalised), else the default path."""
+    return _get(env, "SHUNT_MODELS_FILE", str(config_dir(env) / "models.json"))
+
+
 def providers_file(env: Mapping[str, str] | None = None) -> Path:
     return _override(env, "SHUNT_PROVIDERS_FILE", config_dir(env) / "providers.json")
 
