@@ -308,6 +308,67 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 | `SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE` | `~/.config/agent-model-shunt/code-write-self-fix-config.json` | Self-fix retry-count override, written by `scripts/shunt-codewrite-config`. |
 | `SHUNT_CODE_WRITE_SELF_FIX_RETRIES` | `1` | Env override for how many times the self-fix loop re-calls `code-write` on a build/test failure; takes precedence over the config file. `0` disables automatic retry. |
 
+## Orchestrator rule
+
+A `SessionStart` hook (`hooks/session-start-orchestrator`) injects a short
+delegation rule into the session, so Claude knows when to use which shunt
+skill without you repeating it. It runs on `startup`, `resume`, `clear` and
+`compact`, so the rule is back after a resume, a clear or a compaction.
+
+What the rule shows, per role (`bulk-read`, `code-write`):
+
+- **Ready**: the role has an enabled model whose breaker is closed. The bullets
+  from that skill's fragment are shown.
+- **Unavailable**: no enabled model has the role. The rule says to handle the
+  work directly.
+- **Breaker open**: every candidate for the role is paused. The rule says to
+  handle the work directly until the cooldown ends.
+- **Hooks disabled**: with a registry present and `SHUNT_HOOKS_DISABLED` set to
+  `1`, `true` or `yes` (see `/toggle-hooks`), one
+  line notes that reads are not hook-gated and delegation is by judgment only.
+- **No models**: if no registry exists, one line points at `/model-config`.
+
+The rule never includes a model id or name, only fixed state words and the
+fragment text. It is capped at 3000 characters (whole trailing lines are
+dropped past that). The hook always exits 0 and prints nothing on any error,
+so a broken registry or fragment can never block a session.
+
+### Register a skill
+
+Each delegating skill ships a fragment next to its `SKILL.md`. Built-in
+fragments live at `skills/bulk-reader/orchestrator.md` and
+`skills/code-writer/orchestrator.md`. A fragment looks like this:
+
+```
+role: code-write
+- ONE new predictable file (tests, config, stubs): use /code-writer.
+- Not for existing files or logic-heavy code. Skip below {{MIN_LINES}} lines.
+```
+
+Format:
+
+- An optional first line `role: <role>` (lowercase letters, digits and
+  hyphens, at most 32 characters). The role must exist in the model registry,
+  otherwise the fragment is ignored. Without a role the bullets are always shown.
+- 1 to 6 bullet lines, each starting with `- `. Blank lines are ignored.
+  Anything else makes the fragment invalid.
+- `{{MIN_LINES}}` is the only substitution (the `SHUNT_MIN_LINES` value,
+  default 350). Nothing in a fragment is ever executed.
+- Caps: 160 characters per line, 600 for the whole body, 4096 bytes per file.
+  Control characters, ANSI sequences and invisible Unicode are stripped.
+
+You can add or override fragments without touching the plugin. Put `*.md` files
+in `$SHUNT_ORCHESTRATOR_DIR`, by default
+`${XDG_CONFIG_HOME:-$HOME/.config}/agent-model-shunt/orchestrator.d`. The
+directory is used only if it is an absolute path, owned by you, and not group or
+world writable. Only regular, non-symlink `.md` files owned by you are read
+(dotfiles are skipped), at most 16 valid fragments from at most 64 examined files.
+
+A user file named `<skill-dir-name>.md` (for example `bulk-reader.md`) replaces
+that built-in fragment. If the override is invalid, it is silently skipped and
+the built-in stays. An override whose role the registry does not know drops
+both, so the skill gets no fragment. Invalid fragments are always skipped without an error.
+
 ## Configuration
 
 | Variable | Default | Purpose |

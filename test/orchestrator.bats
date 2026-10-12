@@ -388,3 +388,35 @@ udir_frag() {
   SHUNT_ORCHESTRATOR_DIR=orchestrator.d run shunt_orchestrator_list
   [ "${#lines[@]}" -eq 2 ]
 }
+
+# Drift guard. A skill "delegates to a model" when its SKILL.md runs one of the
+# delegation scripts as a command at the start of a line (scripts/bulk-read or
+# scripts/code-write followed by arguments). Prose mentions, such as the
+# management skills describing those scripts inline, do not start a line with
+# the path, so they are not matched. Every delegating skill must register an
+# orchestrator.md next to its SKILL.md.
+@test "every delegating skill has an orchestrator.md with a registry role" {
+  source "$REPO_ROOT/scripts/lib/models.sh"
+  local skill dir found=0
+  for skill in "$REPO_ROOT"/skills/*/SKILL.md; do
+    grep -qE '^scripts/(bulk-read|code-write) ' "$skill" || continue
+    found=$((found + 1))
+    dir="${skill%/SKILL.md}"
+    [ -f "$dir/orchestrator.md" ] || { echo "missing orchestrator.md in $dir"; return 1; }
+    run shunt_orchestrator_role "$dir/orchestrator.md"
+    [ "$status" -eq 0 ] || { echo "invalid fragment in $dir"; return 1; }
+    [ -n "$output" ] || { echo "no role in $dir"; return 1; }
+    shunt_models_role_known "$output" || { echo "unknown role $output in $dir"; return 1; }
+  done
+  [ "$found" -ge 2 ]
+}
+
+@test "every built-in fragment declares a known registry role" {
+  source "$REPO_ROOT/scripts/lib/models.sh"
+  local f
+  for f in "$REPO_ROOT"/skills/*/orchestrator.md; do
+    run shunt_orchestrator_role "$f"
+    [ "$status" -eq 0 ] || { echo "invalid fragment $f"; return 1; }
+    shunt_models_role_known "$output" || { echo "unknown role '$output' in $f"; return 1; }
+  done
+}
