@@ -221,19 +221,6 @@ use_fake_path() {
   assert_output --partial "plain text"
 }
 
-@test "_shunt_guard_install still runs its cleanup when the caller's EXIT trap ends in a comment" {
-  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache" TMPDIR="$TEST_TMPDIR"
-  local f="$TEST_TMPDIR/guarded-temp"
-  : >"$f"
-  run bash -c '
-    source "$1/scripts/lib/providers.sh"
-    trap "echo caller-trap-ran # remove the lock" EXIT
-    _shunt_guard_install G "rm -f \"$2\""
-    exit 0' _ "$REPO_ROOT" "$f"
-  assert_output --partial "caller-trap-ran"
-  [ ! -e "$f" ]
-}
-
 @test "validate rejects a provider name outside the allowed charset" {
   local name
   for name in 'a;rm -rf x' '$(id)' 'a b' '-x'; do
@@ -263,33 +250,3 @@ use_fake_path() {
   assert_output --partial '"bad\nname"'
 }
 
-@test "providers lock leaves a caller's open fd 8 intact" {
-  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache" TMPDIR="$TEST_TMPDIR"
-  local mine="$TEST_TMPDIR/caller-fd8"
-  run bash -c '
-    source "$1/scripts/lib/providers.sh"
-    exec 8>"$2"
-    echo before >&8
-    shunt_providers_write "{\"version\":1,\"providers\":{}}" || exit 11
-    shunt_providers_lock || exit 12
-    shunt_providers_unlock
-    echo after >&8 || exit 13' _ "$REPO_ROOT" "$mine"
-  assert_success
-  [ "$(cat "$mine")" = "before
-after" ]
-}
-
-@test "_shunt_guard_install cleanup runs once in the installing shell, not in its subshells" {
-  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache" TMPDIR="$TEST_TMPDIR"
-  run bash -c '
-    source "$1/scripts/lib/providers.sh"
-    _shunt_guard_install G "echo cleanup-ran"
-    ( : )
-    ( ( : ) )
-    x=$(echo in-subshell)
-    echo body-done
-    exit 0' _ "$REPO_ROOT"
-  assert_success
-  [ "$(printf "%s\n" "$output" | grep -c cleanup-ran)" = 1 ]
-  [ "${lines[${#lines[@]}-1]}" = "cleanup-ran" ]
-}

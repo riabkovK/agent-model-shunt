@@ -112,18 +112,16 @@ SH
   exec 9>>"$SHUNT_PROVIDERS_FILE.lock"
   flock -x 9
   SHUNT_PROVIDERS_LOCK_TIMEOUT=37 bash -c "printf '%s\n' '$key' | '$SHUNT_MODELS_BIN' key set p" >/dev/null 2>&1 &
-  local bg=$! i pid waiting=0
-  # The lock is polled with flock -n and a sleep, so a waiting key set is the
-  # shunt-models process that has a sleep child.
+  local bg=$! i waiting=0
+  # The lock is polled by the Python writer (no sleep child to look for), so a
+  # waiting key set is a running providers-write plaintext-store process.
   for i in $(seq 1 100); do
-    for pid in $(pgrep -f "shunt-models key set p"); do
-      pgrep -P "$pid" sleep >/dev/null && waiting=1
-    done
+    pgrep -f "providers-write plaintext-store" >/dev/null && waiting=1
     [ "$waiting" -eq 0 ] || break
     sleep 0.05
   done
   [ "$waiting" -eq 1 ]
-  # key set has read type plaintext and now waits for the lock. The concurrent
+  # key set is waiting for the lock and checks the type inside it. The concurrent
   # writer finishes `provider set p --key env:P_API_KEY` and releases it.
   echo '{"version":1,"providers":{"p":{"transport":"http","base_url":"https://p.test/v1","key":{"type":"env","ref":"P_API_KEY"}}}}' >"$SHUNT_PROVIDERS_FILE"
   flock -u 9

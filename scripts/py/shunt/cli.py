@@ -3,7 +3,7 @@
 import argparse
 from collections.abc import Sequence
 
-from . import context_detect, models, providers
+from . import context_detect, migrate, models, models_write, providers, providers_write
 from .version import plugin_version
 
 
@@ -20,6 +20,9 @@ def build_parser() -> argparse.ArgumentParser:
     models.register(sub)
     providers.register(sub)
     context_detect.register(sub)
+    models_write.register(sub)
+    providers_write.register(sub)
+    migrate.register(sub)
     return parser
 
 

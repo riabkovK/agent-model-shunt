@@ -18,10 +18,11 @@
 # keyring and the key resolution live in scripts/py/shunt/providers.py. The
 # functions here are thin wrappers around `shunt_py providers <subcommand>` with
 # the old names, stdout, stderr and exit codes, and each call that reaches Python
-# costs one interpreter start. The writers of providers.json and the lock
-# helpers stay in bash until sub-phase 6 (all writers of one file move together).
-# Python never takes the providers lock: bash holds it around a read-modify-write
-# and calls the getters in between.
+# costs one interpreter start. The writers of providers.json
+# (shunt_providers_write, shunt_provider_plaintext_store, provider set) are in
+# scripts/py/shunt/providers_write.py. Python takes the providers lock itself
+# (scripts/py/shunt/lockfile.py is the only lock implementation) for a
+# read-modify-write. The read side never takes the lock.
 
 # shellcheck source=py.sh
 source "${BASH_SOURCE[0]%/*}/py.sh"
@@ -70,77 +71,6 @@ shunt_provider_name_refuse() {
 }
 
 SHUNT_PROVIDERS_LOCK_TIMEOUT="${SHUNT_PROVIDERS_LOCK_TIMEOUT:-10}"
-_SHUNT_PROVIDERS_LOCK_DEPTH=0 _SHUNT_PROVIDERS_LOCK_FD="" _SHUNT_PROVIDERS_LOCK_DIR=""
-
-# _shunt_open_lock_fd <lockfile>
-# Opens <lockfile> for append on a file descriptor that is not in use and sets
-# _SHUNT_PROVIDERS_LOCK_FD to it. Bash 4.1+ allocates one. Older bash scans
-# fds 8 to 19 for a free one, so a caller's open fd is never clobbered.
-_shunt_open_lock_fd() {
-  local lock="$1" n
-  if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 1 ]; }; then
-    eval 'exec {_SHUNT_PROVIDERS_LOCK_FD}>>"$lock"' || { _SHUNT_PROVIDERS_LOCK_FD=""; return 1; }
-    return 0
-  fi
-  for n in 8 9 10 11 12 13 14 15 16 17 18 19; do
-    if ! { true >&"$n"; } 2>/dev/null; then
-      eval 'exec '"$n"'>>"$lock"' || return 1
-      _SHUNT_PROVIDERS_LOCK_FD=$n
-      return 0
-    fi
-  done
-  return 1
-}
-
-_shunt_close_lock_fd() {
-  eval "exec ${_SHUNT_PROVIDERS_LOCK_FD}>&-"
-  _SHUNT_PROVIDERS_LOCK_FD=""
-}
-
-# _shunt_guard_install <prefix> <cleanup-command>
-# Runs <cleanup-command> when the shell exits, including on INT, TERM and HUP,
-# and then still runs the caller's own EXIT trap. The caller's EXIT, INT, TERM
-# and HUP traps are saved in <prefix>_SAVED_<SIG> (use a distinct <prefix> per
-# guard) and put back by _shunt_guard_remove. While a guard is installed a
-# caller's INT, TERM or HUP trap does not run. Bash defers a trap until the
-# foreground child ends, so a signal sent to the whole process group acts at once.
-_shunt_guard_install() {
-  local prefix="$1" cleanup="$2" sig saved old_exit=""
-  for sig in EXIT INT TERM HUP; do
-    saved=$(trap -p "$sig")
-    printf -v "${prefix}_SAVED_$sig" '%s' "$saved"
-    if [ "$sig" = EXIT ] && [ -n "$saved" ]; then
-      eval "set -- $saved"
-      old_exit="${3:-}"
-    fi
-  done
-  # The trap text only acts in the process that installed it: a subshell that
-  # inherits it (trap -p reports the parent's traps) must not run the cleanup.
-  # BASHPID needs bash 4. Without it, $$ plus BASH_SUBSHELL (bash 3.0+, one
-  # more per subshell level) tells the installing shell from its subshells.
-  # It must be expanded inline: a command substitution would add a level.
-  local pid="${BASHPID:-$$.$BASH_SUBSHELL}"
-  # shellcheck disable=SC2064 # pid and the commands are meant to be expanded now
-  # The caller's trap goes on its own lines: a trailing comment in it must not
-  # swallow the closing "fi".
-  trap "if [ \"\${BASHPID:-\$\$.\$BASH_SUBSHELL}\" = $pid ]; then
-$cleanup
-${old_exit:+$old_exit
-}fi" EXIT
-  trap 'exit 130' INT
-  trap 'exit 143' TERM
-  trap 'exit 129' HUP
-}
-
-# _shunt_guard_remove <prefix>
-# Puts back the traps saved by _shunt_guard_install. Does not run the cleanup.
-_shunt_guard_remove() {
-  local prefix="$1" sig var
-  for sig in EXIT INT TERM HUP; do
-    var="${prefix}_SAVED_$sig"
-    if [ -n "${!var:-}" ]; then eval "${!var}"; else trap - "$sig"; fi
-  done
-}
 
 # _shunt_providers_py <subcommand> [args...]
 # Runs a providers subcommand with the paths this file resolved, exported only
@@ -176,61 +106,6 @@ shunt_providers_list_lines() {
 # An unusable interpreter also surfaces as a non-zero status (127, 126 or 2).
 shunt_base_url_check() {
   _shunt_providers_py base-url-check -- "$1"
-}
-
-# shunt_providers_lock / shunt_providers_unlock
-# Serializes read-modify-write of providers.json between processes. Uses
-# flock on <file>.lock when available, otherwise a <file>.lock.d directory
-# (removed by an EXIT trap if the process exits while holding it). Nested
-# calls in the same process only count depth. Gives up after
-# SHUNT_PROVIDERS_LOCK_TIMEOUT seconds.
-shunt_providers_lock() {
-  if [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -gt 0 ]; then
-    _SHUNT_PROVIDERS_LOCK_DEPTH=$((_SHUNT_PROVIDERS_LOCK_DEPTH + 1))
-    return 0
-  fi
-  local lock="$SHUNT_PROVIDERS_FILE.lock" tries
-  mkdir -p "$(dirname "$SHUNT_PROVIDERS_FILE")" || return 1
-  tries=$((SHUNT_PROVIDERS_LOCK_TIMEOUT * 10))
-  # The lock fd is picked by _shunt_open_lock_fd so a caller's fds survive.
-  # Polls with -n instead of -w: BusyBox flock has no -w.
-  if command -v flock >/dev/null 2>&1; then
-    _shunt_open_lock_fd "$lock" || return 1
-    until flock -x -n "$_SHUNT_PROVIDERS_LOCK_FD"; do
-      tries=$((tries - 1))
-      if [ "$tries" -le 0 ]; then
-        _shunt_close_lock_fd
-        echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE." >&2
-        return 1
-      fi
-      sleep 0.1
-    done
-  else
-    until mkdir "$lock.d" 2>/dev/null; do
-      tries=$((tries - 1))
-      if [ "$tries" -le 0 ]; then
-        echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE (remove $lock.d if no shunt-models is running)." >&2
-        return 1
-      fi
-      sleep 0.1
-    done
-    _SHUNT_PROVIDERS_LOCK_DIR="$lock.d"
-    _shunt_guard_install _SHUNT_PL 'rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null'
-  fi
-  _SHUNT_PROVIDERS_LOCK_DEPTH=1
-}
-
-shunt_providers_unlock() {
-  [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -gt 0 ] || return 0
-  _SHUNT_PROVIDERS_LOCK_DEPTH=$((_SHUNT_PROVIDERS_LOCK_DEPTH - 1))
-  [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -eq 0 ] || return 0
-  if [ -n "$_SHUNT_PROVIDERS_LOCK_FD" ]; then
-    _shunt_close_lock_fd
-  elif [ -n "$_SHUNT_PROVIDERS_LOCK_DIR" ]; then
-    rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null
-    _shunt_guard_remove _SHUNT_PL
-    _SHUNT_PROVIDERS_LOCK_DIR=""
-  fi
 }
 
 # shunt_provider_transport / base_url / key_type <provider>
@@ -296,44 +171,29 @@ shunt_provider_write_auth_header_file() {
 
 # shunt_providers_write <json>
 # Validates and atomically replaces providers.json, created with mode 600.
-# Callers that read the file to build <json> hold shunt_providers_lock around
-# the read and this write.
+# The write itself is scripts/py/shunt/providers_write.py. It takes no lock.
 shunt_providers_write() {
-  local json="$1" dir tmp
-  dir=$(dirname "$SHUNT_PROVIDERS_FILE")
-  mkdir -p "$dir"
-  tmp=$(umask 077 && mktemp "$dir/.providers.json.XXXXXX") || return 1
-  if ! printf '%s' "$json" | jq -e . >"$tmp" 2>/dev/null; then
-    rm -f "$tmp"
-    echo "shunt: refusing to write an invalid providers file." >&2
-    return 1
-  fi
-  chmod 600 "$tmp"
-  mv "$tmp" "$SHUNT_PROVIDERS_FILE"
+  printf '%s' "$1" | _shunt_providers_write_py put
+}
+
+# _shunt_providers_write_py <subcommand> [args...]
+# Runs a providers-write subcommand with the paths this file resolved. The lock
+# timeout is passed too (`put` takes no lock).
+_shunt_providers_write_py() {
+  local sub="$1"
+  shift
+  SHUNT_PROVIDERS_FILE="$SHUNT_PROVIDERS_FILE" SHUNT_PROVIDERS_LOCK_TIMEOUT="$SHUNT_PROVIDERS_LOCK_TIMEOUT" \
+    shunt_py providers-write "$sub" "$@"
 }
 
 # shunt_provider_plaintext_store <provider>
 # Reads the key from stdin and stores it as the provider's plaintext ref. The
-# key travels through the environment, not argv. Holds the providers lock and
-# checks the key type inside it: a provider switched to env (or anything but
-# plaintext) in the meantime is refused, so a key is never written as an env ref.
+# key stays on stdin (never argv or the environment). Python holds the providers
+# lock and checks the key type inside it: a provider switched to env (or
+# anything but plaintext) in the meantime is refused, so a key is never written
+# as an env ref.
 shunt_provider_plaintext_store() {
-  local provider="$1" key updated type rc=0
-  IFS= read -r key || true
-  shunt_providers_lock || return 1
-  if type=$(shunt_provider_key_type "$provider") && [ "$type" = plaintext ]; then
-    if updated=$(SHUNT_KEY_VALUE="$key" jq -c --arg p "$provider" \
-      '.providers[$p].key.ref = $ENV.SHUNT_KEY_VALUE' "$SHUNT_PROVIDERS_FILE"); then
-      shunt_providers_write "$updated" || rc=1
-    else
-      rc=1
-    fi
-  else
-    echo "shunt: provider '$provider' no longer has a plaintext key type, nothing stored." >&2
-    rc=1
-  fi
-  shunt_providers_unlock
-  return "$rc"
+  _shunt_providers_write_py plaintext-store -- "$1"
 }
 
 # Absolute, shell-quoted path of shunt-models for user-facing hints. Plugin users
