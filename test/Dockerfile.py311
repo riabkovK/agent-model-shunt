@@ -1,0 +1,16 @@
+# Runs bats under bash 3.2 and pytest on Python 3.11, the minimum the Python core supports.
+FROM python:3.11-alpine@sha256:d9368b3a5ac59afea7b5d4f2e2aea0941dbf9fdee9c369c5bec00b98244bc929
+# The bash 3.2 binary comes from the digest-pinned bash:3.2 image (musl on both sides).
+COPY --from=bash:3.2@sha256:0fd7cb8499c63a3c9345e7088a9cd83bb69f6e895e83833859aff838a0312091 /usr/local/bin/bash /usr/local/bin/bash
+# bats-support v0.3.0 and bats-assert v2.2.4, pinned by commit.
+RUN apk add --no-cache ncurses-libs parallel jq coreutils git curl nodejs \
+    && pip install --no-cache-dir pytest==8.3.4 \
+    && git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core /opt/bats-core \
+    && /opt/bats-core/install.sh /usr/local \
+    && git clone https://github.com/bats-core/bats-support /usr/lib/bats/bats-support \
+    && git -C /usr/lib/bats/bats-support checkout --quiet 24a72e14349690bcbf7c151b9d2d1cdd32d36eb1 \
+    && git clone https://github.com/bats-core/bats-assert /usr/lib/bats/bats-assert \
+    && git -C /usr/lib/bats/bats-assert checkout --quiet f1e9280eaae8f86cbe278a687e6ba755bc802c1a
+RUN ln -sf /usr/local/bin/bash /bin/bash
+ENV BATS_LIB_PATH=/usr/lib/bats
+WORKDIR /code

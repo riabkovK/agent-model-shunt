@@ -32,3 +32,4 @@ rather than duplicating it here.
 | [0019](0019-api-key-storage.md) | API key storage: keyring, env var, plaintext or none, never in argv | Accepted | Yes (`scripts/lib/providers.sh`, `scripts/shunt-models key`) |
 | [0020](0020-context-window-and-oversize-handling.md) | Context window from detection or the user, and `map_reduce` or `fail` for oversize input | Accepted | Yes (`scripts/lib/context-detect.sh`, `scripts/lib/transport-http.sh`) |
 | [0021](0021-thinking-options-apply-to-both-transports.md) | Thinking options apply to both transports | Accepted | Yes (`scripts/lib/transport-http.sh` request body merge) |
+| [0022](0022-python-core-port.md) | Port the core from bash and jq to Python | Accepted | Partial: port in progress, scaffold only (`scripts/py/`, `scripts/lib/py.sh`). ADR 0004 is superseded when it completes |
