@@ -4,21 +4,24 @@ Port of the jq read-modify-write code in scripts/shunt-models. Argument
 parsing, usage text, the entry checks and the user-facing success lines stay in
 bash. Each subcommand here loads the file, builds a new document (the old one is
 never mutated) and replaces the file atomically with mode 0600, as the bash
-mktemp+mv did. The registry has no lock, as before.
+mktemp+mv did. Every load+save runs under the
+models lock (<file>.lock, providers lock style: SHUNT_PROVIDERS_LOCK_TIMEOUT seconds).
 
 Messages go through ShuntError: `shunt: <text>` on stderr, exit 1.
 """
 
 import argparse
+import contextlib
 import json
 import os
 import sys
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
 from . import env
 from .jsonio import JsonReadError, read_json, write_json_atomic
+from .lockfile import LockTimeout, file_lock
 from .models import OVERSIZE_POLICIES, ROLES, ShuntError, slug
 
 MAX_CONTEXT_DIGITS = 12  # keep in sync with SHUNT_CONTEXT_MAX_DIGITS in scripts/shunt-models
@@ -36,6 +39,20 @@ def parse_json(text: str) -> Any:
 
 
 # ---------------------------------------------------------------- file access
+
+@contextlib.contextmanager
+def models_lock(path: str, environ: Mapping[str, str]) -> Iterator[None]:
+    """The models.json lock. It nests inside one process, so migrate can hold it around several writes."""
+    try:
+        timeout = env.providers_lock_timeout(environ)
+    except env.EnvError as exc:
+        raise ShuntError(str(exc)) from None
+    try:
+        with file_lock(path, timeout):
+            yield
+    except LockTimeout:
+        raise ShuntError(f"timed out waiting for the lock on {path}.") from None
+
 
 def _load(path: str, *, create: bool = False) -> dict[str, Any]:
     try:
@@ -220,10 +237,18 @@ def set_oversize(path: str, model_id: str, policy: str) -> None:
 def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     path = env.models_file_text(environ)
     cmd = args.models_write_command
+    if cmd == "parse-roles":
+        sys.stdout.write(",".join(parse_roles(args.roles)) + "\n")
+        return 0
+    with models_lock(path, environ):
+        _run_locked(args, path)
+    return 0
+
+
+def _run_locked(args: argparse.Namespace, path: str) -> None:
+    cmd = args.models_write_command
     if cmd == "put":
         put(path, sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
-    elif cmd == "parse-roles":
-        sys.stdout.write(",".join(parse_roles(args.roles)) + "\n")
     elif cmd == "add":
         sys.stdout.write(add(path, args.id, args.roles) + "\n")
     elif cmd == "remove":
@@ -244,12 +269,13 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         set_context(path, args.id, args.tokens)
     elif cmd == "oversize-policy":
         set_oversize(path, args.id, args.policy)
-    return 0
 
 
 def run(args: argparse.Namespace) -> int:
     try:
         return _dispatch(args, os.environ)
+    except BrokenPipeError:
+        raise
     except (ShuntError, OSError, UnicodeError, ValueError) as exc:
         sys.stderr.write(f"shunt: {exc}\n")
         return 1

@@ -9,6 +9,7 @@ import sys
 
 MIN_PYTHON = (3, 11)
 BROKEN_PIPE_EXIT = 141
+INTERRUPT_EXIT = 130
 
 
 def check_python(version_info=None):
@@ -34,6 +35,8 @@ def run():
         code = main(sys.argv[1:])
         sys.stdout.flush()
         return code
+    except KeyboardInterrupt:
+        return INTERRUPT_EXIT  # quiet, like a shell: no traceback
     except BrokenPipeError:
         # The reader went away (`| head`). Exit quietly like a process killed by
         # SIGPIPE would: 141 = 128 + 13. Point stdout at devnull so the interpreter's

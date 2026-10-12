@@ -18,7 +18,6 @@ import contextlib
 import io
 import json
 import os
-import shutil
 import signal
 import sys
 import tempfile
@@ -27,7 +26,7 @@ from collections.abc import Iterator, Mapping, Sequence
 from pathlib import Path
 from typing import Any
 
-from . import env, models, providers, providers_write
+from . import env, models, models_write, providers, providers_write
 from .jsonio import write_json_atomic
 from .lockfile import LockTimeout, file_lock
 from .migrate_plan import STORAGE_CHOICES, Ctx, collect_providers, initial_used_refs, plan_models, plan_provider, read_key
@@ -36,6 +35,7 @@ from .providers import ProviderError
 
 _USAGE = f"usage: shunt-models --migrate-from-opencode [--apply [--yes]] [--key-storage {'|'.join(STORAGE_CHOICES)}]"
 _SIGNAL_EXIT = {"SIGINT": 130, "SIGTERM": 143, "SIGHUP": 129}
+_BACKUP_TRIES = 5
 _YES_ANSWERS = ("y", "Y", "yes", "YES")
 
 
@@ -104,11 +104,23 @@ def build_plan(ctx: Ctx) -> dict[str, Any]:
 def _backup(path: str, stamp: str) -> None:
     if not os.path.isfile(path):
         return
-    dest = f"{path}.bak-{stamp}"
-    fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "wb") as out, open(path, "rb") as source:
-        shutil.copyfileobj(source, out)
-    sys.stdout.write(f"shunt: backup: {dest}\n")
+    with open(path, "rb") as source:
+        payload = source.read()
+    for attempt in range(_BACKUP_TRIES):
+        suffix = "" if attempt == 0 else f".{os.getpid()}.{time.time_ns()}"
+        dest = f"{path}.bak-{stamp}{suffix}"
+        try:  # never overwrite or follow an existing path, the copy may hold keys
+            fd = os.open(dest, os.O_WRONLY | os.O_CREAT | os.O_EXCL | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
+        except FileExistsError:
+            continue
+        with os.fdopen(fd, "wb") as out:
+            os.fchmod(out.fileno(), 0o600)
+            out.write(payload)
+            out.flush()
+            os.fsync(out.fileno())
+        sys.stdout.write(f"shunt: backup: {dest}\n")
+        return
+    raise MigrateError(f"could not create a backup of {path}.")
 
 
 def _store_failed(name: str, where: str, reason: ProviderError | None) -> MigrateError:
@@ -170,6 +182,16 @@ def _providers_lock(ctx: Ctx) -> Iterator[None]:
         raise MigrateError(str(exc)) from None
 
 
+@contextlib.contextmanager
+def _models_lock(ctx: Ctx) -> Iterator[None]:
+    path = ctx.models_path
+    try:
+        with models_write.models_lock(path, ctx.environ):
+            yield
+    except models.ShuntError as exc:
+        raise MigrateError(str(exc)) from None
+
+
 def _write(path: str, doc: Mapping[str, Any]) -> None:
     try:
         write_json_atomic(Path(path), doc)
@@ -179,14 +201,16 @@ def _write(path: str, doc: Mapping[str, Any]) -> None:
 
 def apply_plan(ctx: Ctx, plan: dict[str, Any]) -> None:
     stamp = time.strftime("%Y%m%d%H%M%S")
-    _backup(ctx.models_path, stamp)
-    _backup(ctx.providers_path, stamp)
-    _store_keys(ctx, plan, "keyring")
-    with _providers_lock(ctx):
-        _write(ctx.providers_path, providers_doc(ctx, plan))
-        _store_keys(ctx, plan, "plaintext")
-    plan["models"] = plan_models(ctx, plan, True, ctx.providers_path)
-    _write(ctx.models_path, models_doc(ctx, plan))
+    with _models_lock(ctx):
+        _backup(ctx.models_path, stamp)
+        with _providers_lock(ctx):
+            _backup(ctx.providers_path, stamp)
+        _store_keys(ctx, plan, "keyring")
+        with _providers_lock(ctx):
+            _write(ctx.providers_path, providers_doc(ctx, plan))
+            _store_keys(ctx, plan, "plaintext")
+        plan["models"] = plan_models(ctx, plan, True, ctx.providers_path)
+        _write(ctx.models_path, models_doc(ctx, plan))
     sys.stdout.write(f"shunt: migration applied. Check with: {ctx.hint_cmd} status\n")
 
 
@@ -238,6 +262,8 @@ def run(args: argparse.Namespace) -> int:
     _exit_on_signals()
     try:
         return migrate(args.args, dict(os.environ))
+    except BrokenPipeError:
+        raise
     except MigrateError as exc:
         sys.stderr.write(f"shunt: {exc}\n")
         return exc.code

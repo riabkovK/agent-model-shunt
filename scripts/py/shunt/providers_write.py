@@ -3,9 +3,8 @@
 Port of shunt_providers_write, shunt_provider_plaintext_store and the jq code of
 cmd_provider_set in bash. Argument parsing and the hint lines stay in bash.
 
-Locking: `set` and `plaintext-store` take the providers lock (<file>.lock, flock,
-SHUNT_PROVIDERS_LOCK_TIMEOUT seconds) around the read-modify-write. `put` takes
-none, like the bash function. The only lock implementation is lockfile.py.
+Locking: `put`, `set` and `plaintext-store` take the providers lock (<file>.lock, flock,
+SHUNT_PROVIDERS_LOCK_TIMEOUT seconds) around the write. The only lock implementation is lockfile.py.
 migrate.py calls the functions in-process under its own file_lock, which nests.
 
 The key of the plaintext store arrives on stdin and is held in memory only. It
@@ -127,7 +126,9 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     path = env.providers_file_text(environ)
     cmd = args.providers_write_command
     if cmd == "put":
-        put(path, sys.stdin.buffer.read().decode("utf-8", "surrogateescape"))
+        text = sys.stdin.buffer.read().decode("utf-8", "surrogateescape")
+        with _lock(path, environ):
+            put(path, text)
     elif cmd == "set":
         with _lock(path, environ):
             sys.stdout.write(set_provider(path, args.name, args.transport, args.base_url,
@@ -142,6 +143,8 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
 def run(args: argparse.Namespace) -> int:
     try:
         return _dispatch(args, os.environ)
+    except BrokenPipeError:
+        raise
     except ProviderError as exc:
         sys.stderr.write(f"shunt: {exc}\n")
         return exc.code

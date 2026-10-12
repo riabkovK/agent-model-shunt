@@ -62,7 +62,7 @@ def test_put_writes_a_pretty_file_with_mode_600_and_no_temp_left(reg):
     assert result.returncode == 0
     assert reg.doc() == {"version": 1, "models": []}
     assert stat.S_IMODE(reg.models.stat().st_mode) == 0o600
-    assert [p.name for p in reg.models.parent.iterdir()] == ["models.json"]
+    assert sorted(p.name for p in reg.models.parent.iterdir()) == ["models.json", "models.json.lock"]  # the lock file stays, no temp file
 
 
 @pytest.mark.parametrize("text", ["", "{not json", "null", "false", "NaN"])

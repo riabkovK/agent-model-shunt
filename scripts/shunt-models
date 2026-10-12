@@ -87,13 +87,6 @@ _shunt_models_write_py() {
   [ "$rc" -eq 0 ] || exit "$rc"
 }
 
-# shunt_models_write <json>
-# Validates <json> and atomically replaces the registry file with it (mode 600,
-# temp file in the same directory, so a corrupt file is never left behind).
-shunt_models_write() {
-  printf '%s' "$1" | _shunt_models_write_py put
-}
-
 # shunt_models_parse_roles <role>[,<role>...]
 # Prints the roles as a comma separated line, order kept and duplicates dropped.
 # Exits with an error on an empty, unknown or multi-line list.

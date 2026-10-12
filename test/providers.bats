@@ -211,11 +211,6 @@ use_fake_path() {
   assert_output "$SECRET"
 }
 
-@test "shunt_providers_write creates the file with mode 600" {
-  shunt_providers_write '{"version":1,"providers":{}}'
-  [ "$(stat -c %a "$SHUNT_PROVIDERS_FILE")" = "600" ]
-}
-
 @test "plaintext warning mentions plain text" {
   run shunt_provider_plaintext_warning
   assert_output --partial "plain text"

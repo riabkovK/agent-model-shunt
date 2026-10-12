@@ -16,18 +16,21 @@ import io
 import json
 import os
 import re
+import stat
 import sys
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from typing import Any
 
 from . import context_detect, env, providers
-from .jsonio import JsonReadError, read_json
+from .jsonio import JsonReadError, read_capped, read_json
 from .providers import ProviderError
 
 STORAGE_CHOICES = ("keyring", "env", "plaintext", "skip")
 DETECT_KEY_VAR = "SHUNT_MIGRATE_DETECT_KEY"
 MAX_CONTEXT_DIGITS = 12
+MAX_KEY_FILE_BYTES = 4096
+_FORBIDDEN_KEY_DIRS = ("/proc/", "/sys/")
 
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 _ENV_KEY_RE = re.compile(r"^\{env:([A-Za-z_][A-Za-z0-9_]*)\}$")  # `$` also matches before a final newline, as in jq
@@ -157,15 +160,24 @@ def _expand_path(ctx: Ctx, path: str) -> str:
 
 def _read_file_key(ctx: Ctx, path: str) -> str | None:
     """The trimmed content of a key file, None when it is absent, unreadable or not a usable key."""
-    full = _expand_path(ctx, path)
-    if not os.path.isfile(full):  # bash `[ -f ]`: no FIFO, device or directory
+    full = os.path.normpath(_expand_path(ctx, path))
+    if full.startswith(_FORBIDDEN_KEY_DIRS):
         return None
     try:
-        with open(full, "rb") as handle:
-            data = handle.read()
+        fd = os.open(full, os.O_RDONLY | os.O_NONBLOCK | os.O_NOFOLLOW | os.O_CLOEXEC)
     except OSError:
         return None
-    key = _trim(data.replace(b"\0", b"").decode("utf-8", "surrogateescape"))
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):  # no FIFO, device or directory
+            return None
+        data = read_capped(fd, MAX_KEY_FILE_BYTES + 1)
+    except OSError:
+        return None
+    finally:
+        os.close(fd)
+    if len(data) > MAX_KEY_FILE_BYTES or b"\0" in data:
+        return None
+    key = _trim(data.decode("utf-8", "surrogateescape"))
     return key if _key_usable(key) else None
 
 
@@ -376,6 +388,8 @@ def _detect(ctx: Ctx, model_id: str, pfile: str) -> int | None:
     with contextlib.redirect_stderr(io.StringIO()):
         try:
             value, status = context_detect.detect(model_id, environ)
+        except BrokenPipeError:
+            raise
         except (OSError, ValueError, ProviderError):
             return None
     return value if status == 0 else None
@@ -390,6 +404,11 @@ def _context(ctx: Ctx, model_id: str, detect: bool, pfile: str) -> dict[str, Any
     return None if limit is None else {"tokens": limit, "source": "from opencode.json, not verified"}
 
 
+def _defers_detection(owner: Mapping[str, Any]) -> bool:
+    """A key from opencode.json (or copied from it) must not travel to its baseURL before the user confirmed --apply."""
+    return owner["state"] == "new" and owner["storage"] != "none"
+
+
 def plan_models(ctx: Ctx, plan: Mapping[str, Any], detect_all: bool, pfile: str) -> list[dict[str, Any]]:
     states = {p["name"]: p for p in plan["providers"]}
     out = []
@@ -398,7 +417,7 @@ def plan_models(ctx: Ctx, plan: Mapping[str, Any], detect_all: bool, pfile: str)
         owner = states.get(model_id.split("/")[0])
         if owner is None or owner["state"] not in ("new", "done"):
             continue
-        deferred = owner["storage"] in ("keyring", "plaintext") and not detect_all
+        deferred = _defers_detection(owner) and not detect_all
         request_body = None
         if is_unset(model.get("request_body")):
             effort = _effort(ctx, model)

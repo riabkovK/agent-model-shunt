@@ -1,23 +1,56 @@
 """JSON file reading and atomic writing."""
 
+import errno
 import json
 import os
+import stat
 import tempfile
 from pathlib import Path
 from typing import Any
 
 DEFAULT_FILE_MODE = 0o600  # providers.json and friends: chmod 600 in bash
+MAX_JSON_BYTES = 16 * 1024 * 1024
 
 
 class JsonReadError(Exception):
     """The file exists but cannot be read or does not hold valid JSON."""
 
 
+def read_capped(fd: int, limit: int) -> bytes:
+    """Up to limit bytes from fd."""
+    chunks: list[bytes] = []
+    left = limit
+    while left > 0:
+        chunk = os.read(fd, min(left, 1 << 20))
+        if not chunk:
+            break
+        chunks.append(chunk)
+        left -= len(chunk)
+    return b"".join(chunks)
+
+
+def _read_regular_text(path: str) -> str:
+    """Read a regular file of at most MAX_JSON_BYTES. A FIFO or device is refused, never waited on."""
+    fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
+    try:
+        info = os.fstat(fd)
+        if not stat.S_ISREG(info.st_mode):
+            raise OSError(errno.EINVAL, "not a regular file")
+        if info.st_size > MAX_JSON_BYTES:
+            raise OSError(errno.EFBIG, "file too large")
+        data = read_capped(fd, MAX_JSON_BYTES + 1)
+    finally:
+        os.close(fd)
+    if len(data) > MAX_JSON_BYTES:
+        raise OSError(errno.EFBIG, "file too large")
+    return data.decode("utf-8")
+
+
 def read_json(path: str | os.PathLike[str], default: Any = None) -> Any:
     """Return the parsed JSON in path, or default when the file does not exist."""
     p = os.fspath(path)  # echoed as given, not pathlib-normalised
     try:
-        text = Path(p).read_text(encoding="utf-8")
+        text = _read_regular_text(p)
     except FileNotFoundError:
         return default
     except (OSError, UnicodeDecodeError) as exc:

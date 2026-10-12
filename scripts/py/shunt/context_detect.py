@@ -205,6 +205,8 @@ def detect(model_id: str, environ: Mapping[str, str]) -> tuple[int | None, int]:
     except providers.ProviderError as exc:
         sys.stderr.write(f"shunt: {exc}\n")
         return None, EXIT_NOT_FOUND
+    except BrokenPipeError:
+        raise
     except OSError as exc:  # only paths and strerror text, never a key
         sys.stderr.write(f"shunt: {exc}\n")
         return None, EXIT_NOT_FOUND

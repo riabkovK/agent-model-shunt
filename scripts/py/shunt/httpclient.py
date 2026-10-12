@@ -146,7 +146,7 @@ def _limit_socket(sock: Any, seconds: float) -> None:
         pass
 
 
-def _read_body(resp: Any, max_bytes: int, deadline: float | None) -> bytes:
+def _read_body(resp: Any, max_bytes: int, deadline: float | None, expect_body: bool = True) -> bytes:
     declared = resp.headers.get("Content-Length", "")
     if declared.isascii() and declared.isdigit() and int(declared) > max_bytes:
         raise HttpError("too_large")
@@ -162,6 +162,10 @@ def _read_body(resp: Any, max_bytes: int, deadline: float | None) -> bytes:
             _limit_socket(sock, left)
         chunk = read(min(_CHUNK, max_bytes + 1 - total))
         if not chunk:
+            # curl exit 18 (partial file): fewer bytes than a Content-Length without Transfer-Encoding.
+            if (expect_body and declared.isascii() and declared.isdigit() and total < int(declared)
+                    and not resp.headers.get("Transfer-Encoding")):
+                raise HttpError("recv")
             return b"".join(chunks)
         total += len(chunk)
         if total > max_bytes:
@@ -189,7 +193,8 @@ def _perform(req: urllib.request.Request, timeout: float | None, max_bytes: int)
         except urllib.error.HTTPError as err:  # non-2xx: still an answer
             resp = err
         try:
-            body = _read_body(resp, max_bytes, deadline)
+            has_body = req.get_method() != "HEAD" and resp.status not in (204, 304) if hasattr(resp, "status") else True
+            body = _read_body(resp, max_bytes, deadline, has_body)
             headers = {k.lower(): v for k, v in resp.headers.items()}
             return Response(resp.status if hasattr(resp, "status") else resp.code, headers, body)
         finally:

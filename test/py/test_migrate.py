@@ -153,7 +153,7 @@ def test_apply_backs_up_both_files_with_mode_600(mig, capsys):
     assert capsys.readouterr().out.count("shunt: backup: ") == 2
 
 
-def test_an_env_key_reuses_its_name_and_detects_in_the_dry_run(mig, capsys, monkeypatch):
+def test_an_env_key_reuses_its_name_and_detects_only_on_apply(mig, capsys, monkeypatch):
     mig.write_opencode("{env:ACME_KEY}")
     monkeypatch.setenv("ACME_KEY", SECRET)
     mig.server.script("/v1/models/m1", body={"context_length": 4096})
@@ -162,7 +162,22 @@ def test_an_env_key_reuses_its_name_and_detects_in_the_dry_run(mig, capsys, monk
 
     out = capsys.readouterr().out
     assert "key: env ACME_KEY (export it yourself, the key is not copied)" in out
-    assert "context_tokens 4096 (detected from the provider)" in out
+    assert "context_tokens 65536 (from opencode.json, not verified)" in out
+    assert mig.server.requests == []  # the key never goes to the opencode.json baseURL in a dry run
+
+    mig.run("--apply", "--yes")
+
+    assert json.loads(mig.models.read_text())["models"][0]["context_tokens"] == 4096
+    assert mig.server.requests
+
+
+def test_a_file_key_ref_sends_nothing_in_the_dry_run(mig, isolated_env):
+    (mig.tmp / "k.txt").write_text(SECRET + "\n")
+    mig.write_opencode("{file:" + str(mig.tmp / "k.txt") + "}")
+
+    mig.run("--key-storage", "env")
+
+    assert mig.server.requests == []
 
 
 def test_a_taken_default_env_ref_gets_a_numeric_suffix(mig, capsys):
@@ -436,3 +451,76 @@ def test_the_command_line_exits_with_the_error_status(mig, run_shunt):
     assert result.returncode == 1
     assert result.stderr.startswith("shunt: usage: shunt-models --migrate-from-opencode")
     assert result.stdout == ""
+
+
+# ---------------------------------------------------------------- review 4-6 fixes
+
+def test_a_backup_never_follows_or_overwrites_an_existing_path(tmp_path, capsys):
+    target = tmp_path / "providers.json"
+    target.write_text('{"secret": 1}')
+    victim = tmp_path / "victim"
+    victim.write_text("keep me")
+    (tmp_path / "providers.json.bak-S").symlink_to(victim)
+
+    migrate._backup(str(target), "S")
+
+    backups = [p for p in tmp_path.glob("providers.json.bak-S*") if not p.is_symlink()]
+    assert victim.read_text() == "keep me"
+    assert len(backups) == 1 and backups[0].read_text() == '{"secret": 1}'
+    assert stat.S_IMODE(backups[0].stat().st_mode) == 0o600
+    assert f"shunt: backup: {backups[0]}" in capsys.readouterr().out
+
+
+@pytest.fixture
+def key_ctx(tmp_path, isolated_env):
+    from shunt.migrate_plan import Ctx
+    return Ctx(environ={"HOME": str(isolated_env["HOME"]), "SHUNT_OPENCODE_CONFIG_HOME": str(tmp_path / "oc")})
+
+
+def _key_file(ctx, path):
+    from shunt.migrate_plan import _read_file_key
+    return _read_file_key(ctx, str(path))
+
+
+def test_a_key_file_is_read_trimmed(key_ctx, tmp_path):
+    (tmp_path / "k").write_text(f"  {SECRET}\n")
+    assert _key_file(key_ctx, tmp_path / "k") == SECRET
+
+
+@pytest.mark.parametrize("path", ["/proc/self/environ", "/proc/../proc/self/environ", "/sys/kernel/uevent_seqnum"])
+def test_a_key_file_under_proc_or_sys_is_refused(key_ctx, path):
+    assert _key_file(key_ctx, path) is None
+
+
+def test_a_symlinked_key_file_is_refused(key_ctx, tmp_path):
+    (tmp_path / "real").write_text(SECRET)
+    (tmp_path / "link").symlink_to(tmp_path / "real")
+    assert _key_file(key_ctx, tmp_path / "link") is None
+
+
+def test_an_oversized_or_nul_key_file_is_refused(key_ctx, tmp_path):
+    (tmp_path / "big").write_text("k" * 4097)
+    (tmp_path / "nul").write_bytes(b"abc\0def")
+    (tmp_path / "edge").write_text("k" * 4096)
+    assert _key_file(key_ctx, tmp_path / "big") is None
+    assert _key_file(key_ctx, tmp_path / "nul") is None
+    assert _key_file(key_ctx, tmp_path / "edge") == "k" * 4096
+
+
+def test_a_fifo_key_file_is_refused_without_blocking(key_ctx, tmp_path):
+    os.mkfifo(tmp_path / "fifo")
+    assert _key_file(key_ctx, tmp_path / "fifo") is None
+
+
+def test_the_plan_escapes_control_characters(capsys):
+    from shunt.migrate_view import print_plan
+    plan = {"providers": [{"name": "a\nprovider x: forged\x1b[31m", "state": "skip", "reason": "bad\x9bthing",
+                           "storage": "none", "base_url": "", "key_source": "", "key_path": "", "env_ref": ""}],
+            "models": [{"id": "m\r\x07id", "request_body": None, "context": None, "deferred": False}]}
+
+    print_plan(plan, "hint")
+
+    out = capsys.readouterr().out
+    assert out.count("\n") == 2
+    assert not any(ch in out.replace("\n", "") for ch in "\x1b\x9b\r\x07")
+    assert "a\\x0aprovider x: forged\\x1b[31m" in out and "bad\\x9bthing" in out and "m\\x0d\\x07id" in out

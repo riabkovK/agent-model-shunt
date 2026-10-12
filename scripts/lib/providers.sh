@@ -19,7 +19,7 @@
 # functions here are thin wrappers around `shunt_py providers <subcommand>` with
 # the old names, stdout, stderr and exit codes, and each call that reaches Python
 # costs one interpreter start. The writers of providers.json
-# (shunt_providers_write, shunt_provider_plaintext_store, provider set) are in
+# (shunt_provider_plaintext_store, provider set) are in
 # scripts/py/shunt/providers_write.py. Python takes the providers lock itself
 # (scripts/py/shunt/lockfile.py is the only lock implementation) for a
 # read-modify-write. The read side never takes the lock.
@@ -169,16 +169,9 @@ shunt_provider_write_auth_header_file() {
   if [ -n "$outvar" ]; then printf -v "$outvar" '%s' "$file"; else echo "$file"; fi
 }
 
-# shunt_providers_write <json>
-# Validates and atomically replaces providers.json, created with mode 600.
-# The write itself is scripts/py/shunt/providers_write.py. It takes no lock.
-shunt_providers_write() {
-  printf '%s' "$1" | _shunt_providers_write_py put
-}
-
 # _shunt_providers_write_py <subcommand> [args...]
 # Runs a providers-write subcommand with the paths this file resolved. The lock
-# timeout is passed too (`put` takes no lock).
+# timeout is passed too.
 _shunt_providers_write_py() {
   local sub="$1"
   shift

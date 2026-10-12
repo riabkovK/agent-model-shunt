@@ -4,6 +4,7 @@ Second half of the port of scripts/lib/migrate.sh, see migrate_plan.py for the p
 """
 
 import json
+import re
 import sys
 from collections.abc import Mapping
 from typing import Any
@@ -71,6 +72,14 @@ _KEY_PREFIX = {"file": "read from the apiKey file {path} (never shown), then ",
                "auth.json": "read from OpenCode auth.json (never shown), then "}
 
 
+_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f]")
+
+
+def safe(text: Any) -> str:
+    """Text for the terminal: control characters (newline, ESC, C1) become \\xNN escapes."""
+    return _CONTROL_RE.sub(lambda m: f"\\x{ord(m.group()):02x}", str(text))
+
+
 def _storage_text(item: Mapping[str, Any], hint_cmd: str) -> str:
     storage = item["storage"]
     if storage == "none":
@@ -110,6 +119,6 @@ def model_line(item: Mapping[str, Any]) -> str:
 
 def print_plan(plan: Mapping[str, Any], hint_cmd: str) -> None:
     for item in plan["providers"]:
-        sys.stdout.write(provider_line(item, hint_cmd) + "\n")
+        sys.stdout.write(safe(provider_line(item, hint_cmd)) + "\n")
     for item in plan["models"]:
-        sys.stdout.write(model_line(item) + "\n")
+        sys.stdout.write(safe(model_line(item)) + "\n")

@@ -412,6 +412,8 @@ def run(args: argparse.Namespace) -> int:
     except ProviderError as exc:
         sys.stderr.write(f"shunt: {exc}\n")
         return exc.code
+    except BrokenPipeError:
+        raise
     except ValueError:  # e.g. a key that cannot be encoded: no exception text, it could echo the key
         sys.stderr.write("shunt: the key could not be processed (invalid characters).\n")
         return 1
