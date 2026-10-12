@@ -22,7 +22,15 @@ if [ ! -s "$log_path" ]; then
   exit 1
 fi
 
+# Entries written before the model field existed carry only the agent: a model
+# id in registry mode, the OpenCode agent name (e.g. bulk-reader) in legacy
+# single-agent mode, which is not a model.
 jq -s '
+  def model_label:
+    if (.model // "") != "" then .model
+    elif ((.agent // "") | contains("/")) then .agent
+    else "unknown (legacy OpenCode agent \(.agent // "?"))"
+    end;
   {
     calls: length,
     delegate_input_tokens: (map(.delegate_input_tokens) | add),
@@ -40,9 +48,10 @@ jq -s '
         generated_bytes: (map(.generated_bytes // 0) | add)
       })
     ),
-    by_agent: (
-      group_by([(.tool // "bulk-read"), .agent]) | map({
-        agent: .[0].agent,
+    by_model: (
+      map(. + {model_label: model_label}) |
+      group_by([(.tool // "bulk-read"), .model_label]) | map({
+        model: .[0].model_label,
         tool: (.[0].tool // "bulk-read"),
         calls: length,
         delegate_cost_usd: (map(.delegate_cost_usd) | add),
