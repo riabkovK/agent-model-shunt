@@ -1,0 +1,245 @@
+load 'test_helper'
+
+setup() {
+  shunt_test_setup
+  source "$REPO_ROOT/scripts/lib/orchestrator.sh"
+  mkdir -p "$TEST_TMPDIR/frag"
+}
+
+teardown() {
+  shunt_test_teardown
+}
+
+# frag <name> <printf-format> [args]: writes $TEST_TMPDIR/frag/<name>.
+frag() {
+  local name="$1"
+  shift
+  printf "$@" >"$TEST_TMPDIR/frag/$name"
+}
+
+@test "built-in fragments parse with their roles" {
+  run shunt_orchestrator_role "$REPO_ROOT/skills/bulk-reader/orchestrator.md"
+  [ "$status" -eq 0 ]
+  [ "$output" = "bulk-read" ]
+  run shunt_orchestrator_role "$REPO_ROOT/skills/code-writer/orchestrator.md"
+  [ "$status" -eq 0 ]
+  [ "$output" = "code-write" ]
+  run shunt_orchestrator_body "$REPO_ROOT/skills/bulk-reader/orchestrator.md"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"/bulk-reader"* ]]
+  run shunt_orchestrator_body "$REPO_ROOT/skills/code-writer/orchestrator.md"
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"/code-writer"* ]]
+}
+
+@test "built-in roles are known registry roles" {
+  source "$REPO_ROOT/scripts/lib/models.sh"
+  local f role
+  for f in $(shunt_orchestrator_list); do
+    role=$(shunt_orchestrator_role "$f")
+    shunt_models_role_known "$role"
+  done
+}
+
+@test "MIN_LINES is substituted in the body" {
+  run shunt_orchestrator_body "$REPO_ROOT/skills/bulk-reader/orchestrator.md" 500
+  [ "$status" -eq 0 ]
+  [[ "$output" == *"over 500 lines"* ]]
+  [[ "$output" != *"{{MIN_LINES}}"* ]]
+}
+
+@test "garbage MIN_LINES falls back to 350" {
+  local v
+  for v in "" abc "1;ls" '$(id)' -5 0 00 1234567890 "3 5"; do
+    run shunt_orchestrator_body "$REPO_ROOT/skills/bulk-reader/orchestrator.md" "$v"
+    [ "$status" -eq 0 ]
+    [[ "$output" == *"over 350 lines"* ]]
+  done
+}
+
+@test "a fragment without a role line has an empty role" {
+  frag f -- '- one\n- two\n'
+  run shunt_orchestrator_role "$TEST_TMPDIR/frag/f"
+  [ "$status" -eq 0 ]
+  [ "$output" = "" ]
+}
+
+@test "other tokens are not substituted" {
+  frag f -- '- {{OTHER}} ${HOME} {{MIN_LINES}}x\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f" 9
+  [ "$output" = '- {{OTHER}} ${HOME} 9x' ]
+}
+
+@test "blank lines are ignored" {
+  frag f 'role: bulk-read\n\n- a\n   \n- b\n\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'- a\n- b' ]
+}
+
+@test "invalid role lines reject the fragment" {
+  local r
+  for r in 'role: Bad' 'role: a b' 'role: ' 'role: x;id' 'role: -x' 'role: aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa'; do
+    frag f '%s\n- a\n' "$r"
+    run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+    run shunt_orchestrator_role "$TEST_TMPDIR/frag/f"
+    [ "$status" -ne 0 ]
+    [ -z "$output" ]
+  done
+}
+
+@test "a role line that is not first is rejected" {
+  frag f -- '- a\nrole: bulk-read\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -ne 0 ]
+}
+
+@test "a non-bullet line rejects the fragment" {
+  frag f 'role: bulk-read\n- a\nplain text\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "seven bullets are rejected and six are accepted" {
+  frag f -- '- 1\n- 2\n- 3\n- 4\n- 5\n- 6\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -eq 0 ]
+  frag f -- '- 1\n- 2\n- 3\n- 4\n- 5\n- 6\n- 7\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "an empty body is rejected" {
+  frag f ''
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -ne 0 ]
+  frag f 'role: bulk-read\n\n\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -ne 0 ]
+}
+
+@test "a directory, a missing file and an oversize file are rejected" {
+  mkdir "$TEST_TMPDIR/frag/dir"
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/dir"
+  [ "$status" -ne 0 ]
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/missing"
+  [ "$status" -ne 0 ]
+  { printf -- '- a\n'; head -c 5000 /dev/zero | tr '\0' ' '; } >"$TEST_TMPDIR/frag/big"
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/big"
+  [ "$status" -ne 0 ]
+  [ -z "$output" ]
+}
+
+@test "control characters, ANSI sequences and CR are stripped" {
+  frag f -- '- a\033[31mred\033[0m\tb\r\n- c\001d\033]0;title\007e\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -eq 0 ]
+  [ "$output" = $'- ared b\n- cde' ]
+  [[ "$output" != *$'\033'* ]]
+  [[ "$output" != *$'\r'* ]]
+  [[ "$output" != *$'\001'* ]]
+  [[ "$output" != *$'\t'* ]]
+}
+
+@test "UTF-8 text is kept" {
+  frag f -- '- привет мир, café\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$output" = '- привет мир, café' ]
+}
+
+@test "a long line is truncated to 160 characters" {
+  local long
+  long=$(head -c 400 /dev/zero | tr '\0' 'x')
+  frag f -- '- %s\n' "$long"
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -eq 0 ]
+  [ "${#output}" -eq 160 ]
+}
+
+@test "a long body is truncated to 600 characters" {
+  local l
+  l=$(head -c 150 /dev/zero | tr '\0' 'y')
+  frag f -- '- %s\n- %s\n- %s\n- %s\n- %s\n- %s\n' "$l" "$l" "$l" "$l" "$l" "$l"
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -eq 0 ]
+  [ "${#output}" -eq 600 ]
+}
+
+@test "command substitution and backticks in a fragment are printed literally" {
+  cd "$TEST_TMPDIR"
+  frag f -- '- $(touch pwned) `touch pwned2` ${IFS} $((1+1))\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -eq 0 ]
+  [ "$output" = '- $(touch pwned) `touch pwned2` ${IFS} $((1+1))' ]
+  [ ! -e pwned ]
+  [ ! -e pwned2 ]
+}
+
+@test "listing finds built-in fragments sorted" {
+  run shunt_orchestrator_list
+  [ "$status" -eq 0 ]
+  [ "$output" = "$(printf '%s\n' "$output" | LC_ALL=C sort)" ]
+  [[ "$output" == *"skills/bulk-reader/orchestrator.md"* ]]
+  [[ "$output" == *"skills/code-writer/orchestrator.md"* ]]
+}
+
+@test "listing sorts a custom root and ignores skills without a fragment" {
+  local r="$TEST_TMPDIR/root"
+  mkdir -p "$r/skills/zeta" "$r/skills/alpha" "$r/skills/none"
+  : >"$r/skills/zeta/orchestrator.md"
+  : >"$r/skills/alpha/orchestrator.md"
+  run shunt_orchestrator_list "$r"
+  [ "$output" = "$r/skills/alpha/orchestrator.md"$'\n'"$r/skills/zeta/orchestrator.md" ]
+}
+
+@test "listing an empty root prints nothing" {
+  run shunt_orchestrator_list "$TEST_TMPDIR/nothing"
+  [ "$status" -eq 0 ]
+  [ -z "$output" ]
+}
+
+@test "invisible and terminal-active Unicode is stripped" {
+  frag f -- '- a\302\233b\342\200\256c\342\200\213d\357\273\277e\363\240\201\251f\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -eq 0 ]
+  [ "$output" = '- abcdef' ]
+}
+
+@test "OSC terminated by ST is stripped with its payload" {
+  frag f -- '- a\033]0;title\033\\b\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$output" = '- ab' ]
+}
+
+@test "role names are lowercase only whatever the locale" {
+  frag f 'role: Bad\n- a\n'
+  LC_ALL=en_US.UTF-8 run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$status" -ne 0 ]
+}
+
+@test "the file size cap is exactly 4096 bytes" {
+  { printf -- '- a'; head -c 4093 /dev/zero | tr '\0' ' '; } >"$TEST_TMPDIR/frag/ok"
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/ok"
+  [ "$status" -eq 0 ]
+  { printf -- '- a'; head -c 4094 /dev/zero | tr '\0' ' '; } >"$TEST_TMPDIR/frag/big"
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/big"
+  [ "$status" -ne 0 ]
+}
+
+@test "leading zeros and the 9-digit limit in MIN_LINES" {
+  frag f -- '- {{MIN_LINES}}\n'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f" 0007
+  [ "$output" = '- 7' ]
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f" 999999999
+  [ "$output" = '- 999999999' ]
+}
+
+@test "a file without a trailing newline parses" {
+  frag f -- '- a'
+  run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
+  [ "$output" = '- a' ]
+}
