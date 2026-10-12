@@ -2,57 +2,29 @@ load 'test_helper'
 
 bats_require_minimum_version 1.5.0
 
-# Fake curl for context detection. It answers by URL: a file named after the
-# request path (slashes turned into underscores) under $FAKE_ROUTES holds the
-# body, an optional "<name>.code" file holds the status (default 200). No route
-# means 404. Every call's argv is appended to $FAKE_CURL_ARGV, the -H @file
-# contents are recorded.
+# Context detection talks to a local scripted HTTP server (test/py/httpserver.py,
+# started by start_http_server). It answers by URL: a file named after the request
+# path (slashes turned into underscores) under $FAKE_ROUTES holds the body, an
+# optional "<name>.code" file holds the status (default 200), "<name>.delay" a wait
+# in seconds, "<name>.drop" closes the connection, "<name>.chunked" sends the body
+# without a Content-Length. No route means 404. Every request is logged as a JSON
+# line in $HTTP_LOG (method, path, headers, body).
 setup() {
-  ORIG_PATH="$PATH"
   shunt_test_setup
   export SHUNT_PROVIDERS_FILE="$TEST_TMPDIR/providers.json"
   export TMPDIR="$TEST_TMPDIR/tmp"
   export FAKE_ROUTES="$TEST_TMPDIR/routes"
-  export FAKE_CURL_ARGV="$TEST_TMPDIR/curl-argv"
-  export FAKE_CURL_HEADER_SEEN="$TEST_TMPDIR/curl-header-seen"
-  mkdir -p "$TMPDIR" "$TEST_TMPDIR/bin" "$FAKE_ROUTES"
+  mkdir -p "$TMPDIR" "$FAKE_ROUTES"
   export ACME_KEY="sk-super-secret-value-123"
-  write_fake_curl
-  PATH="$TEST_TMPDIR/bin:$PATH"
+  start_http_server "$FAKE_ROUTES"
   jq -n '{version:1,models:[{id:"acme/m1",agent:"a1",enabled:true}]}' >"$SHUNT_MODELS_FILE"
-  write_providers "https://api.acme.test/v1"
+  write_providers "http://127.0.0.1:$HTTP_PORT/v1"
   BEFORE=$(cat "$SHUNT_MODELS_FILE")
 }
 
 teardown() {
-  PATH="$ORIG_PATH"
+  stop_http_server
   shunt_test_teardown
-}
-
-write_fake_curl() {
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-printf '%s\n' "$*" >>"$FAKE_CURL_ARGV"
-out="" prev="" url=""
-for a in "$@"; do
-  case "$prev" in
-    -o) out="$a" ;;
-    -H) case "$a" in @*) cp "${a#@}" "$FAKE_CURL_HEADER_SEEN" ;; esac ;;
-  esac
-  prev="$a"
-  url="$a"
-done
-[ "${FAKE_CURL_EXIT:-0}" -eq 0 ] || exit "$FAKE_CURL_EXIT"
-name=$(printf '%s' "${url#*://*/}" | tr '/' '_')
-if [ -f "$FAKE_ROUTES/$name" ]; then
-  cp "$FAKE_ROUTES/$name" "$out"
-  cat "$FAKE_ROUTES/$name.code" 2>/dev/null || printf 200
-else
-  : >"$out"
-  printf 404
-fi
-SH
-  chmod +x "$TEST_TMPDIR/bin/curl"
 }
 
 # write_providers <base_url>
@@ -88,8 +60,7 @@ registry_untouched() { [ "$(cat "$SHUNT_MODELS_FILE")" = "$BEFORE" ]; }
   run detect acme/m1
   assert_success
   assert_output 262144
-  grep -q 'https://api.acme.test/api/show' "$FAKE_CURL_ARGV"
-  grep -q -- '-X POST' "$FAKE_CURL_ARGV"
+  grep -q '"method": "POST", "path": "/api/show"' "$HTTP_LOG"
 }
 
 @test "detect: ollama num_ctx in parameters wins over the architecture maximum" {
@@ -139,7 +110,12 @@ registry_untouched() { [ "$(cat "$SHUNT_MODELS_FILE")" = "$BEFORE" ]; }
   printf 500 >"$FAKE_ROUTES/v1_models.code"
   run detect acme/m1
   assert_failure
-  FAKE_CURL_EXIT=28 run detect acme/m1
+  # A dropped connection (what a failing curl was) on every probe.
+  route api_show '{}'
+  : >"$FAKE_ROUTES/v1_models_m1.drop"
+  : >"$FAKE_ROUTES/v1_models.drop"
+  : >"$FAKE_ROUTES/api_show.drop"
+  run detect acme/m1
   assert_failure
   registry_untouched
 }
@@ -173,9 +149,8 @@ registry_untouched() { [ "$(cat "$SHUNT_MODELS_FILE")" = "$BEFORE" ]; }
   route v1_models_m1 '{"context_length":65536}'
   run detect acme/m1
   assert_success
-  ! grep -q "$ACME_KEY" "$FAKE_CURL_ARGV"
-  grep -q -- '-H @' "$FAKE_CURL_ARGV"
-  [ "$(cat "$FAKE_CURL_HEADER_SEEN")" = "Authorization: Bearer $ACME_KEY" ]
+  # The key is built into the header in-process: the server saw it, no file holds it.
+  grep -q "\"authorization\": \"Bearer $ACME_KEY\"" "$HTTP_LOG"
   refute_output --partial "$ACME_KEY"
   [ -z "$(ls -A "$TMPDIR")" ]
 }
@@ -189,7 +164,7 @@ registry_untouched() { [ "$(cat "$SHUNT_MODELS_FILE")" = "$BEFORE" ]; }
 @test "detect: a model name with unsafe characters is not sent anywhere" {
   run detect 'acme/m 1?x=y'
   assert_failure
-  [ ! -e "$FAKE_CURL_ARGV" ]
+  [ ! -s "$HTTP_LOG" ]
 }
 
 @test "set-context: stores a positive integer" {
@@ -217,7 +192,7 @@ registry_untouched() { [ "$(cat "$SHUNT_MODELS_FILE")" = "$BEFORE" ]; }
 @test "detect: a model name with dot segments is not sent anywhere" {
   run detect 'acme/../../admin'
   assert_failure
-  [ ! -e "$FAKE_CURL_ARGV" ]
+  [ ! -s "$HTTP_LOG" ]
 }
 
 @test "detect: a provider value beyond the digit limit is not written" {
@@ -270,24 +245,19 @@ breaker_with_failures() {
   assert_output 3
 }
 
-# hang_curl: replaces the fake curl with one that touches $TEST_TMPDIR/curl-started
-# and then hangs, so a test can kill the caller while a request is in flight.
-hang_curl() {
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-: >"$TEST_TMPDIR/curl-started"
-exec sleep 30
-SH
-  chmod +x "$TEST_TMPDIR/bin/curl"
-  export TEST_TMPDIR
+# hang_request: makes the first probe wait 30 s, so a test can kill the caller
+# while a request is in flight.
+hang_request() {
+  route v1_models_m1 '{"context_length":1}'
+  printf 30 >"$FAKE_ROUTES/v1_models_m1.delay"
 }
 
-# kill_group_when_curl_starts <pid>: TERMs the process group (what Ctrl-C or a
-# tool timeout does to the whole tree) once the hanging curl has started.
-kill_group_when_curl_starts() {
+# kill_group_when_request_starts <pid>: TERMs the process group (what Ctrl-C or a
+# tool timeout does to the whole tree) once the server has seen the request.
+kill_group_when_request_starts() {
   local i
   for i in $(seq 1 100); do
-    [ -f "$TEST_TMPDIR/curl-started" ] && break
+    [ -s "$HTTP_LOG" ] && break
     sleep 0.05
   done
   kill -TERM -- -"$1" 2>/dev/null || true
@@ -296,9 +266,9 @@ kill_group_when_curl_starts() {
 
 @test "detect: killing detect-context mid-request leaves no auth header file with the key in TMPDIR" {
   command -v setsid >/dev/null || skip "setsid not available"
-  hang_curl
+  hang_request
   setsid "$REPO_ROOT/scripts/shunt-models" detect-context acme/m1 >/dev/null 2>&1 &
-  kill_group_when_curl_starts "$!"
+  kill_group_when_request_starts "$!"
   run grep -rlF "$ACME_KEY" "$TMPDIR"
   assert_output ""
 }
@@ -355,21 +325,25 @@ kill_group_when_curl_starts() {
   SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr detect acme/m1
   assert_failure
   [[ "$stderr" == *"larger than 1000 bytes"* ]]
-  grep -q -- '--max-filesize 1000' "$FAKE_CURL_ARGV"
 }
 
 @test "detect: curl exit 63 prints the same larger-than note as the post-download check" {
-  FAKE_CURL_EXIT=63 SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr detect acme/m1
+  # A streamed answer (no Content-Length) is cut at the cap while it is read.
+  route v1_models_m1 "$(printf '{"context_length":131072,"pad":"%s"}' "$(printf 'x%.0s' $(seq 1 3000))")"
+  : >"$FAKE_ROUTES/v1_models_m1.chunked"
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr detect acme/m1
   assert_failure
   [[ "$stderr" == *"larger than 1000 bytes"* ]]
 }
 
 @test "context-detect.sh sources transport-http.sh itself when sourced alone" {
-  run bash -c 'source "$1/scripts/lib/context-detect.sh"; type _shunt_http_too_large >/dev/null && type _shunt_http_max_response_bytes >/dev/null' _ "$REPO_ROOT"
+  # It no longer needs transport-http.sh (no curl, no size helpers in bash): sourcing
+  # it alone defines the function and loads nothing from the transport.
+  run bash -c 'source "$1/scripts/lib/context-detect.sh"; type shunt_models_detect_context >/dev/null && ! declare -F _shunt_http_too_large >/dev/null' _ "$REPO_ROOT"
   assert_success
 }
 
 @test "detect: an id missing from the registry is refused before any request" {
   run ! detect acme/ghost
-  [ ! -e "$FAKE_CURL_ARGV" ]
+  [ ! -s "$HTTP_LOG" ]
 }

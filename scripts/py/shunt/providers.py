@@ -326,11 +326,10 @@ def key_resolve(path: str, provider: str, environ: Mapping[str, str], version_fi
     return key
 
 
-def write_auth_header_file(path: str, provider: str, environ: Mapping[str, str], version_file: str) -> str | None:
-    """Write `Authorization: Bearer <key>` to a new 0600 file and return its path (None for type none).
+def bearer_key(path: str, provider: str, environ: Mapping[str, str], version_file: str) -> str | None:
+    """The key ready for an `Authorization: Bearer` header, None when there is none.
 
-    mkstemp creates the file with O_EXCL and mode 0600, so the key is never in a
-    file that others can read or that an existing path could redirect.
+    A key with a line break is refused so it cannot smuggle extra headers.
     """
     key = key_resolve(path, provider, environ, version_file)
     key = (key or "").rstrip("\n")  # bash captured the key with $(...)
@@ -338,6 +337,18 @@ def write_auth_header_file(path: str, provider: str, environ: Mapping[str, str],
         return None
     if "\n" in key or "\r" in key:
         raise ProviderError(f"provider '{provider}': the key contains a line break.")
+    return key
+
+
+def write_auth_header_file(path: str, provider: str, environ: Mapping[str, str], version_file: str) -> str | None:
+    """Write `Authorization: Bearer <key>` to a new 0600 file and return its path (None for type none).
+
+    mkstemp creates the file with O_EXCL and mode 0600, so the key is never in a
+    file that others can read or that an existing path could redirect.
+    """
+    key = bearer_key(path, provider, environ, version_file)
+    if key is None:
+        return None
     tmp = environ.get("TMPDIR") or "/tmp"
     payload = f"Authorization: Bearer {key}\n".encode("utf-8", "surrogateescape")  # before the file exists
     try:

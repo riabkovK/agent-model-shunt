@@ -14,6 +14,8 @@ SHUNT_MAIN = PY_DIR / "shunt_main.py"
 
 sys.path.insert(0, str(PY_DIR))
 
+from httpserver import ScriptedServer  # noqa: E402  (test/py is on sys.path via rootdir conftest)
+
 
 @pytest.fixture(autouse=True)
 def isolated_env(tmp_path, monkeypatch):
@@ -29,7 +31,20 @@ def isolated_env(tmp_path, monkeypatch):
     for name, path in dirs.items():
         path.mkdir()
         monkeypatch.setenv(name, str(path))
+    # Requests go straight to the local test server, never through a proxy of the host.
+    for name in ("http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"):
+        monkeypatch.delenv(name, raising=False)
+    monkeypatch.setenv("no_proxy", "127.0.0.1,localhost")
+    monkeypatch.setenv("NO_PROXY", "127.0.0.1,localhost")
     return dirs
+
+
+@pytest.fixture
+def http_server():
+    """A started ScriptedServer on 127.0.0.1 (free port), stopped after the test."""
+    server = ScriptedServer().start()
+    yield server
+    server.stop()
 
 
 @pytest.fixture
