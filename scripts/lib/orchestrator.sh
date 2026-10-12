@@ -150,3 +150,89 @@ shunt_orchestrator_list() {
     [ -e "$f" ] && printf '%s\n' "$f"
   done | LC_ALL=C sort
 }
+
+SHUNT_ORCHESTRATOR_MAX_RENDER_CHARS=3000
+
+# _shunt_orchestrator_role_state <role>
+# Sets REPLY to ready, unavailable or open. Needs models.sh and breaker.sh
+# sourced. Returns non-zero when the registry cannot be read.
+_shunt_orchestrator_role_state() {
+  local role="$1" cands c
+  local -a ids=()
+  cands=$(shunt_models_candidates "$role" quiet 2>/dev/null) || return 1
+  while IFS= read -r c; do
+    [ -n "$c" ] && ids+=("$c")
+  done <<EOT
+$cands
+EOT
+  if [ "${#ids[@]}" -eq 0 ]; then
+    REPLY=unavailable
+  elif shunt_breaker_any_closed "${ids[@]}"; then
+    REPLY=ready
+  else
+    REPLY=open
+  fi
+}
+
+# shunt_orchestrator_render [plugin_root]
+# Prints the plain-text delegation rule for session start. Needs models.sh and
+# breaker.sh sourced. Only fixed state strings and fragment text are printed,
+# never a model id, name or other registry value. Prints nothing and returns
+# non-zero when the registry exists but cannot be read. Output is capped at
+# MAX_RENDER_CHARS by dropping whole trailing lines.
+shunt_orchestrator_render() {
+  local root="${1:-$_SHUNT_ORCHESTRATOR_ROOT}" min_lines f role state seen="" out line total=0 n
+  local header='Shunt delegation (cheap models; Claude keeps judgment).'
+  local -a rows=("$header")
+
+  min_lines=$(shunt_orchestrator_min_lines "${SHUNT_MIN_LINES:-}")
+
+  if ! shunt_models_available; then
+    # A present but invalid registry is an error, a missing one is a setup hint.
+    [ ! -e "$SHUNT_MODELS_FILE" ] || return 1
+    rows+=('No delegate models configured; run /model-config to set them up.')
+  else
+    case "${SHUNT_HOOKS_DISABLED:-}" in
+      1|true|TRUE|yes|YES) rows+=('Reads are not hook-gated; delegate by judgment only.') ;;
+    esac
+    while IFS= read -r f; do
+      [ -n "$f" ] || continue
+      _shunt_orchestrator_load "$f" "$min_lines" || continue
+      role="$_SHUNT_ORCHESTRATOR_ROLE"
+      # A role the registry does not know is treated like an invalid fragment.
+      [ -z "$role" ] || shunt_models_role_known "$role" || continue
+      state=ready
+      if [ -n "$role" ]; then
+        # One registry and breaker lookup per role, however many fragments share it.
+        case "$seen" in
+          *"|$role="*) state="${seen#*"|$role="}"; state="${state%%|*}" ;;
+          *)
+            _shunt_orchestrator_role_state "$role" || return 1
+            state="$REPLY"
+            seen="$seen|$role=$state|"
+            ;;
+        esac
+      fi
+      case "$state" in
+        unavailable) rows+=("$role: unavailable, handle directly.") ;;
+        open) rows+=("$role: breaker open, handle directly until cooldown.") ;;
+        *)
+          while IFS= read -r line; do rows+=("$line"); done <<EOT
+$_SHUNT_ORCHESTRATOR_BODY
+EOT
+          ;;
+      esac
+    done <<EOT
+$(shunt_orchestrator_list "$root")
+EOT
+  fi
+
+  out=""
+  for line in "${rows[@]}"; do
+    n=$((${#line} + 1))
+    [ $((total + n)) -le "$SHUNT_ORCHESTRATOR_MAX_RENDER_CHARS" ] || break
+    out="$out$line"$'\n'
+    total=$((total + n))
+  done
+  printf '%s' "$out"
+}

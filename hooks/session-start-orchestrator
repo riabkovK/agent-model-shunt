@@ -1,0 +1,24 @@
+#!/bin/bash
+# SessionStart hook: injects the short delegation rule (assembled from the
+# skills' orchestrator fragments) as additionalContext. It must never fail or
+# slow down session start: any problem (no jq, unreadable registry, empty
+# render) prints nothing, and the exit code is always 0. stdin is not read.
+
+HOOK_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+emit() {
+  local text
+  command -v jq >/dev/null || return 0
+  # shellcheck source=../scripts/lib/models.sh
+  source "$HOOK_DIR/../scripts/lib/models.sh" || return 0
+  # shellcheck source=../scripts/lib/breaker.sh
+  source "$HOOK_DIR/../scripts/lib/breaker.sh" || return 0
+  # shellcheck source=../scripts/lib/orchestrator.sh
+  source "$HOOK_DIR/../scripts/lib/orchestrator.sh" || return 0
+  text=$(shunt_orchestrator_render) || return 0
+  [ -n "$text" ] || return 0
+  jq -n --arg ctx "$text" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
+}
+
+emit 2>/dev/null
+exit 0
