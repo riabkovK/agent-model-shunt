@@ -19,3 +19,19 @@ frontmatter_model() {
     [ -z "$(frontmatter_model "$s")" ] || { echo "$s pins a model"; return 1; }
   done
 }
+
+# unprefixed_script_refs <skill-md>: body lines naming a plugin script without
+# the plugin root, which fails when the session runs in another project.
+unprefixed_script_refs() {
+  awk 'NR == 1 && /^---$/ { fm = 1; next } fm && /^---$/ { fm = 0; next } !fm' "$1" |
+    grep -E '(^|[^/])scripts/[a-z]' | grep -v 'scripts/lib/' |
+    grep -vE '^The plugin root is'
+}
+
+@test "skills name plugin scripts through CLAUDE_PLUGIN_ROOT" {
+  local f bad=""
+  for f in "$REPO_ROOT"/skills/*/SKILL.md; do
+    if unprefixed_script_refs "$f" >/dev/null; then bad="$bad $f"; fi
+  done
+  [ -z "$bad" ] || { echo "unprefixed script paths in:$bad"; return 1; }
+}

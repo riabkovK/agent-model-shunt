@@ -40,11 +40,11 @@ Do not delegate when:
 
 ## How to use it
 
-Run `scripts/bulk-read` with a specific, narrow question and the file
+Run `${CLAUDE_PLUGIN_ROOT}/scripts/bulk-read` with a specific, narrow question and the file
 path(s):
 
 ```bash
-scripts/bulk-read --question "Which functions in this file call the database directly?" --paths path/to/large_file.py
+"${CLAUDE_PLUGIN_ROOT}"/scripts/bulk-read --question "Which functions in this file call the database directly?" --paths path/to/large_file.py
 ```
 
 Guidelines for the `--question`:

@@ -39,7 +39,7 @@ nor a quick read to catch it.
 ## How to call it
 
 ```bash
-scripts/code-write --kind test|generic --spec "<what to generate>" \
+"${CLAUDE_PLUGIN_ROOT}"/scripts/code-write --kind test|generic --spec "<what to generate>" \
   --reference <file>... [--source <file>...] [--rules <file>...] \
   [--allow-outside] --target <new file>
 ```
@@ -99,7 +99,7 @@ subprocess and judge only its exit code and captured stderr/output.
 3. Verify again (same command, same subprocess-only rule).
 
 **How many times.** Check the current limit with
-`scripts/shunt-codewrite-config show` (`self_fix_retries`, default 1,
+`${CLAUDE_PLUGIN_ROOT}/scripts/shunt-codewrite-config show` (`self_fix_retries`, default 1,
 global — see `/model-config`). Repeat the delete-and-recall step up to that
 many times. `0` means never retry automatically.
 
@@ -118,12 +118,12 @@ the breaker, self-fix retries never do.
 
 ## Configuration
 
-- `scripts/shunt-codewrite-config` — the self-fix retry count. Drive it
+- `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-codewrite-config` — the self-fix retry count. Drive it
   through `/model-config`, never by hand-editing
   `~/.config/agent-model-shunt/code-write-self-fix-config.json`.
 - See the project README for the delegate model setup shared with
-  `bulk-reader` (`/model-config`, `scripts/shunt-models`). A model needs the
-  `code-write` role (`scripts/shunt-models roles`) to be a candidate here.
+  `bulk-reader` (`/model-config`, `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-models`). A model needs the
+  `code-write` role (`${CLAUDE_PLUGIN_ROOT}/scripts/shunt-models roles`) to be a candidate here.
 
 ## Design decisions
 
