@@ -264,7 +264,7 @@ STUB
 @test "kdialog without a timeout binary is not used, the fallback line is printed" {
   local d="$TEST_TMPDIR/minbin" t
   mkdir -p "$d"
-  for t in jq env uname dirname cat rm mkdir mktemp head tr chmod stat sleep flock; do
+  for t in jq env uname dirname cat rm mkdir mktemp head tr chmod stat sleep flock python3; do
     command -v "$t" >/dev/null 2>&1 && ln -s "$(command -v "$t")" "$d/$t"
   done
   ln -s "$STUB_BIN/kdialog" "$d/kdialog"

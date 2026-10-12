@@ -39,7 +39,7 @@ SH
 use_fake_path() {
   local d="$TEST_TMPDIR/basic" t
   mkdir -p "$d"
-  for t in jq grep mktemp chmod cat dirname mv rm head bash; do ln -sf "$(command -v $t)" "$d/$t"; done
+  for t in jq grep mktemp chmod cat dirname mv rm head bash python3; do ln -sf "$(command -v $t)" "$d/$t"; done
   PATH="$FAKE_BIN:$d"
 }
 

@@ -13,18 +13,32 @@
 # 0600 header file. It never goes into argv (except the documented `security`
 # limitation below), logs or error messages. Functions here report problems on
 # stderr and return non-zero, they never exit, so they are safe inside $(...).
+#
+# The read side (validation, listing, field getters, base_url check), the
+# keyring and the key resolution live in scripts/py/shunt/providers.py. The
+# functions here are thin wrappers around `shunt_py providers <subcommand>` with
+# the old names, stdout, stderr and exit codes, and each call that reaches Python
+# costs one interpreter start. The writers of providers.json and the lock
+# helpers stay in bash until sub-phase 6 (all writers of one file move together).
+# Python never takes the providers lock: bash holds it around a read-modify-write
+# and calls the getters in between.
+
+# shellcheck source=py.sh
+source "${BASH_SOURCE[0]%/*}/py.sh"
 
 SHUNT_PROVIDERS_FILE="${SHUNT_PROVIDERS_FILE:-$HOME/.config/agent-model-shunt/providers.json}"
 SHUNT_PROC_VERSION_FILE="${SHUNT_PROC_VERSION_FILE:-/proc/version}"
-SHUNT_KEYRING_SERVICE="agent-model-shunt"
-SHUNT_KWALLET_WALLET="kdewallet"
+# The two lists below must match TRANSPORTS and KEY_TYPES in scripts/py/shunt/providers.py.
+# shellcheck disable=SC2034 # read by scripts/shunt-models and scripts/lib/migrate.sh
 SHUNT_PROVIDER_TRANSPORTS="http opencode"
+# shellcheck disable=SC2034 # read by scripts/shunt-models and scripts/lib/migrate.sh
 SHUNT_PROVIDER_KEY_TYPES="keyring env plaintext none"
 # The one provider name charset. Names reach shell hints the user copies.
 # Two spellings of it exist on purpose: bash ERE has no \A and \z and its $ only
 # matches at the very end, while Oniguruma (jq) lets $ match before a final
 # newline, so "ok\n" would pass there. The jq form is anchored with \A and \z.
 SHUNT_PROVIDER_NAME_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+# shellcheck disable=SC2034 # read by scripts/lib/migrate.sh
 SHUNT_PROVIDER_NAME_REGEX_JQ='\A[A-Za-z0-9][A-Za-z0-9._-]*\z'
 
 # shunt_provider_name_ok <name>
@@ -128,49 +142,22 @@ _shunt_guard_remove() {
   done
 }
 
-# jq definition: `entry_problem` maps one providers to_entries item to a
-# description of what is wrong with it, or null. Never includes a key ref.
-# shellcheck disable=SC2016 # jq program, $names are jq variables
-_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ='
-  def entry_problem($transports; $types):
-    .key as $n | .value as $v
-    | if ($n | test($name_re) | not) then "provider \($n | tojson): provider name has characters other than letters, digits, dot, dash and underscore, or does not start with a letter or digit. Please edit providers.json to remove or rename that entry"
-      elif ($v | type) != "object" then "provider \"\($n)\": entry is not an object"
-      elif ($v.transport // "opencode" | type) != "string" then "provider \"\($n)\": transport is not a string"
-      elif ($transports | index($v.transport // "opencode")) == null
-        then "provider \"\($n)\": unknown transport \"\($v.transport)\" (allowed: \($transports | join(" ")))"
-      elif ($v.base_url // "" | type) != "string" then "provider \"\($n)\": base_url is not a string"
-      elif ($v.base_url // "" | test("^([A-Za-z][A-Za-z0-9+.-]*://)?[^/?#]*@")) then "provider \"\($n)\": base_url has credentials (user:password@) in it"
-      elif ($v.key // {} | type) != "object"
-        then "provider \"\($n)\": key is not an object (expected {\"type\":\"...\",\"ref\":\"...\"})"
-      elif ($v.key.type // "none" | type) != "string" then "provider \"\($n)\": key type is not a string"
-      elif ($types | index($v.key.type // "none")) == null
-        then "provider \"\($n)\": unknown key type \"\($v.key.type)\" (allowed: \($types | join(" ")))"
-      elif ($v.key.ref // "" | type) != "string" then "provider \"\($n)\": key ref is not a string"
-      elif $v.key.type == "env" and (($v.key.ref // "") | test("^[A-Za-z_][A-Za-z0-9_]*$") | not)
-        then "provider \"\($n)\": env key ref is not a valid environment variable name"
-      else null end;'
+# _shunt_providers_py <subcommand> [args...]
+# Runs a providers subcommand with the paths this file resolved, exported only
+# for the call (the variables may be unexported shell defaults). The API key
+# never goes through here: env-type keys are read by Python from the exported
+# environment, the others from providers.json or the keyring.
+_shunt_providers_py() {
+  SHUNT_PROVIDERS_FILE="$SHUNT_PROVIDERS_FILE" SHUNT_PROC_VERSION_FILE="$SHUNT_PROC_VERSION_FILE" \
+    shunt_py providers "$@"
+}
 
 # shunt_providers_validate
 # Returns 0 when the file is absent or valid. Otherwise explains on stderr.
+# Never takes the providers lock, so callers may hold it.
 shunt_providers_validate() {
   [ -f "$SHUNT_PROVIDERS_FILE" ] || return 0
-  if ! jq -e '(.providers | type) == "object"' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1; then
-    echo "shunt: $SHUNT_PROVIDERS_FILE is invalid JSON or has no \"providers\" object." >&2
-    return 1
-  fi
-  local bad
-  if ! bad=$(jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" --arg name_re "$SHUNT_PROVIDER_NAME_REGEX_JQ" \
-    "$_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ"'
-    .providers | to_entries[] | entry_problem($ts | split(" "); $kt | split(" ")) // empty' \
-    "$SHUNT_PROVIDERS_FILE" 2>/dev/null); then
-    echo "shunt: $SHUNT_PROVIDERS_FILE could not be validated." >&2
-    return 1
-  fi
-  if [ -n "$bad" ]; then
-    echo "shunt: $SHUNT_PROVIDERS_FILE: ${bad%%$'\n'*}" >&2
-    return 1
-  fi
+  _shunt_providers_py validate
 }
 
 # shunt_providers_list_lines
@@ -178,15 +165,7 @@ shunt_providers_validate() {
 # key type (env:<VAR> for env keys). An invalid entry gets "invalid: <reason>"
 # instead, so one bad entry does not hide the others. Never prints a key value.
 shunt_providers_list_lines() {
-  jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" --arg name_re "$SHUNT_PROVIDER_NAME_REGEX_JQ" \
-    "$_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ"'
-    .providers | to_entries[]
-    | entry_problem($ts | split(" "); $kt | split(" ")) as $bad
-    | if $bad != null then "\(.key)\tinvalid: \($bad)"
-      else (.value.key // {}) as $k
-        | "\(.key)\t\(.value.transport // "opencode")\t\(.value.base_url // "-")\t"
-          + (if $k.type == "env" then "env:\($k.ref // "")" else ($k.type // "none") end)
-      end' "$SHUNT_PROVIDERS_FILE"
+  _shunt_providers_py list-lines
 }
 
 # shunt_base_url_check <url>
@@ -194,19 +173,9 @@ shunt_providers_list_lines() {
 # Returns 0 for a usable URL, 2 for a scheme other than http:// or https://,
 # 3 for no scheme at all, 1 when it is malformed: empty host, userinfo
 # (user:pass@), whitespace or control characters. Never prints the URL.
+# An unusable interpreter also surfaces as a non-zero status (127, 126 or 2).
 shunt_base_url_check() {
-  local url="$1" rest authority
-  case "$url" in
-    https://*) rest="${url#https://}" ;;
-    http://*) rest="${url#http://}" ;;
-    *://*) return 2 ;;
-    *) rest="$url" ;;
-  esac
-  authority="${rest%%[/?#]*}"
-  if [ -z "$authority" ] || [[ "$url" == *[[:space:][:cntrl:]]* ]] || [[ "$authority" == *@* ]]; then
-    return 1
-  fi
-  [ "$rest" != "$url" ] || return 3
+  _shunt_providers_py base-url-check -- "$1"
 }
 
 # shunt_providers_lock / shunt_providers_unlock
@@ -264,43 +233,24 @@ shunt_providers_unlock() {
   fi
 }
 
-# shunt_provider_field <provider> <jq path> <default>
-# Prints a field of the provider, or the default when it is unset.
-_shunt_provider_field() {
-  local provider="$1" path="$2" default="$3"
-  shunt_providers_validate || return 1
-  [ -f "$SHUNT_PROVIDERS_FILE" ] || { printf '%s\n' "$default"; return 0; }
-  jq -r --arg p "$provider" --arg d "$default" \
-    ".providers[\$p] | ($path) // \$d" "$SHUNT_PROVIDERS_FILE"
-}
-
-shunt_provider_transport() { _shunt_provider_field "$1" '.transport' opencode; }
-shunt_provider_base_url() { _shunt_provider_field "$1" '.base_url' ''; }
-shunt_provider_key_type() { _shunt_provider_field "$1" '.key.type' none; }
-_shunt_provider_key_ref() { _shunt_provider_field "$1" '.key.ref' ''; }
+# shunt_provider_transport / base_url / key_type <provider>
+# Print a field of the provider, or the default when it is unset (opencode,
+# empty, none). Validate the whole file first and fail with its message.
+shunt_provider_transport() { _shunt_providers_py field transport -- "$1"; }
+shunt_provider_base_url() { _shunt_providers_py field base-url -- "$1"; }
+shunt_provider_key_type() { _shunt_providers_py field key-type -- "$1"; }
+_shunt_provider_key_ref() { _shunt_providers_py field key-ref -- "$1"; }
 
 # shunt_provider_plaintext_warning
 shunt_provider_plaintext_warning() {
   echo "shunt: warning: the key is stored in plain text in $SHUNT_PROVIDERS_FILE (mode 600). Prefer a keyring or an environment variable."
 }
 
-# shunt_is_wsl
-shunt_is_wsl() {
-  [ -r "$SHUNT_PROC_VERSION_FILE" ] && grep -qi microsoft "$SHUNT_PROC_VERSION_FILE"
-}
-
 # shunt_keyring_backend
 # Prints the first usable backend (secret-tool, security, kwallet-query) or
 # nothing. Under WSL there is no usable keyring, so nothing is printed.
 shunt_keyring_backend() {
-  shunt_is_wsl && return 0
-  local tool
-  for tool in secret-tool security kwallet-query; do
-    if command -v "$tool" >/dev/null 2>&1; then
-      echo "$tool"
-      return 0
-    fi
-  done
+  _shunt_providers_py keyring-backend
 }
 
 # shunt_keyring_store <provider>
@@ -309,90 +259,39 @@ shunt_keyring_backend() {
 # password (-w without a value prompts on the tty), so the key is briefly
 # visible in that process's argv. Use an env-type key on macOS if that matters.
 shunt_keyring_store() {
-  local provider="$1" backend key
-  backend=$(shunt_keyring_backend)
-  [ -n "$backend" ] || { echo "shunt: no keyring backend available." >&2; return 1; }
-  case "$backend" in
-    secret-tool)
-      secret-tool store --label="$SHUNT_KEYRING_SERVICE $provider" \
-        service "$SHUNT_KEYRING_SERVICE" account "$provider" ;;
-    kwallet-query)
-      kwallet-query -f "$SHUNT_KEYRING_SERVICE" -w "$provider" "$SHUNT_KWALLET_WALLET" >/dev/null ;;
-    security)
-      IFS= read -r key || true
-      security add-generic-password -U -s "$SHUNT_KEYRING_SERVICE/$provider" \
-        -a "$SHUNT_KEYRING_SERVICE" -w "$key" >/dev/null ;;
-  esac || { echo "shunt: storing the key in $backend failed." >&2; return 1; }
+  _shunt_providers_py keyring-store -- "$1"
 }
 
 # shunt_keyring_get <provider>
 # Prints the stored key, or returns 1 when there is none.
 shunt_keyring_get() {
-  local provider="$1" backend key=""
-  backend=$(shunt_keyring_backend)
-  [ -n "$backend" ] || return 1
-  case "$backend" in
-    secret-tool) key=$(secret-tool lookup service "$SHUNT_KEYRING_SERVICE" account "$provider" 2>/dev/null) ;;
-    security) key=$(security find-generic-password -s "$SHUNT_KEYRING_SERVICE/$provider" -w 2>/dev/null) ;;
-    kwallet-query) key=$(kwallet-query -f "$SHUNT_KEYRING_SERVICE" -r "$provider" "$SHUNT_KWALLET_WALLET" 2>/dev/null) ;;
-  esac || true
-  [ -n "$key" ] || return 1
-  printf '%s\n' "$key"
+  _shunt_providers_py keyring-get -- "$1"
 }
 
 # shunt_provider_key_resolve <provider>
 # Prints the key (nothing for type none). Capture it into a variable, never
-# into a log. Errors name the source but never a value.
+# into a log. Errors name the source but never a value. An env-type key must be
+# exported: Python reads the environment, not unexported shell variables.
 shunt_provider_key_resolve() {
-  local provider="$1" type ref
-  type=$(shunt_provider_key_type "$provider") || return 1
-  case "$type" in
-    none) return 0 ;;
-    env)
-      ref=$(_shunt_provider_key_ref "$provider") || return 1
-      [[ "$ref" =~ ^[A-Za-z_][A-Za-z0-9_]*$ ]] \
-        || { echo "shunt: provider '$provider': key ref is not a valid environment variable name." >&2; return 1; }
-      [ -n "${!ref:-}" ] \
-        || { echo "shunt: provider '$provider': environment variable $ref is unset or empty." >&2; return 1; }
-      printf '%s\n' "${!ref}" ;;
-    plaintext)
-      ref=$(_shunt_provider_key_ref "$provider") || return 1
-      [ -n "$ref" ] || { echo "shunt: provider '$provider': no plaintext key stored. Run: shunt-models key set $(printf '%q' "$provider")" >&2; return 1; }
-      printf '%s\n' "$ref" ;;
-    keyring)
-      shunt_keyring_get "$provider" \
-        || { echo "shunt: provider '$provider': no key found in the keyring. Run: shunt-models key set $(printf '%q' "$provider")" >&2; return 1; } ;;
-  esac
+  _shunt_providers_py key-resolve -- "$1"
 }
 
-# shunt_provider_write_auth_header_file <provider>
+# shunt_provider_write_auth_header_file <provider> [<outvar>]
 # Writes `Authorization: Bearer <key>` to a 0600 temp file for curl -H @file
 # and prints its path. The caller removes it. Type none creates no file and
 # prints nothing (no Authorization header). A key with a line break is refused
 # so it cannot smuggle extra headers. Returns 1 when the key cannot be resolved
 # or is refused, 2 when the temp file cannot be created or written (an
 # environment failure, not a config one). With <outvar> the path is stored in
-# that variable (not printed) as soon as the file exists, before the key is
-# written, so a caller's cleanup that removes the variable's file never misses it.
-# Call it directly then, not in $(...).
+# that variable instead of being printed. Call it directly then, not in $(...).
+# The file is created by Python (O_EXCL, 0600) and its path reaches the variable
+# when Python exits, so a signal in that short window can leave the file behind.
 shunt_provider_write_auth_header_file() {
-  local provider="$1" outvar="${2:-}" key file
-  key=$(shunt_provider_key_resolve "$provider") || return 1
-  [ -n "$key" ] || return 0
-  case "$key" in
-    *$'\n'* | *$'\r'*) echo "shunt: provider '$provider': the key contains a line break." >&2; return 1 ;;
-  esac
-  if ! file=$(umask 077 && mktemp "${TMPDIR:-/tmp}/shunt-auth.XXXXXX" 2>/dev/null); then
-    echo "shunt: provider '$provider': cannot create a temp file for the auth header in ${TMPDIR:-/tmp}." >&2
-    return 2
-  fi
-  [ -z "$outvar" ] || printf -v "$outvar" '%s' "$file"
-  if ! { chmod 600 "$file" && printf 'Authorization: Bearer %s\n' "$key" >"$file"; } 2>/dev/null; then
-    rm -f "$file"
-    echo "shunt: provider '$provider': cannot write the auth header file." >&2
-    return 2
-  fi
-  [ -n "$outvar" ] || echo "$file"
+  local provider="$1" outvar="${2:-}" file rc=0
+  file=$(_shunt_providers_py auth-header-file -- "$provider") || rc=$?
+  [ "$rc" -eq 0 ] || return "$rc"
+  [ -n "$file" ] || return 0
+  if [ -n "$outvar" ]; then printf -v "$outvar" '%s' "$file"; else echo "$file"; fi
 }
 
 # shunt_providers_write <json>

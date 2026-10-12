@@ -1151,9 +1151,10 @@ breaker_failures() {
 # ---- review fixes: auth temp file failure, status 1 wording, context_tokens ---
 
 @test "auth: a failing mktemp for the header file returns ERROR with a clear message" {
-  printf '#!/bin/bash\ncase "$*" in *shunt-auth*) exit 1 ;; esac\nexec /usr/bin/env -i PATH="%s" mktemp "$@"\n' "$ORIG_PATH" >"$TEST_TMPDIR/bin/mktemp"
-  chmod +x "$TEST_TMPDIR/bin/mktemp"
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  # The header file is created by Python in $TMPDIR: point only that call at a missing directory.
+  printf '#!/bin/bash\ncase "$*" in *auth-header-file*) export TMPDIR="%s/missing" ;; esac\nexec "%s" "$@"\n' "$TEST_TMPDIR" "$(command -v python3)" >"$TEST_TMPDIR/bin/py-stub"
+  chmod +x "$TEST_TMPDIR/bin/py-stub"
+  SHUNT_PYTHON="$TEST_TMPDIR/bin/py-stub" run --separate-stderr shunt_transport_invoke "$AGENT" "q"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
   [[ "$stderr" == *"cannot create a temp file for the auth header"* ]]
   [[ "$stderr" != *"$SECRET"* ]]

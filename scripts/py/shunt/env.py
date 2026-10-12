@@ -47,6 +47,15 @@ def models_file_text(env: Mapping[str, str] | None = None) -> str:
     return _get(env, "SHUNT_MODELS_FILE", str(config_dir(env) / "models.json"))
 
 
+def providers_file_text(env: Mapping[str, str] | None = None) -> str:
+    """SHUNT_PROVIDERS_FILE exactly as set (messages echo it unnormalised), else the default path."""
+    return _get(env, "SHUNT_PROVIDERS_FILE", str(config_dir(env) / "providers.json"))
+
+
+def proc_version_file_text(env: Mapping[str, str] | None = None) -> str:
+    return _get(env, "SHUNT_PROC_VERSION_FILE", "/proc/version")
+
+
 def providers_file(env: Mapping[str, str] | None = None) -> Path:
     return _override(env, "SHUNT_PROVIDERS_FILE", config_dir(env) / "providers.json")
 
