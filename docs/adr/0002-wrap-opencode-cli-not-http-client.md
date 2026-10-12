@@ -2,7 +2,9 @@
 
 ## Status
 
-Accepted
+Superseded by [0018](0018-direct-http-transport-alongside-opencode.md)
+
+This ADR's body is kept as written. The "later phase" it describes is ADR 0018.
 
 ## Context
 

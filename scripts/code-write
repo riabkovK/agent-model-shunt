@@ -377,6 +377,8 @@ cw_require_candidates() {
   while IFS= read -r id; do
     [ -n "$id" ] || continue
     agent=$(shunt_models_code_writer_agent_for "$id")
+    # An http model is called straight from prompts/, it needs no agent file.
+    [ "$(shunt_transport_for_agent "$agent")" != http ] || continue
     [ -f "$SHUNT_AGENTS_DIR/$agent.md" ] \
       || shunt_report_error "the code-writer agent '$agent' for '$id' is missing. Run scripts/shunt-models sync to create it."
   done <<<"$candidates"
@@ -462,7 +464,7 @@ cw_prune_saved() {
 cw_accept_response() {
   local out_file="$1" id="$2" finish reason parse_status=0 saved
   finish=$(shunt_extract_finish_reason "$out_file")
-  jq -s -r '[.[] | select(.type=="text")] | last | .part.text // empty' "$out_file" \
+  jq -r '.text // empty' "$out_file" \
     >"$work/response" 2>/dev/null || : >"$work/response"
   if [ "$finish" != "stop" ]; then
     saved=$(cw_save_unusable "$work/response" "$id")

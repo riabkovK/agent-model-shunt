@@ -665,3 +665,37 @@ JSON
   local agent_file="$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
   awk '/^tools:$/{getline; print; exit}' "$agent_file" | grep -qx '  "\*": false'
 }
+
+@test "shunt_models_validate accepts context_tokens and oversize_policy, or neither" {
+  cat >"$SHUNT_MODELS_FILE" <<'JSON'
+{"version":1,"active":null,"models":[
+  {"id":"p/a","agent":"a1","context_tokens":128000,"oversize_policy":"map_reduce"},
+  {"id":"p/b","agent":"a2","oversize_policy":"fail"},
+  {"id":"p/c","agent":"a3"}
+]}
+JSON
+  run shunt_models_validate
+  assert_success
+}
+
+@test "shunt_models_validate rejects a context_tokens that is not a positive integer" {
+  local bad
+  for bad in 0 -5 1.5 '"100"' null true; do
+    printf '{"version":1,"models":[{"id":"p/a","agent":"a1","context_tokens":%s}]}' "$bad" >"$SHUNT_MODELS_FILE"
+    run shunt_models_validate
+    assert_failure
+    assert_output --partial "p/a"
+    assert_output --partial "context_tokens"
+  done
+}
+
+@test "shunt_models_validate rejects an unknown oversize_policy" {
+  local bad
+  for bad in '"chunk"' 1 null '["fail"]'; do
+    printf '{"version":1,"models":[{"id":"p/a","agent":"a1","oversize_policy":%s}]}' "$bad" >"$SHUNT_MODELS_FILE"
+    run shunt_models_validate
+    assert_failure
+    assert_output --partial "p/a"
+    assert_output --partial "oversize_policy"
+  done
+}

@@ -74,7 +74,7 @@
 #                            claude -p calls = ITERATIONS * 2 scenarios (direct
 #                            only - shunt has no Claude-side API cost). Keep
 #                            this modest, no retry on a failed iteration.
-#   SHUNT_BASELINE_MODEL     Model alias for `claude -p --model` (default: sonnet).
+#   SHUNT_BASELINE_MODEL     Model alias for `claude -p --model` (default: haiku, sonnet at most).
 #   SHUNT_BASELINE_TIMEOUT   Timeout in seconds per claude -p call (default: 300).
 #   LIVE_EVAL_KINDS          Space-separated subset of "direct shunt" to run
 #                            (default: "direct shunt"). Set to "shunt" to
@@ -101,7 +101,11 @@ RESULTS_DIR="$EVALS_DIR/results"
 RESULTS_JSONL="$RESULTS_DIR/live-eval-benchmark.jsonl"
 SUMMARY_JSON="$RESULTS_DIR/live-eval-benchmark-summary.json"
 
-SHUNT_BASELINE_MODEL="${SHUNT_BASELINE_MODEL:-sonnet}"
+SHUNT_BASELINE_MODEL="${SHUNT_BASELINE_MODEL:-haiku}"
+# Benchmarks measure tokens and latency, not reasoning, so never pay for a model above sonnet.
+case "$SHUNT_BASELINE_MODEL" in
+  *opus*|*fable*) echo "live-eval-benchmark: SHUNT_BASELINE_MODEL=$SHUNT_BASELINE_MODEL is above sonnet, use haiku or sonnet." >&2; exit 1 ;;
+esac
 SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-300}"
 ITERATIONS="${ITERATIONS:-1}"
 LIVE_EVAL_KINDS="${LIVE_EVAL_KINDS:-direct shunt}"

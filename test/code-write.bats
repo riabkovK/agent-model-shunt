@@ -526,6 +526,16 @@ FAKE
   assert_output --partial "shunt-models sync"
 }
 
+@test "an http candidate needs no code-writer agent file" {
+  add_models p/one
+  rm -f "$SHUNT_AGENTS_DIR/$(agent_of p/one).md"
+  export SHUNT_PROVIDERS_FILE="$TEST_TMPDIR/providers.json"
+  jq -n '{version:1,providers:{p:{transport:"http",base_url:"http://127.0.0.1:1/v1"}}}' >"$SHUNT_PROVIDERS_FILE"
+  run_cw_test
+  refute_output --partial "shunt-models sync"
+  [ "$(stub_calls)" = "0" ]
+}
+
 @test "fails clearly when every candidate's breaker is open" {
   export SHUNT_BREAKER_THRESHOLD=1
   add_models p/one

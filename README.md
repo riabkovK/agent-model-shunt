@@ -2,7 +2,8 @@
 
 Shunts token-heavy, low-intelligence work (large file reads) away from
 your coding agent and onto your own custom models, routed through
-[OpenCode](https://opencode.ai). Currently implemented for Claude Code
+a direct OpenAI-compatible HTTP call or the [OpenCode](https://opencode.ai)
+CLI, chosen per provider. Currently implemented for Claude Code
 (see [`.claude-plugin/`](.claude-plugin/)); built to extend to other agent
 hosts (Codex, etc.) as they're added.
 
@@ -31,17 +32,31 @@ custom model of your choosing.
 2. Both hooks point Claude at the `/bulk-reader` skill
    (`skills/bulk-reader/SKILL.md`) instead of letting the read through.
 3. That skill runs `scripts/bulk-read --question "..." --paths file...`,
-   which shells out to `opencode run --agent bulk-reader -f file... "question"
-   --format json` and prints the delegated model's answer.
+   which sends the files and question to the delegated model and prints its
+   answer. Each provider uses one of two transports:
+   - `http` (recommended, faster): one POST with `curl` to the provider's
+     OpenAI-compatible `/chat/completions` endpoint.
+   - `opencode` (the previous path, still supported): shells out to
+     `opencode run --agent bulk-reader -f file... "question" --format json`.
+
+   A provider with no `transport` set uses `opencode`, so existing setups keep
+   working.
 
 ## Prerequisites
 
-- `bash`, `jq`, GNU `coreutils` (`timeout`).
-- [OpenCode](https://opencode.ai) installed and on `PATH`, with at least one
-  custom provider configured in `~/.config/opencode/opencode.json`. See
-  OpenCode's docs for adding an OpenAI-compatible provider.
+- `bash`, `jq`, `curl`, GNU `coreutils` (`timeout`).
+- [OpenCode](https://opencode.ai) installed and on `PATH`, only for providers
+  on the `opencode` transport. Those need a custom provider configured in
+  `~/.config/opencode/opencode.json`.
+- Optional: a keyring backend (`secret-tool`, `security` or `kwallet-query`)
+  to store `http` provider keys.
 
 ## Setup
+
+To use the `http` transport, follow
+[Add an HTTP model](#add-an-http-model-recommended) below. Steps 2 and 3 of
+the install flow below create the OpenCode agent and apply only to the
+`opencode` transport.
 
 ### 1. Install the plugin
 
@@ -78,7 +93,27 @@ plugin uninstall agent-model-shunt@agent-model-shunt-marketplace` removes it
 entirely. Slash-command equivalents (`/plugin disable`, `/plugin enable`,
 `/plugin uninstall`) work the same way.
 
-### 2. Create the `bulk-reader` OpenCode agent
+### Add an HTTP model (recommended)
+
+In this order (the `/model-config` skill walks through it):
+
+1. Provider: `scripts/shunt-models provider set <name> --transport http
+   --base-url <url> --key <keyring|plaintext|none|env:VARNAME>`.
+2. Key: run `! <plugin-root>/scripts/shunt-models key set <name>` yourself
+   (hidden prompt). Never paste a key into chat. Check with `key status
+   <name>`.
+3. `scripts/shunt-models add <provider/model>`.
+4. `scripts/shunt-models detect-context <provider/model> --write`. If
+   detection fails, store the window with `set-context`.
+
+Already on OpenCode providers? `scripts/shunt-models --migrate-from-opencode`
+is a dry run that prints the plan. `--migrate-from-opencode --apply` writes it
+and backs up `models.json` and `providers.json` first. It asks y/N in a
+terminal. Without a terminal (for example when Claude runs it) it refuses
+unless `--yes` is passed. See
+[Key storage](#key-storage-http-transport) for where keys go.
+
+### 2. Create the `bulk-reader` OpenCode agent (opencode transport)
 
 This plugin does not create global OpenCode configuration on your machine
 automatically; you create the agent once yourself. Create
@@ -133,7 +168,7 @@ small-file read from a few thousand prompt tokens to 70,000+, which you'd
 be paying for on the delegated model regardless of Claude's own savings.
 This isolation is automatic; no extra setup step is required.
 
-### 3. Verify
+### 3. Verify (opencode transport)
 
 ```bash
 opencode agent list   # confirm "bulk-reader" is listed
@@ -152,7 +187,7 @@ hand-editing the files below:
   `scripts/shunt-models`): a priority-ordered list of `provider/model`
   entries. `scripts/shunt-models add <provider/model>` materializes a
   `bulk-reader.md`-shaped agent file for it under
-  `~/.config/agent-model-shunt/agents/` automatically — you never
+  `~/.config/agent-model-shunt/agents/` automatically. You never
   hand-write these once a registry exists.
 - **Failover**: on each delegated call, shunt tries the registry's active
   model first, then the rest in priority order, skipping any model whose
@@ -167,22 +202,73 @@ hand-editing the files below:
 - **Circuit breaker**: N consecutive failures (errors/timeouts, not
   latency) on a model pause it for a cooldown period before it's retried.
   Configurable via `scripts/shunt-breaker-config` (defaults: 3 failures /
-  300s cooldown) — see the `/model-config` skill, which only surfaces this
-  after an explicit opt-in question.
+  300s cooldown). The `/model-config` skill shows these settings and
+  changes them.
 - **Thinking/extended-reasoning**: off by default for every registered
   model. Turn it on per model, with the provider's own reasoning options,
   via `scripts/shunt-models thinking <provider/model> on '<options-json>'`
-  (see the `/model-config` skill).
+  (see the `/model-config` skill). It applies to both transports
+  ([ADR 0021](docs/adr/0021-thinking-options-apply-to-both-transports.md)).
 
 If no registry file exists, shunt stays in the legacy single-agent mode
 described in [Setup](#setup) above. See [Management skills](#management-skills)
 for `/model-config` and the other skills that manage shunt itself.
 
+### Key storage (HTTP transport)
+
+Each provider's `key.type` in `providers.json` is one of:
+
+| Type | Where the key lives | Trade-off |
+|---|---|---|
+| `keyring` | OS keyring (`secret-tool`, `security` or `kwallet-query`) | Strongest, but needs a backend. None is usable under WSL. |
+| `env` | An environment variable you export (`env:VARNAME`) | Nothing stored by the plugin. The variable must be set where Claude Code runs. |
+| `plaintext` | `providers.json`, mode 600 | Weakest. Setting it prints a warning. |
+| `none` | No key | For local endpoints without auth. |
+
+Keys never go in argv, logs or chat. Enter one with the `!` prefix, which
+reads it from a hidden prompt:
+`! <plugin-root>/scripts/shunt-models key set <provider>`. On macOS the
+`security` tool briefly shows the key in its own argv during `key set`, so an
+`env` key avoids that. See
+[ADR 0019](docs/adr/0019-api-key-storage.md).
+
+### Large files (HTTP transport)
+
+Each model has a `context_tokens` value, from `shunt-models detect-context
+--write` or `shunt-models set-context`. It is never guessed, and without it
+only small requests are sent. `oversize_policy` decides what happens to input
+that does not fit: `map_reduce` (default) splits it into overlapping chunks and
+merges the answers, `fail` makes this model refuse so the next model in the
+failover order is tried. `code-write` always refuses oversize input. A refusal
+for size is not the model's fault, so it never counts toward the circuit
+breaker. When no model can take the input, bulk-read says so ("no delegate
+model can take this input") and Claude reads the file itself. Models on the
+`opencode` transport refuse a file over 2000 lines, 50 KB or a 2000-character
+line, since `opencode run -f` would silently cut it. Set it with `shunt-models oversize-policy <provider/model>
+<map_reduce|fail|--clear>`. A chunked call is bounded by the timeouts
+`SHUNT_TIMEOUT_SECONDS` and `SHUNT_TOTAL_TIMEOUT_SECONDS` in the
+[Configuration](#configuration) table. See
+[ADR 0020](docs/adr/0020-context-window-and-oversize-handling.md).
+
+## Performance
+
+Measured 2026-10-09 on mac with model qwen36: `bulk-read` of a 316-line file,
+3 runs each, averages.
+
+| Transport | Thinking off | Thinking on |
+|---|---|---|
+| `opencode` | 40.8s | 91.7s |
+| `http` | 15.4s | 77.8s |
+
+HTTP is about 2.6x faster without thinking. With thinking on, generation time
+dominates. Details in
+[ADR 0018](docs/adr/0018-direct-http-transport-alongside-opencode.md).
+
 ## Code-writer: delegated generation of new files
 
 Where `bulk-read` delegates a large *read*, `code-writer` delegates
-generating a single brand-new file — a test, a config file, a stub, or
-docstring-heavy boilerplate — so Claude doesn't spend its own output tokens
+generating a single brand-new file (a test, a config file, a stub, or
+docstring-heavy boilerplate), so Claude doesn't spend its own output tokens
 on predictable generation. Claude reviews the result afterwards, which
 costs only input tokens. See `skills/code-writer/SKILL.md` for the full
 "when to delegate" guidance, the call contract, the mandatory
@@ -199,22 +285,22 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 - `--kind test` requires `--source` (the code under test); `--kind generic`
   makes it optional. Built-in, non-disableable test-writing rules
   (`prompts/test-rules.md`) are always injected for `--kind test`.
-- The delegate model has every tool disabled, including `read` — it only
+- The delegate model has every tool disabled, including `read`. It only
   ever returns text under a fixed tag protocol
   (`<SHUNT-NOTES>`/`<SHUNT-CODE>`), which the script validates before
   writing anything. Path validation and a denylist (`.git`, `.claude`,
   `.env*`, `CLAUDE.md`, and more) run before the model is ever called; see
   [ADR 0017](docs/adr/0017-code-write-boundaries-and-toctou.md) for the full
   list and the accepted TOCTOU trade-off.
-- A model needs the `code-write` role to be a candidate for this script —
-  add it with `scripts/shunt-models roles <provider/model> code-write` (or
+- A model needs the `code-write` role to be a candidate for this script.
+  Add it with `scripts/shunt-models roles <provider/model> code-write` (or
   leave `roles` unset, which grants every role). It shares the same
   registry, priority order, and circuit breaker as `bulk-read`, tracked
   separately per role. See [ADR 0016](docs/adr/0016-code-write-roles-and-candidate-order.md).
 - On a build/test failure after generation, the skill retries the delegate
   itself (appending the raw failure output to `--spec`) before falling back
   to Claude fixing the file by hand. The retry count is configurable
-  (`scripts/shunt-codewrite-config`, default 1, global) — drive it through
+  (`scripts/shunt-codewrite-config`, default 1, global). Drive it through
   `/model-config`.
 
 | Variable | Default | Purpose |
@@ -227,8 +313,9 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 | Variable | Default | Purpose |
 |---|---|---|
 | `SHUNT_MIN_LINES` | `350` | Line-count threshold above which reads are blocked and delegated. |
-| `SHUNT_OPENCODE_BIN` | `opencode` | Path or name of the OpenCode binary to invoke. |
-| `SHUNT_TIMEOUT_SECONDS` | `300` | Timeout for a single delegated `opencode run` call. |
+| `SHUNT_OPENCODE_BIN` | `opencode` | Path or name of the OpenCode binary to invoke (`opencode` transport only). |
+| `SHUNT_TIMEOUT_SECONDS` | `300` | Timeout for a single delegated `opencode run` call, and for each single HTTP request with the `http` transport. |
+| `SHUNT_TOTAL_TIMEOUT_SECONDS` | 3 x `SHUNT_TIMEOUT_SECONDS` (`900`) | `http` transport only: deadline for one model attempt, covering every part and the merge request of a chunked (map_reduce) call. It applies per model: when a model fails over, the next candidate starts with a fresh deadline, so a failover chain can take up to this long once per candidate. It is checked before each request, and each request's timeout is capped at the time left. When it runs out, the attempt fails as a timeout (counted by the circuit breaker, the next model is tried) and stderr says how many parts finished. A single unchunked request is only affected when this is set below `SHUNT_TIMEOUT_SECONDS`. The default follows `SHUNT_TIMEOUT_SECONDS` rounded up to whole seconds, and is no total deadline when `SHUNT_TIMEOUT_SECONDS` is `0` (no limit). Must be a positive whole number of seconds. |
 | `SHUNT_BULK_READER_AGENT` | `bulk-reader` | Name of the OpenCode agent used for bulk-read delegation when no models registry exists (legacy single-agent mode). |
 | `SHUNT_HOOKS_DISABLED` | unset | When `1`/`true`/`yes`, both PreToolUse hooks allow every read through unchecked. See the `/toggle-hooks` skill for A/B testing hooks-on vs hooks-off. |
 | `SHUNT_OPENCODE_CONFIG_HOME` | `~/.config/opencode` | Where to read your real OpenCode agent/provider config from, when building the isolated per-call config below. |
@@ -263,11 +350,11 @@ the hooks, and delegate-spend visibility.
 ## Evals
 
 ```bash
-evals/run.sh                # hook routing decisions — no network needed
-evals/transport-evals.sh    # one live scripts/bulk-read call — needs OpenCode + a provider
+evals/run.sh                # hook routing decisions, no network needed
+evals/transport-evals.sh    # one live scripts/bulk-read call, needs OpenCode + a provider
 evals/benchmark.sh          # token-savings + latency of the delegated OpenCode call, in isolation
-evals/baseline-benchmark.sh # shunt vs Claude reading the files directly — needs OpenCode + a provider + `claude` CLI
-evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? — needs OpenCode + a provider + `claude` CLI
+evals/baseline-benchmark.sh # shunt vs Claude reading the files directly, needs OpenCode + a provider + `claude` CLI
+evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? Needs OpenCode + a provider + `claude` CLI
 ```
 
 `evals/benchmark.sh` measures, per scenario in `evals/benchmarks.json`:
@@ -275,7 +362,8 @@ evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? �
 - **Token savings**: a `chars/4` estimate (the same conservative heuristic
   shunt uses) of the raw file content Claude would otherwise read, versus
   the delegated model's answer that lands in Claude's context instead.
-- **Latency**: wall-clock time for the delegated `opencode run` round trip.
+- **Latency**: wall-clock time for the delegated round trip (see
+  [Performance](#performance) for measured numbers per transport).
   Delegation trades Claude context tokens for this added latency; the
   script reports both so you can judge the trade-off for your own workflow
   rather than assuming delegation is free.
@@ -298,11 +386,11 @@ to read, rather than synthetic filler.
 `evals/baseline-benchmark.sh` runs the same scenarios a second way, to
 answer the actual "is this worth it" question: for each scenario, in each
 iteration, it sends the question plus the raw file content to a real
-`claude -p --output-format json` call twice — once as a brand-new session
+`claude -p --output-format json` call twice: once as a brand-new session
 (`no-resume`) and once chained into the same session as the prior scenario
 (`resume`, so the one-time cost of priming this project's system prompt is
-only paid once, matching how a real interactive session amortizes it) —
-then runs the same scenario through `scripts/bulk-read` (`shunt`) and
+only paid once, matching how a real interactive session amortizes it).
+Then it runs the same scenario through `scripts/bulk-read` (`shunt`) and
 writes all three as JSON rows to `evals/results/baseline-benchmark.jsonl`.
 `evals/aggregate-baseline-results.py` (run automatically at the end) turns
 those rows into `evals/results/baseline-benchmark-summary.json` and a
@@ -317,7 +405,7 @@ For `no-resume`/`resume`, `context_tokens` is the real
 what Claude actually paid to have the raw file content in context. For
 `shunt`, `context_tokens` is a chars/4 estimate of only the delegate's
 answer text (the thing that would land in Claude's context if a live
-session relayed it) — it does not include the tokens a real session would
+session relayed it). It does not include the tokens a real session would
 spend emitting the `Bash` call to `scripts/bulk-read` or reading the
 `/bulk-reader` skill instructions that route it there, so it's a
 best-case, not a full accounting of shunt's Claude-side cost. The
@@ -350,7 +438,7 @@ repo to view it rendered).
 
 > **On speed:** the timing numbers in that ledger (and in
 > `docs/fidelity-ledger.html`) depend heavily on which OpenCode provider and
-> model you point `scripts/bulk-read` at — different providers/models can be
+> model you point `scripts/bulk-read` at. Different providers/models can be
 > dramatically faster or slower for the same call. These numbers are one
 > personal observation from one provider/model at one point in time, not a
 > guarantee; re-run the benchmarks against your own setup before drawing
@@ -359,7 +447,7 @@ repo to view it rendered).
 > The fixtures moved to real `labstack/echo` source (see above); the
 > ledger and the results file it's built from need a fresh
 > `evals/baseline-benchmark.sh` run against them before the numbers are
-> trustworthy again — that run spends real money on your Claude account,
+> trustworthy again. That run spends real money on your Claude account,
 > so it isn't run automatically as part of an edit.
 
 | Variable | Default | Purpose |
@@ -373,7 +461,7 @@ repo to view it rendered).
 `evals/baseline-benchmark.sh` answers "is delegation worth it" (cost/time).
 `evals/fidelity-benchmark.sh` answers a different question: "does delegation
 actually degrade the answer?" It runs against a separate ground-truth set,
-[`evals/fidelity-questions.json`](evals/fidelity-questions.json) — a list of
+[`evals/fidelity-questions.json`](evals/fidelity-questions.json), a list of
 questions over the same `evals/fixtures/echo/` files, each with a
 `ground_truth.must_mention` list of exact identifiers extracted mechanically
 (`grep`) from the real source, not written from memory. Some questions are
@@ -384,13 +472,13 @@ identifiers, entries defined far from a file's main cluster).
 For each question it captures three answers: `direct` (Claude reads the file
 content inlined in the prompt), `delegate` (`scripts/bulk-read`'s raw
 answer, which Claude never sees the source for), and `final` (Claude
-answering the same question using *only* the delegate's raw answer — this
+answering the same question using *only* the delegate's raw answer, which
 is what a real user actually sees once the `PreToolUse` hook blocks a direct
 read and Claude falls back to bulk-read). Scoring is exact/structured, not
 LLM-judged: recall is the fraction of `must_mention` items found as a
 case-insensitive substring of the answer. An item counts as an
 **unsupported claim** (a hallucination signal) if it shows up in `final` but
-not in `delegate`'s own raw text — the only source `final` had. This is a
+not in `delegate`'s own raw text, the only source `final` had. This is a
 heuristic, not proof of fabrication: Claude can paraphrase a delegate claim
 in different wording and trip a false positive, so treat unsupported claims
 as something to inspect, not a final verdict.
@@ -400,7 +488,7 @@ Results go to `evals/results/fidelity-benchmark.jsonl`;
 a per-question table of direct vs. delegate recall, which ground-truth
 items each path dropped, and any unsupported claims. Like
 `baseline-benchmark.sh`, this spends real money on your Claude account and
-needs a reachable OpenCode provider — run it deliberately, not in a loop.
+needs a reachable OpenCode provider. Run it deliberately, not in a loop.
 
 **[`docs/fidelity-ledger.html`](docs/fidelity-ledger.html)** is the write-up
 of the latest `evals/fidelity-benchmark.sh` run: on the current question
@@ -409,9 +497,14 @@ adversarial ones, and zero unsupported claims.
 
 ## Scope
 
-This plugin wraps the `opencode` CLI as a subprocess; a direct HTTP client
-against your provider is a planned future phase. See
-[ADR 0002](docs/adr/0002-wrap-opencode-cli-not-http-client.md).
+Calls go through a transport layer with two transports, chosen per provider:
+a direct HTTP client and the `opencode` CLI as a subprocess. See
+[ADR 0018](docs/adr/0018-direct-http-transport-alongside-opencode.md), which
+supersedes [ADR 0002](docs/adr/0002-wrap-opencode-cli-not-http-client.md).
+Key storage, oversize input and thinking options are in
+[ADR 0019](docs/adr/0019-api-key-storage.md),
+[ADR 0020](docs/adr/0020-context-window-and-oversize-handling.md) and
+[ADR 0021](docs/adr/0021-thinking-options-apply-to-both-transports.md).
 
 ## License
 

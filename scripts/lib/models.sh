@@ -13,6 +13,10 @@
 
 SHUNT_MODELS_FILE="${SHUNT_MODELS_FILE:-$HOME/.config/agent-model-shunt/models.json}"
 SHUNT_AGENTS_DIR="${SHUNT_AGENTS_DIR:-$HOME/.config/agent-model-shunt/agents}"
+# The role prompts (bulk-reader.md, code-writer.md): the body of the OpenCode
+# agent files and the system message of the http transport. The default is
+# derived without a subshell, since the Read hook sources this file on every Read.
+SHUNT_PROMPTS_DIR="${SHUNT_PROMPTS_DIR:-${BASH_SOURCE[0]%/*}/../../prompts}"
 
 # Roles a model can be assigned in the registry's optional `roles` array. A
 # model without `roles` has all of them. The JSON form is kept literal next to
@@ -76,7 +80,31 @@ shunt_models_validate() {
     return 1
   fi
 
+  local sizing_error
+  sizing_error=$(_shunt_models_sizing_error)
+  if [ -n "$sizing_error" ]; then
+    echo "shunt: models registry at $SHUNT_MODELS_FILE: $sizing_error"
+    return 1
+  fi
+
   return 0
+}
+
+# _shunt_models_sizing_error
+# Prints a one-line reason for the first model whose optional context_tokens
+# (positive integer) or oversize_policy ("map_reduce" or "fail", absent means
+# map_reduce) is malformed, or why the registry could not be read.
+_shunt_models_sizing_error() {
+  jq -r '
+    [.models[] | . as $m
+      | if has("context_tokens") and ((.context_tokens | type) != "number"
+            or .context_tokens < 1 or .context_tokens >= 1e12 or .context_tokens != (.context_tokens | floor))
+        then "model \"\($m.id)\" has invalid context_tokens: must be a positive integer below 10^12."
+        elif has("oversize_policy") and (.oversize_policy | IN("map_reduce", "fail") | not)
+        then "model \"\($m.id)\" has invalid oversize_policy: must be \"map_reduce\" or \"fail\"."
+        else empty end
+    ] | first // empty
+  ' "$SHUNT_MODELS_FILE" 2>/dev/null || echo "cannot read context_tokens and oversize_policy."
 }
 
 # shunt_models_role_known <role>
@@ -263,12 +291,9 @@ tools:
   changed-files: false
   dependency-analyzer: false
 ---
-
-You are a precise code analyst. Answer the question about the attached
-file(s) directly and concisely. Use bullet points, not prose. Do not
-speculate beyond what is in the attached content. Do not suggest edits or
-next steps unless asked.
 AGENT
+  echo
+  cat "$SHUNT_PROMPTS_DIR/bulk-reader.md"
 }
 
 # _shunt_models_render_code_writer <id> <thinking-block>
@@ -301,53 +326,9 @@ tools:
   changed-files: false
   dependency-analyzer: false
 ---
-
-You generate exactly one new file from the instructions and the attached
-files. You have no tools and cannot read or write anything else. A script
-writes the file for you, so reply with text only, in this protocol:
-
-<SHUNT-NOTES>
-Short notes for the reviewer: what you skipped, symbols you could not find,
-anything you are unsure about. Write "none" when there is nothing to say.
-</SHUNT-NOTES>
-<SHUNT-CODE>
-The complete content of the new file.
-</SHUNT-CODE>
-
-Rules for the reply:
-- The notes go inside "<SHUNT-NOTES>" and "</SHUNT-NOTES>", the file content
-  inside "<SHUNT-CODE>" and "</SHUNT-CODE>". Every tag is a line of its own
-  with nothing else on it, in the order shown above.
-- Each of the four tags appears exactly once in the whole reply and is
-  never quoted in the notes or in the code. Always write both closing tags, a
-  reply without them is thrown away.
-- Write nothing but blank lines before "<SHUNT-NOTES>", between
-  "</SHUNT-NOTES>" and "<SHUNT-CODE>", and after "</SHUNT-CODE>".
-- The lines between "<SHUNT-CODE>" and "</SHUNT-CODE>" are written to disk
-  verbatim. Do not wrap them in a markdown fence and add no commentary. If
-  the file itself contains fenced blocks (a markdown file, for example), use
-  four backticks for the fences that enclose them, so that a fence line in the
-  file is never taken for a wrapper around the whole file. The end of the file
-  is the line "</SHUNT-CODE>", not a fence.
-- Use only symbols, functions, types, fields and paths that appear in the
-  attached files or in the instructions. Never invent one. If something you
-  need is missing, leave that part out and say so in the notes.
-- Follow the reference files for style and structure, and the rules files for
-  project conventions.
-- If you cannot produce a correct file, leave the code section empty and
-  explain why in the notes. Do not guess.
-
-Example of a complete, correct reply (it starts on the line after this one
-and ends before the line "End of example."):
-<SHUNT-NOTES>
-Skipped input validation, the instructions did not ask for it.
-</SHUNT-NOTES>
-<SHUNT-CODE>
-def add(a, b):
-    return a + b
-</SHUNT-CODE>
-End of example.
 AGENT
+  echo
+  cat "$SHUNT_PROMPTS_DIR/code-writer.md"
 }
 
 # shunt_models_materialize_agent <id>
