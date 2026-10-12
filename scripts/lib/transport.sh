@@ -74,23 +74,34 @@ shunt_run_with_timeout() {
 
 # shunt_opencode_normalize <jsonl-file>
 # Prints the normalized JSON for an `opencode run --format json` transcript:
-# the last text event, and the tokens, cost and reason of the last step_finish
-# event. A transcript with no text yields empty text and one with no step_finish
-# yields an empty finish reason and no usage key (so no usage line is printed),
-# and so does output that is not JSON, so the callers' own checks (empty text,
-# finish reason not "stop") judge it.
+# the last text event, the reason of the last step_finish event, and tokens and
+# cost summed over every step_finish (each step is billed on its own). OpenCode
+# reports cached prompt tokens apart from tokens.input (tokens.cache.read and
+# .write) and reasoning apart from tokens.output, so both are added back to
+# match what an OpenAI-compatible API reports as prompt_tokens and
+# completion_tokens. A transcript with no text yields empty text and one with no
+# step_finish yields an empty finish reason and no usage key (so no usage line
+# is printed), and so does output that is not JSON, so the callers' own checks
+# (empty text, finish reason not "stop") judge it.
 shunt_opencode_normalize() {
   local jsonl="$1"
   jq -s -c '
+    def n: if type == "number" then . else 0 end;
+    def obj: if type == "object" then . else {} end;
     ([.[] | select(.type=="text")] | last | .part.text // "") as $text |
-    ([.[] | select(.type=="step_finish")] | last | .part // {}) as $fin |
+    [.[] | select(.type=="step_finish") | .part | obj] as $steps |
+    ($steps | last // {}) as $fin |
+    [$steps[] | .cost | select(type == "number")] as $costs |
     {
       text: $text,
       finish_reason: ($fin.reason // ""),
-      usage: {input: ($fin.tokens.input // 0), output: ($fin.tokens.output // 0)}
+      usage: {
+        input: ([$steps[] | .tokens | obj | (.input | n) + (.cache | obj | (.read | n) + (.write | n))] | add // 0),
+        output: ([$steps[] | .tokens | obj | (.output | n) + (.reasoning | n)] | add // 0)
+      }
     }
-    | if $fin == {} then del(.usage) else . end
-    | . + (if $fin.cost == null then {} else {cost: $fin.cost} end)
+    | if $steps == [] then del(.usage) else . end
+    | . + (if $costs == [] then {} else {cost: ($costs | add)} end)
   ' "$jsonl" 2>/dev/null \
     || echo '{"text":"","finish_reason":""}'
 }

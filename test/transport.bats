@@ -31,7 +31,7 @@ FAKE
   shunt_write_provider p
 }
 
-@test "normalize keeps the last text part, step_finish tokens, cost and reason" {
+@test "normalize keeps the last text part and reason and sums tokens and cost over every step" {
   local j="$TEST_TMPDIR/t.jsonl"
   write_transcript "$j" \
     '{"type":"text","part":{"text":"first"}}' \
@@ -42,9 +42,31 @@ FAKE
   assert_success
   [ "$(jq -r '.text' <<<"$output")" = "final answer" ]
   [ "$(jq -r '.finish_reason' <<<"$output")" = "stop" ]
-  [ "$(jq -r '.usage.input' <<<"$output")" = "100" ]
-  [ "$(jq -r '.usage.output' <<<"$output")" = "50" ]
-  [ "$(jq -r '.cost' <<<"$output")" = "0.125" ]
+  [ "$(jq -r '.usage.input' <<<"$output")" = "101" ]
+  [ "$(jq -r '.usage.output' <<<"$output")" = "51" ]
+  [ "$(jq -r '.cost' <<<"$output")" = "0.135" ]
+}
+
+@test "normalize counts cached prompt tokens as input and reasoning as output" {
+  local j="$TEST_TMPDIR/t.jsonl"
+  # A real second opencode call: most of the prompt came from the cache.
+  write_transcript "$j" \
+    '{"type":"text","part":{"text":"x"}}' \
+    '{"type":"step_finish","part":{"reason":"stop","cost":0,"tokens":{"total":7129,"input":209,"output":8,"reasoning":5,"cache":{"write":3,"read":6912}}}}'
+  run shunt_opencode_normalize "$j"
+  assert_success
+  [ "$(jq -r '.usage.input' <<<"$output")" = "7124" ]
+  [ "$(jq -r '.usage.output' <<<"$output")" = "13" ]
+}
+
+@test "normalize treats non-numeric token fields as zero" {
+  local j="$TEST_TMPDIR/t.jsonl"
+  write_transcript "$j" \
+    '{"type":"text","part":{"text":"x"}}' \
+    '{"type":"step_finish","part":{"reason":"stop","tokens":{"input":"7","output":null,"cache":"none"}}}'
+  run shunt_opencode_normalize "$j"
+  assert_success
+  [ "$(jq -c '.usage' <<<"$output")" = '{"input":0,"output":0}' ]
 }
 
 @test "normalize omits cost when the provider reported none" {
