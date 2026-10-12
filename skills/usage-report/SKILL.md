@@ -6,7 +6,7 @@ model: haiku
 
 # Usage Report
 
-Tracks the delegate side of every real `scripts/bulk-read` call made during
+Tracks the delegate side of every real `${CLAUDE_PLUGIN_ROOT}/scripts/bulk-read` call made during
 normal work (not `evals/*` benchmark runs, which measure this separately and
 don't need the toggle below): what the delegate model actually cost
 (`delegate_input_tokens`/`delegate_output_tokens`/`delegate_cost_usd`, from
@@ -41,7 +41,7 @@ Each enabled call appends one line to `SHUNT_DEBUG_LOG_PATH` (default
 ## Reading the report
 
 ```bash
-scripts/usage-report
+"${CLAUDE_PLUGIN_ROOT}"/scripts/usage-report
 ```
 
 Prints total calls, summed delegate tokens/cost, summed
@@ -52,7 +52,7 @@ OpenCode agent bulk-reader)` comes from calls logged before the `model` field
 existed in legacy single-agent mode: `bulk-reader` there is the OpenCode agent
 name, not a model, so say the model is unknown rather than calling it
 "bulk-reader". Pass a path to summarize a different log file:
-`scripts/usage-report /path/to/usage.jsonl`.
+`${CLAUDE_PLUGIN_ROOT}/scripts/usage-report /path/to/usage.jsonl`.
 
 ## When to use this skill
 

@@ -9,12 +9,15 @@ model: haiku
 The single entry point for shunt's delegate-model configuration. Drive it
 only through the CLIs, never by hand-editing the JSON files:
 
-- `scripts/shunt-models`: registry (`~/.config/agent-model-shunt/models.json`),
+- `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-models`: registry (`~/.config/agent-model-shunt/models.json`),
   providers and keys (`providers.json`), context, migration.
-- `scripts/shunt-breaker-config`: retry/failover behavior, the "circuit
+- `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-breaker-config`: retry/failover behavior, the "circuit
   breaker" (`breaker-config.json`).
-- `scripts/shunt-codewrite-config`: the code-write self-fix retry count
+- `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-codewrite-config`: the code-write self-fix retry count
   (`code-write-self-fix-config.json`).
+
+The plugin root is `${CLAUDE_PLUGIN_ROOT}`. Paths like `scripts/shunt-models` in
+`reference.md` are relative to it, so run them with that prefix.
 
 The full per-command reference is in `reference.md` next to this file. Do not
 read it up front. When the user picks an action, read only that action's
@@ -50,7 +53,7 @@ while, and how long before it tries that model again".
 
 ## Dashboard flow
 
-1. Run `scripts/shunt-models dashboard` once. Do not run `status`,
+1. Run `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-models dashboard` once. Do not run `status`,
    `provider list`, `key status` or the `show` commands for the dashboard:
    this one call has all of it. The line format is in reference.md,
    "Dashboard details". Only read it if a line is unclear.
@@ -101,7 +104,7 @@ when `importable=` is not `none`.
 1. Ask the provider name and base_url, and whether it needs a key. Offer key
    storage with AskUserQuestion: keyring (recommended if available), env
    variable, plaintext (last resort), none (local, e.g. Ollama).
-2. `scripts/shunt-models provider set <name> --transport http --base-url <url> --key <type>`.
+2. `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-models provider set <name> --transport http --base-url <url> --key <type>`.
 3. For keyring or plaintext, run `shunt-key-dialog <name>` (see Hard rules)
    and say a password window is open. For env, ask the user to export the
    variable. Confirm with `key status <name>`.
