@@ -366,19 +366,38 @@ _shunt_log_files_json() {
   echo "$files_json"
 }
 
+# _shunt_log_model <agent>
+# Prints the model id a logged call ran on. A registry call already passes the
+# model id (provider/model). A legacy single-agent call passes the OpenCode
+# agent name, so the model comes from that agent file's `model:` line. Prints
+# nothing when it cannot be found.
+_shunt_log_model() {
+  local agent="$1" f
+  case "$agent" in */*) echo "$agent"; return 0 ;; esac
+  for f in "$SHUNT_AGENTS_DIR/$agent.md" "$SHUNT_OPENCODE_CONFIG_HOME/agents/$agent.md"; do
+    [ -f "$f" ] || continue
+    awk 'NR == 1 && $0 != "---" { exit } NR > 1 && $0 == "---" { exit }
+      /^model:[ \t]*[^ \t]/ { sub(/^model:[ \t]*/, ""); sub(/[ \t\r]+$/, ""); print; exit }' "$f"
+    return 0
+  done
+}
+
 # _shunt_log_append <agent> <response-file> <question> <files-json> <avoided> <extra-json>
 # Appends one JSON line to SHUNT_DEBUG_LOG_PATH: the fields every entry has
-# (timestamp, agent, files, question_chars, the delegate's real usage read
-# from <response-file>, avoided_tokens_estimate) merged with <extra-json>. Never
-# fails the caller.
+# (timestamp, agent, model, files, question_chars, the delegate's real usage
+# read from <response-file>, avoided_tokens_estimate) merged with <extra-json>.
+# model is null when it cannot be resolved. Never fails the caller.
 _shunt_log_append() {
   local agent="$1" resp="$2" question="$3" files_json="$4" avoided="$5" extra="$6"
+  local model
+  model=$(_shunt_log_model "$agent" 2>/dev/null || true)
 
   mkdir -p "$(dirname "$SHUNT_DEBUG_LOG_PATH")" 2>/dev/null || return 0
 
   jq -n -c \
     --arg ts "$(date -u +%Y-%m-%dT%H:%M:%SZ)" \
     --arg agent "$agent" \
+    --arg model "$model" \
     --argjson files "$files_json" \
     --argjson qchars "${#question}" \
     --argjson avoided "$avoided" \
@@ -389,6 +408,7 @@ _shunt_log_append() {
     '{
       timestamp: $ts,
       agent: $agent,
+      model: (if $model == "" then null else $model end),
       files: $files,
       question_chars: $qchars,
       delegate_input_tokens: ($usage[0].input // 0),

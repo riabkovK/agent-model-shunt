@@ -526,3 +526,22 @@ write_failing_opencode() {
   [ "$(sed -n 2p "$SHUNT_DEBUG_LOG_PATH" | jq -r '.avoided_output_tokens_estimate')" = "100" ]
   [ "$(sed -n 2p "$SHUNT_DEBUG_LOG_PATH" | jq -r '.delegate_output_tokens')" = "3" ]
 }
+
+@test "the usage log records the model: the id in registry mode, the agent file's model in legacy mode" {
+  export SHUNT_DEBUG_LOG_PATH="$TEST_TMPDIR/usage.jsonl"
+  local f="$TEST_TMPDIR/in.txt" j="$TEST_TMPDIR/t.json"
+  printf 'abcdefgh\n' >"$f"
+  echo '{"text":"a","finish_reason":"stop","usage":{"input":7,"output":3},"cost":0.1}' >"$j"
+  mkdir -p "$SHUNT_OPENCODE_CONFIG_HOME/agents"
+  printf -- '---\ndescription: d\nmodel: acme/legacy-model  \n---\nbody\nmodel: not/this\n' \
+    >"$SHUNT_OPENCODE_CONFIG_HOME/agents/bulk-reader.md"
+
+  shunt_log_usage "p/one" "$j" "q" "$f"
+  shunt_log_usage "bulk-reader" "$j" "q" "$f"
+  shunt_log_usage "missing-agent" "$j" "q" "$f"
+
+  [ "$(sed -n 1p "$SHUNT_DEBUG_LOG_PATH" | jq -r '.model')" = "p/one" ]
+  [ "$(sed -n 2p "$SHUNT_DEBUG_LOG_PATH" | jq -r '.agent')" = "bulk-reader" ]
+  [ "$(sed -n 2p "$SHUNT_DEBUG_LOG_PATH" | jq -r '.model')" = "acme/legacy-model" ]
+  [ "$(sed -n 3p "$SHUNT_DEBUG_LOG_PATH" | jq -c '.model')" = "null" ]
+}

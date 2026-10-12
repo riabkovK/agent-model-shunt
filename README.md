@@ -333,7 +333,11 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
 
 `/bulk-reader` and `/code-writer` (documented above) do the actual
 delegation. These four skills manage shunt itself: the model registry,
-the hooks, and delegate-spend visibility.
+the hooks, and delegate-spend visibility. Their work is mechanical (run a
+script, show its result, ask what to change), so each one pins `model: haiku`
+in its frontmatter and runs on Haiku whatever model the session uses. The two
+delegation skills are not pinned: their real work already runs on the
+delegate model.
 
 - **`/model-config`**: dashboard and editor for the model registry, the
   circuit breaker, and the code-write self-fix retry count. Configuring

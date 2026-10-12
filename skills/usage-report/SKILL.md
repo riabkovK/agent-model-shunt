@@ -1,6 +1,7 @@
 ---
 name: usage-report
 description: Summarize the plugin's debug usage log (SHUNT_DEBUG_LOG) with scripts/usage-report - delegate tokens/cost actually spent, and a chars/4 estimate of Claude-context tokens avoided by delegating instead of reading the file directly. Use when the user asks how much shunt is saving or wants to track delegate spend over a work session. To turn the underlying logging on or off, use /toggle-debug-log instead.
+model: haiku
 ---
 
 # Usage Report
@@ -32,7 +33,7 @@ and reminds the user to restart the session, since that file is only read
 by Claude Code at session start.
 
 Each enabled call appends one line to `SHUNT_DEBUG_LOG_PATH` (default
-`~/.cache/agent-model-shunt/usage.jsonl`): `timestamp`, `agent`, `files`
+`~/.cache/agent-model-shunt/usage.jsonl`): `timestamp`, `agent`, `model`, `files`
 (`path`/`lines`/`bytes` per delegated file), `question_chars`,
 `delegate_input_tokens`, `delegate_output_tokens`, `delegate_cost_usd`,
 `avoided_tokens_estimate`.
@@ -44,9 +45,14 @@ scripts/usage-report
 ```
 
 Prints total calls, summed delegate tokens/cost, summed
-`avoided_tokens_estimate`, and the same broken down per agent (useful once
-more than one delegate model/agent is configured). Pass a path to summarize
-a different log file: `scripts/usage-report /path/to/usage.jsonl`.
+`avoided_tokens_estimate`, and the same broken down per delegate model and
+tool (`by_model`, useful once more than one delegate model is configured).
+Present `model` as the model the call ran on. A row like `unknown (legacy
+OpenCode agent bulk-reader)` comes from calls logged before the `model` field
+existed in legacy single-agent mode: `bulk-reader` there is the OpenCode agent
+name, not a model, so say the model is unknown rather than calling it
+"bulk-reader". Pass a path to summarize a different log file:
+`scripts/usage-report /path/to/usage.jsonl`.
 
 ## When to use this skill
 
