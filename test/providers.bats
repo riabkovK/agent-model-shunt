@@ -233,3 +233,32 @@ use_fake_path() {
   assert_output --partial "caller-trap-ran"
   [ ! -e "$f" ]
 }
+
+@test "validate rejects a provider name outside the allowed charset" {
+  local name
+  for name in 'a;rm -rf x' '$(id)' 'a b' '-x'; do
+    jq -n --arg n "$name" '{providers:{($n):{transport:"http",key:{type:"none"}}}}' >"$SHUNT_PROVIDERS_FILE"
+    run shunt_providers_validate
+    assert_failure
+    assert_output --partial "provider name has characters other than"
+  done
+}
+
+@test "validate rejects a provider name with a trailing newline" {
+  jq -n --arg n $'ok\n' '{providers:{($n):{transport:"http",key:{type:"none"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  run shunt_providers_validate
+  assert_failure
+  assert_output --partial "provider name has characters other than"
+}
+
+@test "validate names the offending provider, quoted, and says to edit providers.json" {
+  jq -n '{providers:{"_old":{transport:"http",key:{type:"none"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  run shunt_providers_validate
+  assert_failure
+  assert_output --partial '"_old"'
+  assert_output --partial "edit providers.json"
+  jq -n --arg n $'bad\nname' '{providers:{($n):{transport:"http",key:{type:"none"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  run shunt_providers_validate
+  assert_failure
+  assert_output --partial '"bad\nname"'
+}

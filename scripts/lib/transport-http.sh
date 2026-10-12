@@ -27,6 +27,28 @@
 # the Authorization header cannot be replayed to another host.
 
 SHUNT_HTTP_EXCERPT_CHARS=300
+# Largest reply body accepted, in bytes (default 16 MiB). curl stops at this size
+# when the server sends a Content-Length. Without one, --max-filesize also stops
+# a chunked transfer only on curl >= 8.4.0. On older curl the size check after the
+# download plus the --max-time deadline bound it instead.
+SHUNT_HTTP_MAX_RESPONSE_BYTES_DEFAULT=16777216
+SHUNT_HTTP_CURL_TOO_LARGE=63
+
+# _shunt_http_max_response_bytes
+# Prints the cap: SHUNT_HTTP_MAX_RESPONSE_BYTES when it is a positive integer.
+_shunt_http_max_response_bytes() {
+  local v="${SHUNT_HTTP_MAX_RESPONSE_BYTES:-}"
+  [[ "$v" =~ ^[1-9][0-9]{0,14}$ ]] || v=$SHUNT_HTTP_MAX_RESPONSE_BYTES_DEFAULT
+  printf '%s' "$v"
+}
+
+# _shunt_http_too_large <file>
+# Succeeds when the file is bigger than the response cap.
+_shunt_http_too_large() {
+  local size
+  size=$(wc -c <"$1" 2>/dev/null) || return 1
+  [ "${size//[^0-9]/}" -gt "$(_shunt_http_max_response_bytes)" ]
+}
 # Oversize guard: tokens are estimated as ceil(bytes / SHUNT_HTTP_BYTES_PER_TOKEN)
 # and must fit in SHUNT_HTTP_CONTEXT_BUDGET_PERCENT of the model's context_tokens.
 # A model without context_tokens is only trusted with requests up to
@@ -88,21 +110,67 @@ _shunt_http_new_tmp() {
   printf -v "$1" '%s' "$f"
 }
 
+# _shunt_http_ascii_json_forms <text>
+# Prints the text as a JSON string body in two spellings, lower case hex only:
+# non-ASCII characters as \uxxxx (surrogate pairs above U+FFFF), and then every
+# character as \uxxxx (ASCII and control characters too).
+_shunt_http_ascii_json_forms() {
+  local all
+  for all in false true; do
+    printf '%s' "$1" | jq -Rrsj --argjson all "$all" '
+      def hex4: [(./4096|floor)%16, (./256|floor)%16, (./16|floor)%16, .%16]
+        | map("0123456789abcdef"[.:.+1]) | join("");
+      def esc: if . < 128 and ($all | not) then ([.] | implode | tojson | .[1:-1])
+        elif . < 65536 then "\\u" + hex4
+        else (. - 65536) as $c | (55296 + ($c/1024|floor)) as $h | (56320 + ($c%1024)) as $l
+          | "\\u" + ($h|hex4) + "\\u" + ($l|hex4) end;
+      explode | map(esc) | join("") | ., "\n"' 2>/dev/null || true
+  done
+}
+
+# _shunt_http_lower_u_escapes
+# Filter: lower-cases the hex digits of every \uXXXX escape, so one spelling is
+# enough when matching. Plain awk (no GNU sed \L), safe for mawk and BusyBox.
+_shunt_http_lower_u_escapes() {
+  awk '{
+    out = ""; line = $0
+    while (match(line, /\\u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/)) {
+      out = out substr(line, 1, RSTART - 1) tolower(substr(line, RSTART, RLENGTH))
+      line = substr(line, RSTART + RLENGTH)
+    }
+    print out line
+  }'
+}
+
 # _shunt_http_excerpt <file> <key>
 # Prints a one-line excerpt of the file that is safe for stderr: control
-# characters removed, the key value scrubbed, cut to SHUNT_HTTP_EXCERPT_CHARS.
+# characters removed, every spelling of the whole key value scrubbed (see
+# below), cut to SHUNT_HTTP_EXCERPT_CHARS. Only the complete key is matched, a
+# fragment of it is not redacted.
 _shunt_http_excerpt() {
-  local s key="$2" escaped
-  s=$(head -c 4000 "$1" | tr -d '[:cntrl:]')
+  local s key="$2" rawkey="$2" raw_escaped escaped form
+  s=$(head -c 4000 "$1" | tr -d '[:cntrl:]' | _shunt_http_lower_u_escapes)
   if [ -n "$key" ]; then
     # The key as it may be echoed: as is, and in the form jq writes it into a JSON
-    # string, plus the "\/" spelling some servers use for a slash. Control characters
-    # are stripped from the key like from the body, so a key holding one still matches.
+    # string, plus the "\/" spelling some servers use for a slash. The body had its
+    # control characters stripped, so the key is stripped the same way for the plain
+    # forms. The JSON form with control characters escaped (\t, \n) comes from the
+    # unstripped key.
+    raw_escaped=$(printf '%s' "$rawkey" | jq -Rsrj 'tojson | .[1:-1]' 2>/dev/null) || raw_escaped=""
     key=$(printf '%s' "$key" | tr -d '[:cntrl:]')
     escaped=$(jq -Rrj 'tojson | .[1:-1]' <<<"$key" 2>/dev/null) || escaped=""
     [ -z "$key" ] || s="${s//"$key"/[redacted]}"
+    [ -z "$raw_escaped" ] || s="${s//"$raw_escaped"/[redacted]}"
     [ -z "$escaped" ] || s="${s//"$escaped"/[redacted]}"
     [ -z "$escaped" ] || s="${s//"${escaped//\//\\\/}"/[redacted]}"
+    # The \uxxxx forms (non-ASCII only, and every character), lower case hex.
+    while IFS= read -r form; do
+      [ -z "$form" ] || s="${s//"$form"/[redacted]}"
+    done < <(_shunt_http_ascii_json_forms "$key")
+    # Same for the unstripped key, whose control characters become \u0009 and so on.
+    while IFS= read -r form; do
+      [ -z "$form" ] || s="${s//"$form"/[redacted]}"
+    done < <(_shunt_http_ascii_json_forms "$rawkey")
   fi
   printf '%s' "${s:0:$SHUNT_HTTP_EXCERPT_CHARS}"
 }
@@ -381,9 +449,21 @@ _shunt_http_build_request() {
 # stores the path of the normalized response in _SHUNT_HTTP_OUT.
 _shunt_http_check_reply() {
   local http_code="$1" curl_status="$2" provider="$_SHUNT_HTTP_PROVIDER" key="$_SHUNT_HTTP_KEY" out finish
+  local status_known=0
+  # An auth or rate-limit status is mapped even when its body was too large (or
+  # curl stopped at the cap with exit 63): the status says more than the size.
+  case "$http_code" in
+    401 | 403 | 429)
+      if [ "$curl_status" -eq 0 ] || [ "$curl_status" -eq "$SHUNT_HTTP_CURL_TOO_LARGE" ]; then status_known=1; fi ;;
+  esac
+  if [ "$status_known" -eq 0 ] && { [ "$curl_status" -eq "$SHUNT_HTTP_CURL_TOO_LARGE" ] \
+    || { [ "$curl_status" -eq 0 ] && _shunt_http_too_large "$_SHUNT_HTTP_RESP_FILE"; }; }; then
+    echo "shunt: provider '$provider' sent a response larger than $(_shunt_http_max_response_bytes) bytes." >&2
+    return "$SHUNT_TRY_INVOKE_ERROR"
+  fi
   if [ "$curl_status" -eq 28 ]; then
     return "$SHUNT_TRY_INVOKE_TIMEOUT"
-  elif [ "$curl_status" -ne 0 ]; then
+  elif [ "$curl_status" -ne 0 ] && [ "$status_known" -eq 0 ]; then
     echo "shunt: request to provider '$provider' failed (curl exit $curl_status): $(_shunt_http_excerpt "$_SHUNT_HTTP_ERR_FILE" "$key")" >&2
     if [ "${_SHUNT_HTTP_ASSUMED_HTTPS:-0}" = 1 ]; then
       echo "shunt: provider '$provider': cannot reach $_SHUNT_HTTP_BASE_URL (no scheme in base_url, https was assumed; write http://... explicitly for a plain http endpoint)." >&2
@@ -393,7 +473,7 @@ _shunt_http_check_reply() {
   case "$http_code" in
     2??) ;;
     401 | 403)
-      echo "shunt: auth failed for provider $provider: the key was rejected or is missing. Re-enter it through /model-config (it opens a password window), or without a desktop: ! $_SHUNT_HTTP_MODELS_CMD key set $provider" >&2
+      echo "shunt: auth failed for provider $provider: the key was rejected or is missing. Re-enter it through /model-config (it opens a password window), or without a desktop: ! $_SHUNT_HTTP_MODELS_CMD key set $(printf '%q' "$provider")" >&2
       return "$SHUNT_TRY_INVOKE_AUTH"
       ;;
     400 | 404 | 413)
@@ -434,6 +514,7 @@ _shunt_http_send() {
   _shunt_http_request_max_time || return $?
   _shunt_http_prepare_auth || return $?
   http_code=$(curl -q -sS --globoff --max-time "$_SHUNT_HTTP_MAX_TIME" --proto '=http,https' \
+    --max-filesize "$(_shunt_http_max_response_bytes)" \
     -H 'Content-Type: application/json' ${_SHUNT_HTTP_HDR_ARGS[@]+"${_SHUNT_HTTP_HDR_ARGS[@]}"} \
     --data-binary "@$_SHUNT_HTTP_BODY_FILE" -o "$_SHUNT_HTTP_RESP_FILE" -w '%{http_code}' \
     "${_SHUNT_HTTP_BASE_URL%/}/chat/completions" 2>"$_SHUNT_HTTP_ERR_FILE" </dev/null) || curl_status=$?

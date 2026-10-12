@@ -40,14 +40,14 @@ _migrate_opencode_json() { printf '%s' "$SHUNT_OPENCODE_CONFIG_HOME/opencode.jso
 # with the key classified as none | env | file | literal (a literal key itself
 # is dropped, a file key keeps its path).
 _migrate_collect_providers() {
-  jq -c --slurpfile reg "$SHUNT_MODELS_FILE" '
+  jq -c --arg name_re "$SHUNT_PROVIDER_NAME_REGEX_JQ" --slurpfile reg "$SHUNT_MODELS_FILE" '
     ([$reg[0].models[]?.id | split("/")[0]] | unique) as $used
     | (.provider // {}) | to_entries[] | select(.key as $k | $used | index($k))
     | (.value.options.apiKey // "") as $raw
     | (if ($raw | type) == "string" then $raw else "" end) as $k
     | (if ($k | type) == "string" then ($k | capture("^\\{env:(?<n>[A-Za-z_][A-Za-z0-9_]*)\\}$")? // null) else null end) as $env
     | (if ($k | type) == "string" then ($k | capture("^\\{file:(?<p>.+)\\}$")? // null) else null end) as $file
-    | {name: .key, base_url: (.value.options.baseURL // ""),
+    | {name: .key, bad_name: (.key | test($name_re) | not), base_url: (.value.options.baseURL // ""),
        bad_key: ($raw | type) != "string" and $raw != "",
        key_kind: (if $k == "" then "none" elif $env != null then "env" elif $file != null then "file" else "literal" end),
        env_ref: ($env.n // ""), key_path: ($file.p // "")}' "$(_migrate_opencode_json)"
@@ -216,7 +216,9 @@ _migrate_plan_provider() {
   kind=$(jq -r .key_kind <<<"$line"); ref=$(jq -r .env_ref <<<"$line"); path=$(jq -r .key_path <<<"$line")
   [ "$(jq -r .bad_key <<<"$line")" != true ] \
     || reason="the apiKey in opencode.json is not a string, so it is not imported as a key"
-  if [ "$(shunt_provider_transport "$name")" = http ]; then
+  if [ "$(jq -r .bad_name <<<"$line")" = true ]; then
+    state=skip; reason="the provider name has characters other than letters, digits, dot, dash and underscore, so it stays on opencode"
+  elif [ "$(shunt_provider_transport "$name")" = http ]; then
     state=done; reason="already on the http transport"
   elif ! err=$(_shunt_http_check_base_url "$name" "$raw" _ 2>&1 >/dev/null); then
     state=skip; reason="${err#shunt: }"

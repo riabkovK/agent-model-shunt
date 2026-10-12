@@ -16,6 +16,14 @@
 # lives in a 0600 header file handed to curl as -H @file, removed on every
 # way out including INT, TERM and HUP.
 
+# The size cap helpers (_shunt_http_max_response_bytes, _shunt_http_too_large and
+# SHUNT_HTTP_CURL_TOO_LARGE) live in transport-http.sh. Load it when the caller has not.
+if ! declare -F _shunt_http_too_large >/dev/null 2>&1 || ! declare -F _shunt_http_max_response_bytes >/dev/null 2>&1; then
+  _SHUNT_DETECT_LIB_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+  # shellcheck source=transport-http.sh
+  source "$_SHUNT_DETECT_LIB_DIR/transport-http.sh"
+fi
+
 SHUNT_DETECT_TIMEOUT_SECONDS="${SHUNT_DETECT_TIMEOUT_SECONDS:-15}"
 # Fields of a /models entry that carry the context window, first present wins.
 SHUNT_DETECT_FIELDS=(context_length max_model_len context_window max_context_length max_input_tokens)
@@ -59,18 +67,31 @@ _shunt_detect_fields_expr() {
   printf '%s' "(objects | $expr)"
 }
 
+# _shunt_detect_note_too_large <curl-exit-status>
+# Prints the "larger than N bytes" note when curl stopped at the size cap (exit 63).
+_shunt_detect_note_too_large() {
+  [ "$1" -eq "$SHUNT_HTTP_CURL_TOO_LARGE" ] || return 0
+  echo "shunt: a context lookup answer was larger than $(_shunt_http_max_response_bytes) bytes, ignored." >&2
+}
+
 # _shunt_detect_get <url> <out-file> [<post-body>]
 # One request (POST when a body is given). Succeeds only on a 2xx answer, whose
 # body is then in <out-file>.
 _shunt_detect_get() {
-  local url="$1" out="$2" body="${3:-}" code
+  local url="$1" out="$2" body="${3:-}" code curl_rc
   local method=(-X GET)
   [ -z "$body" ] || method=(-X POST -H 'Content-Type: application/json' --data-binary "$body")
   code=$(curl -q -sS --globoff --max-time "$SHUNT_DETECT_TIMEOUT_SECONDS" --proto '=http,https' \
+    --max-filesize "$(_shunt_http_max_response_bytes)" \
     "${method[@]}" ${_SHUNT_DETECT_HDR_ARGS[@]+"${_SHUNT_DETECT_HDR_ARGS[@]}"} -o "$out" -w '%{http_code}' "$url" 2>/dev/null </dev/null) \
-    || return 1
+    || { curl_rc=$?; _shunt_detect_note_too_large "$curl_rc"; return 1; }
   case "$code" in
-    2??) return 0 ;;
+    2??)
+      if _shunt_http_too_large "$out"; then
+        _shunt_detect_note_too_large "$SHUNT_HTTP_CURL_TOO_LARGE"
+        return 1
+      fi
+      return 0 ;;
     401) _SHUNT_DETECT_AUTH_SEEN=2; return 1 ;;
     403) [ "$_SHUNT_DETECT_AUTH_SEEN" -ge 1 ] || _SHUNT_DETECT_AUTH_SEEN=1; return 1 ;;
     *) return 1 ;;

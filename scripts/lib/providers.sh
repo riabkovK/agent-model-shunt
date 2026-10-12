@@ -20,6 +20,30 @@ SHUNT_KEYRING_SERVICE="agent-model-shunt"
 SHUNT_KWALLET_WALLET="kdewallet"
 SHUNT_PROVIDER_TRANSPORTS="http opencode"
 SHUNT_PROVIDER_KEY_TYPES="keyring env plaintext none"
+# The one provider name charset. Names reach shell hints the user copies.
+# Two spellings of it exist on purpose: bash ERE has no \A and \z and its $ only
+# matches at the very end, while Oniguruma (jq) lets $ match before a final
+# newline, so "ok\n" would pass there. The jq form is anchored with \A and \z.
+SHUNT_PROVIDER_NAME_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+SHUNT_PROVIDER_NAME_REGEX_JQ='\A[A-Za-z0-9][A-Za-z0-9._-]*\z'
+
+# shunt_provider_name_ok <name>
+shunt_provider_name_ok() { [[ "$1" =~ $SHUNT_PROVIDER_NAME_REGEX ]]; }
+
+# shunt_provider_name_refuse <name>
+# Explains on stderr why the name is refused. When providers.json already holds
+# an entry under that name, says so and what to do. The name is shown through
+# jq tojson, so it is quoted and has no raw control characters.
+shunt_provider_name_refuse() {
+  local q
+  if [ -f "$SHUNT_PROVIDERS_FILE" ] \
+    && jq -e --arg p "$1" '.providers[$p] != null' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1; then
+    q=$(jq -rn --arg p "$1" '$p | tojson')
+    echo "shunt: invalid provider name: $SHUNT_PROVIDERS_FILE has an entry named $q, which uses characters other than letters, digits, dot, dash and underscore (or does not start with a letter or digit). Please edit providers.json to remove or rename that entry." >&2
+  else
+    echo "shunt: invalid provider name (use letters, digits, dot, dash, underscore)." >&2
+  fi
+}
 
 SHUNT_PROVIDERS_LOCK_TIMEOUT="${SHUNT_PROVIDERS_LOCK_TIMEOUT:-10}"
 _SHUNT_PROVIDERS_LOCK_DEPTH=0 _SHUNT_PROVIDERS_LOCK_FD="" _SHUNT_PROVIDERS_LOCK_DIR=""
@@ -72,7 +96,8 @@ _shunt_guard_remove() {
 _SHUNT_PROVIDER_ENTRY_PROBLEM_JQ='
   def entry_problem($transports; $types):
     .key as $n | .value as $v
-    | if ($v | type) != "object" then "provider \"\($n)\": entry is not an object"
+    | if ($n | test($name_re) | not) then "provider \($n | tojson): provider name has characters other than letters, digits, dot, dash and underscore, or does not start with a letter or digit. Please edit providers.json to remove or rename that entry"
+      elif ($v | type) != "object" then "provider \"\($n)\": entry is not an object"
       elif ($v.transport // "opencode" | type) != "string" then "provider \"\($n)\": transport is not a string"
       elif ($transports | index($v.transport // "opencode")) == null
         then "provider \"\($n)\": unknown transport \"\($v.transport)\" (allowed: \($transports | join(" ")))"
@@ -97,7 +122,7 @@ shunt_providers_validate() {
     return 1
   fi
   local bad
-  if ! bad=$(jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" \
+  if ! bad=$(jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" --arg name_re "$SHUNT_PROVIDER_NAME_REGEX_JQ" \
     "$_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ"'
     .providers | to_entries[] | entry_problem($ts | split(" "); $kt | split(" ")) // empty' \
     "$SHUNT_PROVIDERS_FILE" 2>/dev/null); then
@@ -115,7 +140,7 @@ shunt_providers_validate() {
 # key type (env:<VAR> for env keys). An invalid entry gets "invalid: <reason>"
 # instead, so one bad entry does not hide the others. Never prints a key value.
 shunt_providers_list_lines() {
-  jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" \
+  jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" --arg name_re "$SHUNT_PROVIDER_NAME_REGEX_JQ" \
     "$_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ"'
     .providers | to_entries[]
     | entry_problem($ts | split(" "); $kt | split(" ")) as $bad
@@ -296,11 +321,11 @@ shunt_provider_key_resolve() {
       printf '%s\n' "${!ref}" ;;
     plaintext)
       ref=$(_shunt_provider_key_ref "$provider") || return 1
-      [ -n "$ref" ] || { echo "shunt: provider '$provider': no plaintext key stored. Run: shunt-models key set $provider" >&2; return 1; }
+      [ -n "$ref" ] || { echo "shunt: provider '$provider': no plaintext key stored. Run: shunt-models key set $(printf '%q' "$provider")" >&2; return 1; }
       printf '%s\n' "$ref" ;;
     keyring)
       shunt_keyring_get "$provider" \
-        || { echo "shunt: provider '$provider': no key found in the keyring. Run: shunt-models key set $provider" >&2; return 1; } ;;
+        || { echo "shunt: provider '$provider': no key found in the keyring. Run: shunt-models key set $(printf '%q' "$provider")" >&2; return 1; } ;;
   esac
 }
 

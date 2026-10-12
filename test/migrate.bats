@@ -417,3 +417,13 @@ isolate_home() {
   run jq -r '.providers.acme.key | "\(.type) [\(.ref // "-")]"' "$SHUNT_PROVIDERS_FILE"
   refute_output "plaintext [   ]"
 }
+
+@test "a provider name outside the allowed charset is skipped with a reason, never in a hint" {
+  jq -n '{provider:{"a;id":{options:{baseURL:"https://x.test/v1",apiKey:"sk-hostile-000"},models:{}}}}' \
+    >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+  jq -n '{version:1,active:null,models:[{id:"a;id/m",agent:"a1",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+  run migrate
+  assert_output --partial "skipped, the provider name has characters other than"
+  refute_output --partial "key set"
+  refute_output --partial "sk-hostile-000"
+}

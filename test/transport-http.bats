@@ -1263,3 +1263,63 @@ SH
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
   [[ "$stderr" != *"abcdef0123456789secret"* ]]
 }
+
+@test "an error body echoing a non-ASCII key as \\uXXXX escapes is redacted" {
+  local key=$'k\xc3\xa9y-123-\xf0\x9f\x94\x91'
+  export ACME_KEY="$key"
+  printf '{"error":"bad %s %s"}' 'kéy-123-🔑' 'kéy-123-🔑' >"$FAKE_CURL_BODY"
+  FAKE_CURL_CODE=400 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"bad"* ]]
+  [[ "$stderr" != *'u00e9'* ]]
+  [[ "$stderr" != *'u00E9'* ]]
+  [[ "$stderr" != *'123'* ]]
+}
+
+@test "curl exit 63 maps to ERROR naming the response size cap" {
+  FAKE_CURL_EXIT=63 SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"response larger than 1000 bytes"* ]]
+}
+
+@test "a reply bigger than the cap without a Content-Length is an ERROR after the download" {
+  ok_body "$(printf 'x%.0s' $(seq 1 3000))" stop
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"response larger than 1000 bytes"* ]]
+}
+
+@test "the request curl gets --max-filesize with the default 16 MiB cap" {
+  run shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq 0 ]
+  grep -qx -- '--max-filesize' "$FAKE_CURL_ARGV"
+  grep -qx '16777216' "$FAKE_CURL_ARGV"
+}
+
+@test "a 401 with an oversized body is still an auth failure" {
+  export FAKE_CURL_CODE=401
+  printf 'x%.0s' $(seq 1 3000) >"$FAKE_CURL_BODY"
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_AUTH" ]
+}
+
+@test "a 429 with an oversized body is reported as HTTP 429, not as a too-large reply" {
+  export FAKE_CURL_CODE=429
+  printf 'x%.0s' $(seq 1 3000) >"$FAKE_CURL_BODY"
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [[ "$stderr" == *"answered HTTP 429"* ]]
+}
+
+@test "an error body echoing the key with mixed-case hex escapes, ASCII as \\u00XX or control chars is redacted" {
+  local key=$'ab\tc-é-KEY123' body
+  export ACME_KEY="$key"
+  # mixed-case hex for the e-acute, and every character written as \u00xx
+  body='{"e":"x ab\tc-\u00E9-KEY123 y \u0061\u0062\u0009\u0063\u002d\u00e9\u002d\u004b\u0045\u0059\u0031\u0032\u0033 z"}'
+  printf '%s' "$body" >"$FAKE_CURL_BODY"
+  FAKE_CURL_CODE=400 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"x [redacted] y"* ]]
+  [[ "$stderr" != *"KEY123"* ]]
+  [[ "$stderr" != *"EY123"* ]]
+  [[ "$stderr" != *"\\u0033"* ]]
+}

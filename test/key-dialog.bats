@@ -217,3 +217,90 @@ stored_key() { jq -r '.providers.plain.key.ref // ""' "$SHUNT_PROVIDERS_FILE"; }
   BASH_ENV="$TEST_TMPDIR/bash-env" run --separate-stderr "$DIALOG_BIN" plain
   [[ "$stderr" != *"$SECRET"* ]]
 }
+
+@test "a hostile provider name is refused before any dialog opens" {
+  local name
+  for name in 'a;rm -rf x' '$(id)' 'a b' '-x' 'a`id`'; do
+    run "$DIALOG_BIN" "$name"
+    [ "$status" -eq 1 ]
+    assert_output --partial "invalid provider name"
+    [ ! -s "$STUB_ARGV_LOG" ]
+  done
+}
+
+@test "a pasted key with a line break is refused and nothing is stored" {
+  STUB_KEY=$'sk-first\nsk-second' run --separate-stderr "$DIALOG_BIN" plain
+  [ "$status" -eq 3 ]
+  [[ "$stderr" == *"line break"* ]]
+  [[ "$stderr" != *"sk-first"* ]]
+  [ -z "$(stored_key)" ]
+}
+
+@test "dialog stderr is discarded and stdout still carries the key" {
+  cat >"$STUB_BIN/zenity" <<'STUB'
+#!/bin/bash
+echo "gtk noise" >&2
+printf '%s' "$STUB_KEY"
+STUB
+  run --separate-stderr "$DIALOG_BIN" plain
+  assert_success
+  [[ "$stderr" != *"gtk noise"* ]]
+  [ "$(stored_key)" = "$SECRET" ]
+}
+
+@test "auto mode over SSH opens no GUI dialog and prints the fallback line" {
+  [ "$(uname -s)" = Linux ] || skip "Linux only"
+  unset SHUNT_KEY_DIALOG WAYLAND_DISPLAY
+  local v
+  for v in SSH_CONNECTION SSH_TTY; do
+    env "$v=x" DISPLAY=:0 "$DIALOG_BIN" plain >"$TEST_TMPDIR/out" || rc=$?
+    [ "${rc:-0}" -eq 5 ]
+    grep -q "key set plain" "$TEST_TMPDIR/out"
+    [ ! -s "$STUB_ARGV_LOG" ]
+    rc=0
+  done
+}
+
+@test "kdialog without a timeout binary is not used, the fallback line is printed" {
+  local d="$TEST_TMPDIR/minbin" t
+  mkdir -p "$d"
+  for t in jq env uname dirname cat rm mkdir mktemp head tr chmod stat sleep flock; do
+    command -v "$t" >/dev/null 2>&1 && ln -s "$(command -v "$t")" "$d/$t"
+  done
+  ln -s "$STUB_BIN/kdialog" "$d/kdialog"
+  SHUNT_KEY_DIALOG=kdialog PATH="$d" run /bin/bash "$DIALOG_BIN" plain
+  [ "$status" -eq 5 ]
+  [ ! -s "$STUB_ARGV_LOG" ]
+}
+
+@test "shunt-models drops BASH_ENV and ENV for its children" {
+  local real_jq
+  real_jq=$(command -v jq)
+  cat >"$STUB_BIN/jq" <<STUB
+#!/bin/bash
+echo "\${BASH_ENV:-unset} \${ENV:-unset}" >>"$TEST_TMPDIR/jq-env"
+exec "$real_jq" "\$@"
+STUB
+  chmod +x "$STUB_BIN/jq"
+  echo '{"version":1,"providers":{"p":{"transport":"http","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  BASH_ENV=/dev/null ENV=/dev/null run "$REPO_ROOT/scripts/shunt-models" key status p
+  [ -s "$TEST_TMPDIR/jq-env" ]
+  ! grep -qv '^unset unset$' "$TEST_TMPDIR/jq-env"
+}
+
+@test "a dialog request for an existing entry with a rejected name says to edit providers.json" {
+  echo '{"version":1,"providers":{"_old":{"transport":"http","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  run "$DIALOG_BIN" _old
+  [ "$status" -eq 1 ]
+  assert_output --partial "edit providers.json"
+  [ ! -s "$STUB_ARGV_LOG" ]
+}
+
+@test "auto mode over SSH says why no window opened and how to force one" {
+  [ "$(uname -s)" = Linux ] || skip "Linux only"
+  unset SHUNT_KEY_DIALOG WAYLAND_DISPLAY
+  SSH_CONNECTION=x DISPLAY=:0 run --separate-stderr "$DIALOG_BIN" plain
+  [ "$status" -eq 5 ]
+  [[ "$stderr" == *"SSH"* ]]
+  [[ "$stderr" == *"SHUNT_KEY_DIALOG=zenity"* ]]
+}

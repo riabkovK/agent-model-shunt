@@ -44,6 +44,8 @@
 
 # A BASH_ENV startup file may have turned xtrace on, which would print a key read below.
 set +x
+# No child may source a caller's startup file (it could turn on xtrace or log a key).
+unset BASH_ENV ENV
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -498,7 +500,7 @@ shunt_parse_key_spec() {
 cmd_provider_set() {
   local name="${1:-}" transport="" base_url="" _shunt_key_type="" _shunt_key_ref=""
   local usage="usage: shunt-models provider set <name> [--transport http|opencode] [--base-url <url>] [--key keyring|plaintext|none|env:<VARNAME>]"
-  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || shunt_report_error "$usage"
+  shunt_provider_name_ok "$name" || shunt_report_error "$usage"
   shift
   while [ $# -gt 0 ]; do
     [ $# -ge 2 ] || shunt_report_error "$usage"
@@ -679,6 +681,7 @@ shunt_read_key() {
 cmd_key() {
   local action="${1:-}" provider="${2:-}"
   [ -n "$provider" ] || shunt_report_error "usage: shunt-models key <set|status> <provider>"
+  shunt_provider_name_ok "$provider" || { shunt_provider_name_refuse "$provider"; exit 1; }
   [ -f "$SHUNT_PROVIDERS_FILE" ] && jq -e --arg p "$provider" '.providers[$p]' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1 \
     || shunt_report_error "provider '$provider' is not in $SHUNT_PROVIDERS_FILE."
   local type
