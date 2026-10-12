@@ -1,6 +1,7 @@
 ---
 name: toggle-hooks
 description: Report whether this plugin's PreToolUse hooks (check-file-size, check-bash-read) are currently on or off, then ask the user whether to flip them, for A/B testing Claude reading large files directly versus delegating through bulk-read. Use when the user wants to compare behavior, token cost, or latency with and without the shunt hooks active.
+model: haiku
 ---
 
 # Toggle Hooks

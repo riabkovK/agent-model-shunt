@@ -1,6 +1,7 @@
 ---
 name: model-config
 description: Setup wizard, dashboard and editor for the shunt-owned delegate model registry (which models are configured, which is active, which jobs each may do, per-model retry/failover behavior), its HTTP providers and keys, its circuit-breaker retry settings, and the code-write self-fix loop's retry count. Use when the user wants to set up shunt for the first time, migrate from OpenCode, add/remove/reorder/disable/enable delegate models or providers, enter a key, switch the active one, limit a model to reading or writing (roles), turn a model's thinking mode on/off, tune how shunt reacts to a model repeatedly failing, or tune how many times code-write retries a failed generated file before falling back to Claude.
+model: haiku
 ---
 
 # Model Config
