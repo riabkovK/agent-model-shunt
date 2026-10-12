@@ -159,17 +159,22 @@ shunt_providers_lock() {
   fi
   local lock="$SHUNT_PROVIDERS_FILE.lock" tries
   mkdir -p "$(dirname "$SHUNT_PROVIDERS_FILE")" || return 1
+  tries=$((SHUNT_PROVIDERS_LOCK_TIMEOUT * 10))
   # flock on a fixed fd works on every bash. The `{fd}>` form needs bash 4.1.
+  # Polls with -n instead of -w: BusyBox flock has no -w.
   if command -v flock >/dev/null 2>&1; then
     exec 8>>"$lock" || return 1
-    if ! flock -x -w "$SHUNT_PROVIDERS_LOCK_TIMEOUT" 8; then
-      exec 8>&-
-      echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE." >&2
-      return 1
-    fi
+    until flock -x -n 8; do
+      tries=$((tries - 1))
+      if [ "$tries" -le 0 ]; then
+        exec 8>&-
+        echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE." >&2
+        return 1
+      fi
+      sleep 0.1
+    done
     _SHUNT_PROVIDERS_LOCK_FD=8
   else
-    tries=$((SHUNT_PROVIDERS_LOCK_TIMEOUT * 10))
     until mkdir "$lock.d" 2>/dev/null; do
       tries=$((tries - 1))
       if [ "$tries" -le 0 ]; then

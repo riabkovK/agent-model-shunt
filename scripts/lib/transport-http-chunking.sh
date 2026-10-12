@@ -71,37 +71,52 @@ _shunt_http_add_chunk() {
   _CH_FILE+=("$1") _CH_START+=("$2") _CH_END+=("$3") _CH_OFF+=("$4") _CH_LEN+=("$5")
 }
 
+# _shunt_http_lines <file> <first> <last>
+# Prints lines <first>..<last> byte for byte. sed -n 'Np' in BusyBox and BSD
+# adds a newline to a last line that has none. head and tail do not, and head
+# is the writer here, so the pipe never ends in SIGPIPE.
+_shunt_http_lines() {
+  head -n "$3" "$1" | tail -n "+$2"
+}
+
 # _shunt_http_line_ranges <file> <budget>
 # Prints "first last kind" per chunk of whole lines, kind L, or a single line
 # longer than the budget as kind B. Consecutive L chunks share up to
 # SHUNT_HTTP_CHUNK_OVERLAP_LINES lines, and at most a quarter of the budget. Byte lengths are counted in the C locale.
 _shunt_http_line_ranges() {
-  LC_ALL=C awk -v budget="$2" -v ov="$SHUNT_HTTP_CHUNK_OVERLAP_LINES" '
-    { len[NR] = length($0) + 1 }
-    END {
-      s = 1; e = 0; sum = 0
-      for (i = 1; i <= NR; i++) {
-        if (len[i] > budget) {
-          if (e >= s) print s, e, "L"
-          print i, i, "B"
-          s = i + 1; e = i; sum = 0
-          continue
-        }
-        if (e >= s && sum + len[i] > budget) {
-          print s, e, "L"
-          ns = e - ov + 1
-          if (ns <= s) ns = s + 1
-          sum = 0
-          for (j = ns; j <= e; j++) sum += len[j]
-          while (ns <= e && (sum + len[i] > budget || sum > budget / 4)) { sum -= len[ns]; ns++ }
-          if (ns > e) { s = i; sum = 0 } else { s = ns }
-        } else if (e < s) {
-          s = i; sum = 0
-        }
-        e = i; sum += len[i]
+  LC_ALL=C awk -v budget="$2" -v ov="$SHUNT_HTTP_CHUNK_OVERLAP_LINES" -v max="$SHUNT_HTTP_MAX_CHUNKS" '
+    # Streams: a range is printed as soon as it is closed, lengths before the
+    # current range are freed, and reading stops once more than max ranges are
+    # out, because the plan is refused then anyway.
+    function out(a, b, k) {
+      print a, b, k
+      if (++printed > max) { stopped = 1; exit }
+    }
+    BEGIN { s = 1; e = 0; sum = 0; lo = 1 }
+    {
+      i = NR
+      len[i] = length($0) + 1
+      if (len[i] > budget) {
+        if (e >= s) out(s, e, "L")
+        out(i, i, "B")
+        s = i + 1; e = i; sum = 0
+        next
       }
-      if (e >= s) print s, e, "L"
-    }' <"$1"
+      if (e >= s && sum + len[i] > budget) {
+        out(s, e, "L")
+        ns = e - ov + 1
+        if (ns <= s) ns = s + 1
+        sum = 0
+        for (j = ns; j <= e; j++) sum += len[j]
+        while (ns <= e && (sum + len[i] > budget || sum > budget / 4)) { sum -= len[ns]; ns++ }
+        if (ns > e) { s = i; sum = 0 } else { s = ns }
+      } else if (e < s) {
+        s = i; sum = 0
+      }
+      e = i; sum += len[i]
+      for (; lo < s; lo++) delete len[lo]
+    }
+    END { if (!stopped && e >= s) print s, e, "L" }' <"$1"
 }
 
 # _shunt_http_utf8_cut <file> <pos>
@@ -150,7 +165,7 @@ _shunt_http_cut_before_blank_tail() {
 _shunt_http_plan_long_line() {
   local f="$1" s="$2" budget="$3" line_file len off end cut
   _shunt_http_new_tmp line_file || return 1
-  sed -n "${s}p" <"$f" >"$line_file"
+  _shunt_http_lines "$f" "$s" "$s" >"$line_file"
   len=$(wc -c <"$line_file")
   for (( off = 0; off < len; off = end )); do
     end=$(( off + budget ))
@@ -266,9 +281,9 @@ _shunt_http_chunk_note() {
 _shunt_http_write_chunk() {
   local i="$1" f="${_CH_FILE[$1]}"
   if [ "${_CH_OFF[i]}" -ge 0 ]; then
-    sed -n "${_CH_START[i]}p" <"$f" | tail -c +$(( _CH_OFF[i] + 1 )) | head -c "${_CH_LEN[i]}" >"$2" || true
+    _shunt_http_lines "$f" "${_CH_START[i]}" "${_CH_START[i]}" | tail -c +$(( _CH_OFF[i] + 1 )) | head -c "${_CH_LEN[i]}" >"$2" || true
   else
-    sed -n "${_CH_START[i]},${_CH_END[i]}p" <"$f" >"$2"
+    _shunt_http_lines "$f" "${_CH_START[i]}" "${_CH_END[i]}" >"$2"
   fi
 }
 

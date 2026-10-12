@@ -111,13 +111,18 @@ SH
   # Hold the providers lock, as a concurrent `provider set` would.
   exec 9>>"$SHUNT_PROVIDERS_FILE.lock"
   flock -x 9
-  # Unique timeout so the waiting flock process can be recognized.
   SHUNT_PROVIDERS_LOCK_TIMEOUT=37 bash -c "printf '%s\n' '$key' | '$SHUNT_MODELS_BIN' key set p" >/dev/null 2>&1 &
-  local bg=$! i
+  local bg=$! i pid waiting=0
+  # The lock is polled with flock -n and a sleep, so a waiting key set is the
+  # shunt-models process that has a sleep child.
   for i in $(seq 1 100); do
-    pgrep -f "flock -x -w 37" >/dev/null && break
+    for pid in $(pgrep -f "shunt-models key set p"); do
+      pgrep -P "$pid" sleep >/dev/null && waiting=1
+    done
+    [ "$waiting" -eq 0 ] || break
     sleep 0.05
   done
+  [ "$waiting" -eq 1 ]
   # key set has read type plaintext and now waits for the lock. The concurrent
   # writer finishes `provider set p --key env:P_API_KEY` and releases it.
   echo '{"version":1,"providers":{"p":{"transport":"http","base_url":"https://p.test/v1","key":{"type":"env","ref":"P_API_KEY"}}}}' >"$SHUNT_PROVIDERS_FILE"
