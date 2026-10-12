@@ -211,11 +211,11 @@ _migrate_key_source() {
 # Prints the plan entry for one provider.
 _migrate_plan_provider() {
   local line="$1" apply="$2" flag="$3" name raw kind ref state=new storage=none reason="" base="" entry=null err
-  local path source=""
+  local path source="" bad_note=""
   name=$(jq -r .name <<<"$line"); raw=$(jq -r .base_url <<<"$line")
   kind=$(jq -r .key_kind <<<"$line"); ref=$(jq -r .env_ref <<<"$line"); path=$(jq -r .key_path <<<"$line")
   [ "$(jq -r .bad_key <<<"$line")" != true ] \
-    || reason="the apiKey in opencode.json is not a string, so it is not imported as a key"
+    || bad_note="the apiKey in opencode.json is not a string, so it is not imported as a key"
   if [ "$(jq -r .bad_name <<<"$line")" = true ]; then
     state=skip; reason="the provider name has characters other than letters, digits, dot, dash and underscore, so it stays on opencode"
   elif [ "$(shunt_provider_transport "$name")" = http ]; then
@@ -236,6 +236,14 @@ _migrate_plan_provider() {
     fi
     case "$storage" in skip | ask) state=pending ;; esac
     entry=$(_migrate_entry "$storage" "$base" "$ref")
+  fi
+  # Nothing is imported for a provider already on http, so the note is moot there.
+  if [ -n "$bad_note" ] && [ "$state" != done ]; then
+    case "$reason" in
+      "") reason="$bad_note" ;;
+      *[.!?]) reason="$reason $bad_note" ;;
+      *) reason="$reason. $bad_note" ;;
+    esac
   fi
   jq -n -c --arg n "$name" --arg b "$base" --arg st "$state" --arg s "$storage" --arg r "$ref" \
     --arg why "$reason" --argjson e "$entry" --arg src "$source" --arg kp "$path" \

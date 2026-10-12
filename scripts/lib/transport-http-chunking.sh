@@ -74,9 +74,14 @@ _shunt_http_add_chunk() {
 # _shunt_http_lines <file> <first> <last>
 # Prints lines <first>..<last> byte for byte. sed -n 'Np' in BusyBox and BSD
 # adds a newline to a last line that has none. head and tail do not, and head
-# is the writer here, so the pipe never ends in SIGPIPE.
+# is the writer here, so the pipe never ends in SIGPIPE. Fails when head cannot
+# read the file (status 141 when a later reader closes the pipe early).
 _shunt_http_lines() {
+  local -a st
   head -n "$3" "$1" | tail -n "+$2"
+  st=("${PIPESTATUS[@]}")
+  [ "${st[0]}" -eq 0 ] || return "${st[0]}"
+  return "${st[1]}"
 }
 
 # _shunt_http_line_ranges <file> <budget>
@@ -165,7 +170,7 @@ _shunt_http_cut_before_blank_tail() {
 _shunt_http_plan_long_line() {
   local f="$1" s="$2" budget="$3" line_file len off end cut
   _shunt_http_new_tmp line_file || return 1
-  _shunt_http_lines "$f" "$s" "$s" >"$line_file"
+  _shunt_http_lines "$f" "$s" "$s" >"$line_file" || return 1
   len=$(wc -c <"$line_file")
   for (( off = 0; off < len; off = end )); do
     end=$(( off + budget ))
@@ -278,10 +283,22 @@ _shunt_http_chunk_note() {
 }
 
 # _shunt_http_write_chunk <index> <outfile>
+# The byte slice ends in head -c, which may close the pipe early. That makes
+# the upstream stages die of SIGPIPE (141), or exit 1 with EPIPE when the shell
+# was started with SIGPIPE ignored. Both are fine, as the readability of the
+# source is checked up front. The final head -c writes the file and must succeed.
 _shunt_http_write_chunk() {
-  local i="$1" f="${_CH_FILE[$1]}"
+  local i="$1" f="${_CH_FILE[$1]}" s
+  local -a st
+  [ -r "$f" ] || { echo "shunt: cannot read $f to cut a chunk from it." >&2; return 1; }
   if [ "${_CH_OFF[i]}" -ge 0 ]; then
-    _shunt_http_lines "$f" "${_CH_START[i]}" "${_CH_START[i]}" | tail -c +$(( _CH_OFF[i] + 1 )) | head -c "${_CH_LEN[i]}" >"$2" || true
+    _shunt_http_lines "$f" "${_CH_START[i]}" "${_CH_START[i]}" 2>/dev/null | tail -c +$(( _CH_OFF[i] + 1 )) 2>/dev/null \
+      | head -c "${_CH_LEN[i]}" >"$2"
+    st=("${PIPESTATUS[@]}")
+    for s in "${st[0]}" "${st[1]}"; do
+      [ "$s" -eq 0 ] || [ "$s" -eq 1 ] || [ "$s" -eq 141 ] || return 1
+    done
+    [ "${st[2]}" -eq 0 ]
   else
     _shunt_http_lines "$f" "${_CH_START[i]}" "${_CH_END[i]}" >"$2"
   fi

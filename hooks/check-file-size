@@ -9,7 +9,7 @@
 # for that one call. Only applies when a models registry exists; the legacy
 # single-agent path (no registry) keeps denying as before.
 
-HOOK_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+HOOK_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=../scripts/lib/models.sh
 source "$HOOK_DIR/../scripts/lib/models.sh"
 # shellcheck source=../scripts/lib/breaker.sh

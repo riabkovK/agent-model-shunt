@@ -699,3 +699,65 @@ JSON
     assert_output --partial "oversize_policy"
   done
 }
+
+@test "shunt_models_agent_for prints nothing for an id that is not in the registry" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/m","agent":"a"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_agent_for "p/other"
+  assert_success
+  assert_output ""
+}
+
+@test "shunt_models_agent_for derives the name for an entry without an agent" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/m"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_agent_for "p/m"
+  assert_output "shunt-bulk-reader-p-m"
+}
+
+@test "shunt_models_validate rejects two models that derive the same agent name" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/a.b"},{"id":"p/a-b"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "p/a.b"
+  assert_output --partial "p/a-b"
+  assert_output --partial "share the agent name"
+}
+
+@test "shunt_models_validate rejects an explicit agent name that another model derives" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/x","agent":"shunt-bulk-reader-p-y"},{"id":"p/y"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "share the agent name"
+}
+
+@test "shunt_models_validate rejects an agent name with unsafe characters" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/x","agent":"../evil"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "invalid agent name"
+}
+
+@test "shunt_models_validate rejects an id that derives an empty agent name" {
+  echo '{"version":1,"active":null,"models":[{"id":"///"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "empty agent name"
+}
+
+@test "shunt_models_validate accepts the plain hand-written agent names" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/x","agent":"bulk-reader"},{"id":"p/y","agent":"a2"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_success
+}
+
+@test "shunt_models_validate allows a shared derived code-writer name when only one model has code-write" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/a.b","agent":"x1","roles":["bulk-read"]},{"id":"p/a-b","agent":"x2"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_success
+}
+
+@test "shunt_models_validate rejects a shared derived code-writer name when both have code-write" {
+  echo '{"version":1,"active":null,"models":[{"id":"p/a.b","agent":"x1"},{"id":"p/a-b","agent":"x2"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "shunt-code-writer-p-a-b"
+}

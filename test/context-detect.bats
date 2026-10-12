@@ -368,3 +368,8 @@ kill_group_when_curl_starts() {
   run bash -c 'source "$1/scripts/lib/context-detect.sh"; type _shunt_http_too_large >/dev/null && type _shunt_http_max_response_bytes >/dev/null' _ "$REPO_ROOT"
   assert_success
 }
+
+@test "detect: an id missing from the registry is refused before any request" {
+  run ! detect acme/ghost
+  [ ! -e "$FAKE_CURL_ARGV" ]
+}

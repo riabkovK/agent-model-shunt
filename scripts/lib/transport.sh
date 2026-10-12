@@ -58,7 +58,7 @@ SHUNT_OPENCODE_MAX_FILE_LINES=2000
 SHUNT_OPENCODE_MAX_FILE_BYTES=51200
 SHUNT_OPENCODE_MAX_LINE_CHARS=2000
 
-_SHUNT_TRANSPORT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_SHUNT_TRANSPORT_LIB_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=providers.sh
 source "$_SHUNT_TRANSPORT_LIB_DIR/providers.sh"
 # shellcheck source=transport-http.sh

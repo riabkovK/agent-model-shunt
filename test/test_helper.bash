@@ -7,7 +7,7 @@
 bats_load_library bats-support
 bats_load_library bats-assert
 
-REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+REPO_ROOT="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 
 shunt_test_setup() {
   TEST_TMPDIR="$(mktemp -d)"

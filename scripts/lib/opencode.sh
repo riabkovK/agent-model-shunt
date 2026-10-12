@@ -13,7 +13,7 @@ SHUNT_AGENTS_DIR="${SHUNT_AGENTS_DIR:-$HOME/.config/agent-model-shunt/agents}"
 SHUNT_DEBUG_LOG="${SHUNT_DEBUG_LOG:-}"
 SHUNT_DEBUG_LOG_PATH="${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/agent-model-shunt/usage.jsonl}"
 
-_SHUNT_OPENCODE_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_SHUNT_OPENCODE_LIB_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=models.sh
 source "$_SHUNT_OPENCODE_LIB_DIR/models.sh"
 # shellcheck source=breaker.sh

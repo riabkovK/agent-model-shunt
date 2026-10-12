@@ -80,7 +80,7 @@ _SHUNT_HTTP_TMP=()
 # key is written into it, so the cleanup cannot miss it.
 _SHUNT_HTTP_HDR_FILE=""
 
-_SHUNT_HTTP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_SHUNT_HTTP_LIB_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=transport-http-deadline.sh
 source "$_SHUNT_HTTP_LIB_DIR/transport-http-deadline.sh"
 # shellcheck source=transport-http-chunking.sh
@@ -179,7 +179,7 @@ _shunt_http_excerpt() {
 # the working directory, so a relative scripts/shunt-models would not resolve.
 # Shell-quoted so a plugin root with spaces still pastes as one word.
 printf -v _SHUNT_HTTP_MODELS_CMD '%q' \
-  "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"
+  "$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"
 
 # _shunt_http_check_base_url <provider> <base_url> <outvar>
 # Stores the URL to use in <outvar>. An explicit http:// or https:// is taken
@@ -246,6 +246,7 @@ _shunt_http_resolve() {
   _shunt_http_clear
   shunt_models_available || return 1
   while IFS=$'\x1f' read -r id a rb rrb ct op tf tb; do
+    [ -n "$a" ] || a=$(shunt_models_slug "$id")
     if [ "$agent" = "$a" ]; then
       _SHUNT_HTTP_ROLE=bulk-reader
     elif [ "$agent" = "$(shunt_models_code_writer_agent_for "$id")" ]; then
@@ -407,10 +408,27 @@ _shunt_http_setup() {
   # override a deliberate `thinking off`, while a role key still can.
   local role_key=bulk-read
   [ "$_SHUNT_HTTP_ROLE" = code-writer ] && role_key=code-write
-  _SHUNT_HTTP_REQUEST_BODY=$(jq -c --arg role "$role_key" --argjson rrb "$_SHUNT_HTTP_ROLE_REQUEST_BODY" \
+  # Only the thinking options are converted (a run of capitals is one word:
+  # HTTPProxy becomes http_proxy). Keys without an uppercase letter pass through,
+  # and two keys that collide after conversion are a config error.
+  local merged
+  merged=$(jq -c --arg role "$role_key" --argjson rrb "$_SHUNT_HTTP_ROLE_REQUEST_BODY" \
     --argjson think "$_SHUNT_HTTP_THINKING_BODY" \
-    '. + (($think // {}) | with_entries(.key |= gsub("(?<c>[A-Z])"; "_" + (.c | ascii_downcase))))
-      + ($rrb[$role] // {})' <<<"$_SHUNT_HTTP_REQUEST_BODY") || return "$SHUNT_TRY_INVOKE_CONFIG"
+    'def snake_key: if test("[A-Z]") then
+          gsub("(?<a>[a-z0-9])(?<b>[A-Z])"; "\(.a)_\(.b)") | gsub("(?<a>[A-Z]+)(?<b>[A-Z][a-z])"; "\(.a)_\(.b)") | ascii_downcase
+        else . end;
+      def snake: if type == "object" then
+          (to_entries | map((.key |= snake_key) | (.value |= snake))) as $e
+          | ($e | group_by(.key) | map(select(length > 1)) | first) as $dup
+          | if $dup then error("collision:" + $dup[0].key) else ($e | from_entries) end
+        elif type == "array" then map(snake) else . end;
+      . + (($think // {}) | snake) + ($rrb[$role] // {})' <<<"$_SHUNT_HTTP_REQUEST_BODY" 2>&1) \
+    || { local why="${merged#*collision:}"
+         if [ "$why" != "$merged" ]; then
+           echo "shunt: model '$id': $_SHUNT_HTTP_THINKING_FIELD has keys that collide after snake_case conversion (key '${why%%[\"]*}')." >&2
+         else echo "shunt: model '$id': cannot merge the request body: $merged" >&2; fi
+         return "$SHUNT_TRY_INVOKE_CONFIG"; }
+  _SHUNT_HTTP_REQUEST_BODY="$merged"
   _shunt_http_system_prompt "$_SHUNT_HTTP_ROLE" _SHUNT_HTTP_SYSTEM || return $?
   _shunt_http_new_tmp _SHUNT_HTTP_BODY_FILE && _shunt_http_new_tmp _SHUNT_HTTP_RESP_FILE \
     && _shunt_http_new_tmp _SHUNT_HTTP_ERR_FILE

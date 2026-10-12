@@ -404,4 +404,4 @@ shunt_provider_plaintext_store() {
 # Absolute, shell-quoted path of shunt-models for user-facing hints. Plugin users
 # run from their own project, so a relative scripts/shunt-models would not resolve.
 printf -v SHUNT_MODELS_HINT_CMD '%q' \
-  "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"
+  "$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"

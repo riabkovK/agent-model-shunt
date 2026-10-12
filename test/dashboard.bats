@@ -183,3 +183,11 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_failure
   assert_output --partial "usage: shunt-models dashboard"
 }
+
+@test "thinking counts as on only for boolean true" {
+  write_models '{"version":1,"active":null,"models":[{"id":"oc/m2","agent":"a2","enabled":true,"thinking":"on","roles":["bulk-read"]}]}'
+  run "$SHUNT_MODELS_BIN" dashboard
+  assert_success
+  assert_line --partial "model oc/m2 "
+  assert_line --partial "thinking=off"
+}

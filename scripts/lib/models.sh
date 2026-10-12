@@ -80,6 +80,13 @@ shunt_models_validate() {
     return 1
   fi
 
+  local name_error
+  name_error=$(_shunt_models_agent_name_error)
+  if [ -n "$name_error" ]; then
+    echo "shunt: models registry at $SHUNT_MODELS_FILE: $name_error"
+    return 1
+  fi
+
   local sizing_error
   sizing_error=$(_shunt_models_sizing_error)
   if [ -n "$sizing_error" ]; then
@@ -88,6 +95,43 @@ shunt_models_validate() {
   fi
 
   return 0
+}
+
+# _shunt_models_agent_name_error
+# Prints a one-line reason when two models would share an agent name (the
+# effective bulk name, or the derived code-writer name of a code-write model), when a name is not
+# lowercase letters, digits and dashes, or when an id derives an empty name.
+_shunt_models_agent_name_error() {
+  local rows id agent core cw seen="" other name has_cw
+  rows=$(jq -r --argjson all "$SHUNT_MODELS_ROLES_JSON" \
+    '.models[] | [.id, (if (.agent // "") == "" then "-" else (.agent | tostring) end), (((.roles // $all) | index("code-write")) != null | tostring)] | @tsv' \
+    "$SHUNT_MODELS_FILE" 2>/dev/null) || return 0
+  while IFS=$'\t' read -r id agent has_cw; do
+    [ -n "$id" ] || continue
+    core=$(_shunt_models_slug_core "$id")
+    if [ -z "$core" ]; then
+      echo "model \"$id\" derives an empty agent name."
+      return 0
+    fi
+    # "-" stands for a missing agent (read would collapse an empty tab field).
+    [ "$agent" != "-" ] || agent="shunt-bulk-reader-$core"
+    cw="shunt-code-writer-$core"
+    [ "$has_cw" = true ] || cw=""
+    case "$agent" in
+      [!a-z0-9]* | *[!a-z0-9-]*)
+        echo "model \"$id\" has an invalid agent name \"$agent\": use lowercase letters, digits and dashes."
+        return 0 ;;
+    esac
+    for name in "$agent" "$cw"; do
+      [ -n "$name" ] || continue
+      other=$(printf '%s' "$seen" | awk -F'\t' -v n="$name" '$1 == n { print $2; exit }')
+      if [ -n "$other" ] && [ "$other" != "$id" ]; then
+        echo "models \"$other\" and \"$id\" would share the agent name \"$name\"."
+        return 0
+      fi
+      seen="$seen$name"$'\t'"$id"$'\n'
+    done
+  done <<<"$rows"
 }
 
 # _shunt_models_sizing_error
@@ -164,10 +208,16 @@ shunt_models_candidates() {
 }
 
 # shunt_models_agent_for <id>
-# Prints the materialized agent name registered for <id>.
+# Prints the materialized agent name registered for <id>. An entry without an
+# `agent` field (hand-edited) gets the name `add` would have given it. An id
+# that is not in the registry prints nothing.
 shunt_models_agent_for() {
-  local id="$1"
-  jq -r --arg id "$id" '.models[] | select(.id == $id) | .agent' "$SHUNT_MODELS_FILE"
+  local id="$1" agent
+  # "-" marks "no such entry" (empty), "" marks "entry without an agent".
+  agent=$(jq -r --arg id "$id" '[.models[] | select(.id == $id) | (.agent // "")][0] // "-"' "$SHUNT_MODELS_FILE") || return 1
+  [ "$agent" != "-" ] || return 0
+  [ -n "$agent" ] || agent=$(shunt_models_slug "$id")
+  echo "$agent"
 }
 
 # shunt_models_thinking_for <id>
@@ -265,6 +315,22 @@ _shunt_models_write_agent() {
   mv "$tmp_file" "$SHUNT_AGENTS_DIR/$agent.md"
 }
 
+# shunt_models_require_prompts [role...]
+# Exits with an error unless the role prompt files are readable. bulk-reader.md
+# is always needed (every model gets a bulk-reader agent file), code-writer.md
+# only when the roles given include code-write. Run it before a registry write,
+# so a missing prompt cannot leave the registry changed.
+shunt_models_require_prompts() {
+  local f r need_writer=0
+  for r in "$@"; do [ "$r" = code-write ] && need_writer=1; done
+  set -- bulk-reader
+  [ "$need_writer" = 1 ] && set -- bulk-reader code-writer
+  for f in "$@"; do
+    [ -r "$SHUNT_PROMPTS_DIR/$f.md" ] \
+      || shunt_report_error "the role prompt file $SHUNT_PROMPTS_DIR/$f.md is missing or unreadable, nothing was changed."
+  done
+}
+
 # _shunt_models_render_bulk_reader <id> <thinking-block>
 # Prints the bulk-reader agent markdown.
 _shunt_models_render_bulk_reader() {
@@ -343,6 +409,11 @@ AGENT
 shunt_models_materialize_agent() {
   local id="$1"
   local agent
+  if shunt_models_has_role "$id" code-write; then
+    shunt_models_require_prompts code-write
+  else
+    shunt_models_require_prompts
+  fi
   agent=$(shunt_models_agent_for "$id")
   [ -n "$agent" ] || shunt_report_error "no registered agent name for model '$id'."
 

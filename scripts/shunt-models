@@ -48,7 +48,7 @@ set +x
 unset BASH_ENV ENV
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/opencode.sh
 source "$SCRIPT_DIR/lib/opencode.sh"
 # shellcheck source=lib/models.sh
@@ -149,6 +149,7 @@ cmd_add() {
     shunt_report_error "provider '$provider' not found in $opencode_json. Add it to your OpenCode config first, or configure it for the HTTP transport with: shunt-models provider set $provider --transport http --base-url <url> --key <type>"
   fi
 
+  shunt_models_require_prompts $(echo "$roles_json" | jq -r '.[]')
   local current
   current=$(shunt_models_read_or_empty)
 
@@ -385,6 +386,7 @@ cmd_roles() {
   if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
     shunt_report_error "model '$id' is not in the registry."
   fi
+  shunt_models_require_prompts $(echo "$roles_json" | jq -r '.[]')
 
   local updated
   updated=$(echo "$current" | jq --arg id "$id" --argjson roles "$roles_json" \
@@ -442,6 +444,7 @@ cmd_detect_context() {
   local id="${1:-}" write="${2:-}" tokens rc=0
   [ -n "$id" ] && { [ -z "$write" ] || [ "$write" = --write ]; } \
     || shunt_report_error "usage: shunt-models detect-context <provider/model> [--write]"
+  shunt_models_require_entry "$id"
   tokens=$(shunt_models_detect_context "$id") || rc=$?
   if [ "$rc" -eq "$SHUNT_DETECT_AUTH_FAILED" ]; then
     echo "shunt: auth failed for the provider of '$id' (the key was rejected with 401 or 403): re-enter the key through /model-config." >&2

@@ -46,7 +46,7 @@ set -uo pipefail
 
 _MC_USAGE='mutation-check: usage: mutation-check.sh <gotest-dir> <run-dir-name> <source-basename> | --self-test'
 
-_SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_SCRIPT_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 _MUTATE_GO="$_SCRIPT_DIR/mutate-go.sh"
 
 _mc_die() {

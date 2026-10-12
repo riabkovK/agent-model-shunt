@@ -1323,3 +1323,46 @@ SH
   [[ "$stderr" != *"EY123"* ]]
   [[ "$stderr" != *"\\u0033"* ]]
 }
+
+@test "a registry entry without an agent field still goes through HTTP" {
+  jq -n '{version:1,models:[{id:"acme/m1",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+  [ "$(shunt_models_agent_for acme/m1)" = "$AGENT" ]
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(cat "$FAKE_CURL_COUNT")" = 1 ]
+}
+
+@test "nested thinking option keys are converted to snake_case too" {
+  write_registry_thinking true '{"outerKey":{"innerKey":1,"deepList":[{"itemKey":2}]}}' null
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.outer_key.inner_key' "$FAKE_CURL_SENT")" = 1 ]
+  [ "$(jq -r '.outer_key.deep_list[0].item_key' "$FAKE_CURL_SENT")" = 2 ]
+}
+
+@test "thinking options: a run of capitals is one word and never gets a leading underscore" {
+  write_registry_thinking false null '{"HTTPProxy":1,"maxTokensV2":2,"Foo":3,"already_snake":4}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.http_proxy' "$FAKE_CURL_SENT")" = "1" ]
+  [ "$(jq -r '.max_tokens_v2' "$FAKE_CURL_SENT")" = "2" ]
+  [ "$(jq -r '.foo' "$FAKE_CURL_SENT")" = "3" ]
+  [ "$(jq -r '.already_snake' "$FAKE_CURL_SENT")" = "4" ]
+  [ "$(jq -r 'keys | map(select(startswith("_"))) | length' "$FAKE_CURL_SENT")" = "0" ]
+}
+
+@test "thinking options: keys that collide after conversion are a config error naming the key" {
+  write_registry_thinking false null '{"aB":1,"a_b":2}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_failure
+  assert_output --partial "a_b"
+  assert_output --partial "thinking"
+}
+
+@test "request_body keys are sent verbatim, never converted" {
+  write_registry '{"someCamelKey":1,"Nested":{"innerKey":2}}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.someCamelKey' "$FAKE_CURL_SENT")" = "1" ]
+  [ "$(jq -r '.Nested.innerKey' "$FAKE_CURL_SENT")" = "2" ]
+}
