@@ -86,16 +86,37 @@ source "$_SHUNT_HTTP_LIB_DIR/transport-http-deadline.sh"
 # shellcheck source=transport-http-chunking.sh
 source "$_SHUNT_HTTP_LIB_DIR/transport-http-chunking.sh"
 
+# shunt_http_budget_tokens <context_tokens>
+# Prints the tokens a request may use: SHUNT_HTTP_CONTEXT_BUDGET_PERCENT of the
+# context window, rounded down.
+shunt_http_budget_tokens() {
+  # Only plain decimal digits reach the arithmetic: anything else (empty, a
+  # sign, an array subscript with a command substitution) counts as 0.
+  [[ "${1:-}" =~ ^[0-9]{1,12}$ ]] || { echo 0; return 0; }
+  echo $(( 10#$1 * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 ))
+}
+
+# _shunt_rm_tracked <hdr-var> <list-var>
+# Removes the file named by the variable <hdr-var> (the auth header file, first)
+# and every file in the array <list-var>, then empties both. Shared by the HTTP
+# transport and the context detection cleanups. Both arguments must be plain
+# variable names, otherwise it returns 1 and touches nothing.
+_shunt_rm_tracked() {
+  local _shunt_rt_re='^[A-Za-z_][A-Za-z0-9_]*$' _shunt_rt_f
+  [[ "$1" =~ $_shunt_rt_re && "$2" =~ $_shunt_rt_re ]] || return 1
+  eval "_shunt_rt_f=\${$1:-}"
+  [ -z "$_shunt_rt_f" ] || rm -f -- "$_shunt_rt_f"
+  printf -v "$1" '%s' ""
+  # Iterate over the values, not indexes, so a sparse array leaks nothing.
+  # The ${a[@]+...} form keeps an empty array safe under set -u on bash 3.2.
+  eval "for _shunt_rt_f in \${$2[@]+\"\${$2[@]}\"}; do rm -f -- \"\$_shunt_rt_f\"; done"
+  eval "$2=()"
+}
+
 # _shunt_http_cleanup
 # Removes every temp file the current call created, the auth header file first.
 _shunt_http_cleanup() {
-  local f
-  [ -z "$_SHUNT_HTTP_HDR_FILE" ] || rm -f "$_SHUNT_HTTP_HDR_FILE"
-  _SHUNT_HTTP_HDR_FILE=""
-  for f in ${_SHUNT_HTTP_TMP[@]+"${_SHUNT_HTTP_TMP[@]}"}; do
-    rm -f "$f"
-  done
-  _SHUNT_HTTP_TMP=()
+  _shunt_rm_tracked _SHUNT_HTTP_HDR_FILE _SHUNT_HTTP_TMP
 }
 
 # _shunt_http_new_tmp <varname>
@@ -242,14 +263,13 @@ _shunt_http_clear() {
 # $(...). Fails, leaving nothing resolved, when the
 # registry is missing or has no such model.
 _shunt_http_resolve() {
-  local agent="$1" id a rb rrb ct op tf tb
+  local agent="$1" id a w rb rrb ct op tf tb
   _shunt_http_clear
   shunt_models_available || return 1
-  while IFS=$'\x1f' read -r id a rb rrb ct op tf tb; do
-    [ -n "$a" ] || a=$(shunt_models_slug "$id")
+  while IFS=$'\x1f' read -r id a w rb rrb ct op tf tb; do
     if [ "$agent" = "$a" ]; then
       _SHUNT_HTTP_ROLE=bulk-reader
-    elif [ "$agent" = "$(shunt_models_code_writer_agent_for "$id")" ]; then
+    elif [ "$agent" = "$w" ]; then
       _SHUNT_HTTP_ROLE=code-writer
     else
       continue
@@ -259,7 +279,7 @@ _shunt_http_resolve() {
     _SHUNT_HTTP_CONTEXT_TOKENS="$ct" _SHUNT_HTTP_OVERSIZE_POLICY="$op"
     _SHUNT_HTTP_THINKING_FIELD="$tf" _SHUNT_HTTP_THINKING_BODY="$tb"
     return 0
-  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | if type == "number" then floor | tostring else tostring end), (.oversize_policy // ""),
+  done < <(jq -r "$SHUNT_MODELS_SLUG_JQ"' .models[] | [.id, bulk_agent, writer_agent, ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | if type == "number" then floor | tostring else tostring end), (.oversize_policy // ""),
     (if .thinking == true then "thinking_options", (.thinking_options | tojson) else "thinking_off_options", (.thinking_off_options | tojson) end)] | join("\u001f")' "$SHUNT_MODELS_FILE")
   return 1
 }
@@ -337,7 +357,7 @@ _shunt_http_guard_size() {
     echo "shunt: model $id has no context_tokens. Run: shunt-models detect-context $id --write, or shunt-models set-context $id <tokens> (config problem, no request sent)." >&2
     return "$SHUNT_TRY_INVOKE_CONFIG"
   fi
-  budget=$(( ct * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 ))
+  budget=$(shunt_http_budget_tokens "$ct")
   [ "$tokens" -le "$budget" ] && return 0
   if [ "$_SHUNT_HTTP_ROLE" != code-writer ] \
     && [ "${policy:-$SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY}" = map_reduce ]; then

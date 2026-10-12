@@ -243,11 +243,19 @@ shunt_models_thinking_off_options_for() {
   jq -c --arg id "$id" '.models[] | select(.id == $id) | (.thinking_off_options // null)' "$SHUNT_MODELS_FILE"
 }
 
+# jq definitions of the agent names, the one derivation behind
+# shunt_models_slug, shunt_models_code_writer_agent_for and the per-row names in
+# _shunt_http_resolve. `bulk_agent` takes a registry entry and keeps its
+# `agent` field, deriving the name only when it is absent or empty.
+SHUNT_MODELS_SLUG_JQ='def slug: ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-+"; "") | sub("-+$"; "");
+  def bulk_agent: if (.agent // "") == "" then "shunt-bulk-reader-" + (.id | slug) else .agent end;
+  def writer_agent: "shunt-code-writer-" + (.id | slug);'
+
 # _shunt_models_slug_core <id>
 # Lowercase, dash-separated form of a provider/model id, shared by every
 # agent name derived from the id.
 _shunt_models_slug_core() {
-  echo "$1" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9]+/-/g; s/^-+//; s/-+$//'
+  jq -rn --arg id "$1" "$SHUNT_MODELS_SLUG_JQ"' $id | slug'
 }
 
 # shunt_models_slug <id>

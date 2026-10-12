@@ -45,6 +45,23 @@ pfield() { jq -c ".providers.$1" "$SHUNT_PROVIDERS_FILE"; }
   [ ! -f "$SHUNT_PROVIDERS_FILE" ]
 }
 
+@test "provider set matches the transport as a whole word, not a substring of the list" {
+  run "$SHUNT_MODELS_BIN" provider set acme --transport "http opencode" --base-url https://x --key none
+  assert_failure
+  run "$SHUNT_MODELS_BIN" provider set acme --transport "http " --base-url https://x --key none
+  assert_failure
+  [ ! -f "$SHUNT_PROVIDERS_FILE" ]
+}
+
+@test "provider set prints one usage line for a missing name and for a dangling option" {
+  run --separate-stderr "$SHUNT_MODELS_BIN" provider set
+  assert_failure
+  local first="$stderr"
+  run --separate-stderr "$SHUNT_MODELS_BIN" provider set acme --transport
+  assert_failure
+  [ "$stderr" = "$first" ]
+}
+
 @test "provider set rejects an unknown transport, key type or env var name" {
   run "$SHUNT_MODELS_BIN" provider set acme --transport ftp --base-url https://x --key none
   assert_failure

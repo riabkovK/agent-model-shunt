@@ -41,13 +41,7 @@ _SHUNT_DETECT_HDR_FILE=""
 # _shunt_detect_cleanup
 # Removes the temp files of the current detection, the auth header first.
 _shunt_detect_cleanup() {
-  local f
-  [ -z "$_SHUNT_DETECT_HDR_FILE" ] || rm -f "$_SHUNT_DETECT_HDR_FILE"
-  _SHUNT_DETECT_HDR_FILE=""
-  for f in ${_SHUNT_DETECT_TMP[@]+"${_SHUNT_DETECT_TMP[@]}"}; do
-    rm -f "$f"
-  done
-  _SHUNT_DETECT_TMP=()
+  _shunt_rm_tracked _SHUNT_DETECT_HDR_FILE _SHUNT_DETECT_TMP
 }
 
 # _shunt_detect_positive

@@ -1368,3 +1368,60 @@ SH
   [ "$(jq -r '.someCamelKey' "$FAKE_CURL_SENT")" = "1" ]
   [ "$(jq -r '.Nested.innerKey' "$FAKE_CURL_SENT")" = "2" ]
 }
+
+@test "shunt_http_budget_tokens takes the budget percent of the context, rounded down" {
+  [ "$(shunt_http_budget_tokens 100000)" = 60000 ]
+  [ "$(shunt_http_budget_tokens 1)" = 0 ]
+  [ "$(shunt_http_budget_tokens 0)" = 0 ]
+  [ "$(shunt_http_budget_tokens 7)" = 4 ]
+  [ "$(shunt_http_budget_tokens 999999999999)" = 599999999999 ]
+}
+
+@test "_shunt_rm_tracked removes the header file and every listed file and empties both" {
+  local h="$TEST_TMPDIR/hdr" a="$TEST_TMPDIR/a" b="$TEST_TMPDIR/b"
+  touch "$h" "$a" "$b"
+  HDR="$h" LIST=("$a" "$b")
+  _shunt_rm_tracked HDR LIST
+  [ ! -e "$h" ] && [ ! -e "$a" ] && [ ! -e "$b" ]
+  [ -z "$HDR" ] && [ "${#LIST[@]}" = 0 ]
+  _shunt_rm_tracked HDR LIST
+}
+
+@test "shunt_http_budget_tokens prints 0 for empty or non-numeric input and never evaluates it" {
+  cd "$TEST_TMPDIR"
+  [ "$(shunt_http_budget_tokens "")" = 0 ]
+  [ "$(shunt_http_budget_tokens 08)" = 4 ]
+  [ "$(shunt_http_budget_tokens 1234567890123)" = 0 ]
+  [ "$(shunt_http_budget_tokens -5)" = 0 ]
+  [ "$(shunt_http_budget_tokens 'a[$(touch x)]')" = 0 ]
+  [ ! -e x ]
+}
+
+@test "_shunt_rm_tracked handles leading-dash names, sparse arrays and caller vars named f or n" {
+  cd "$TEST_TMPDIR"
+  touch ./-dash ./s1 ./s3 ./hf
+  HDR="./hf"
+  LIST=("-dash" "./s1" "./s3")
+  unset 'LIST[1]'
+  [ ! -e s2 ]
+  local f="keep-f" n="keep-n"
+  _shunt_rm_tracked HDR LIST
+  [ ! -e ./-dash ] && [ ! -e ./s3 ] && [ ! -e ./hf ]
+  [ "${#LIST[@]}" = 0 ]
+  [ "$f" = keep-f ] && [ "$n" = keep-n ]
+  # the f and n arrays themselves
+  touch ./x1 ./x2
+  f="" ; n=()
+  n=(./x1 ./x2)
+  _shunt_rm_tracked f n
+  [ ! -e ./x1 ] && [ ! -e ./x2 ]
+}
+
+@test "_shunt_rm_tracked rejects variable names that are not identifiers" {
+  cd "$TEST_TMPDIR"
+  run _shunt_rm_tracked 'a[$(touch pwned)]' LIST
+  assert_failure
+  run _shunt_rm_tracked HDR 'L;touch pwned'
+  assert_failure
+  [ ! -e pwned ]
+}

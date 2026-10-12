@@ -30,6 +30,16 @@ SHUNT_PROVIDER_NAME_REGEX_JQ='\A[A-Za-z0-9][A-Za-z0-9._-]*\z'
 # shunt_provider_name_ok <name>
 shunt_provider_name_ok() { [[ "$1" =~ $SHUNT_PROVIDER_NAME_REGEX ]]; }
 
+# shunt_word_in_list <word> <space separated list>
+# Succeeds when <word> equals one whole entry of the list.
+shunt_word_in_list() {
+  local w
+  for w in $2; do
+    [ "$w" != "$1" ] || return 0
+  done
+  return 1
+}
+
 # shunt_provider_name_refuse <name>
 # Explains on stderr why the name is refused. When providers.json already holds
 # an entry under that name, says so and what to do. The name is shown through

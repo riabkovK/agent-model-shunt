@@ -55,7 +55,7 @@ _shunt_http_agg_finalize() {
 # _shunt_http_budget_bytes
 # Prints the request size, in bytes, the resolved model accepts.
 _shunt_http_budget_bytes() {
-  echo $(( _SHUNT_HTTP_CONTEXT_TOKENS * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 * SHUNT_HTTP_BYTES_PER_TOKEN ))
+  echo $(( $(shunt_http_budget_tokens "$_SHUNT_HTTP_CONTEXT_TOKENS") * SHUNT_HTTP_BYTES_PER_TOKEN ))
 }
 
 # _shunt_http_bytes <string>

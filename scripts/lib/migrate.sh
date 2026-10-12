@@ -144,10 +144,12 @@ _migrate_ask_storage() {
   [ -z "$(shunt_keyring_backend)" ] || default=keyring
   read -r -p "Key storage for '$name' ($MIGRATE_STORAGE_CHOICES, default $default): " choice
   choice="${choice:-$default}"
-  case " $MIGRATE_STORAGE_CHOICES " in
-    *" $choice "*) printf '%s' "$choice" ;;
-    *) echo "shunt: '$choice' is not a storage choice, skipping the key of '$name'." >&2; printf skip ;;
-  esac
+  if shunt_word_in_list "$choice" "$MIGRATE_STORAGE_CHOICES"; then
+    printf '%s' "$choice"
+  else
+    echo "shunt: '$choice' is not a storage choice, skipping the key of '$name'." >&2
+    printf skip
+  fi
 }
 
 # _migrate_resolve_storage <provider> <kind> <apply 0|1> <flag>
@@ -477,7 +479,7 @@ cmd_migrate_from_opencode() {
       --apply) apply=1; shift ;;
       --yes) yes=1; shift ;;
       --key-storage)
-        [ -n "${2:-}" ] && case " $MIGRATE_STORAGE_CHOICES " in *" $2 "*) true ;; *) false ;; esac \
+        [ -n "${2:-}" ] && shunt_word_in_list "$2" "$MIGRATE_STORAGE_CHOICES" \
           || shunt_report_error "--key-storage takes one of: $MIGRATE_STORAGE_CHOICES."
         flag="$2"; shift 2 ;;
       *) shunt_report_error "usage: shunt-models --migrate-from-opencode [--apply [--yes]] [--key-storage $(echo "$MIGRATE_STORAGE_CHOICES" | tr ' ' '|')]" ;;

@@ -452,3 +452,8 @@ isolate_home() {
     refute_output --partial ". ."
   done
 }
+
+@test "migrate --key-storage matches whole words only" {
+  run --separate-stderr migrate --key-storage "env plaintext"
+  assert_failure
+}
