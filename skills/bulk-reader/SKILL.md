@@ -34,6 +34,9 @@ Do not delegate when:
   cheap, mechanical extraction, not judgment calls about design.
 - **You need verbatim output**, such as exact strings for a diff, credential
   values, or precise formatting. A delegated model may paraphrase.
+- **You need exact counts, sums, totals or a full list of matches.** A
+  delegated model estimates these instead of counting and returns plausible
+  but wrong numbers. Use `grep -c`, `awk` or `sort | uniq -c` yourself.
 
 ## How to use it
 
