@@ -391,7 +391,8 @@ udir_frag() {
 
 # Drift guard. A skill "delegates to a model" when its SKILL.md runs one of the
 # delegation scripts as a command at the start of a line (scripts/bulk-read or
-# scripts/code-write followed by arguments). Prose mentions, such as the
+# scripts/code-write followed by arguments, optionally prefixed with
+# "${CLAUDE_PLUGIN_ROOT}"/). Prose mentions, such as the
 # management skills describing those scripts inline, do not start a line with
 # the path, so they are not matched. Every delegating skill must register an
 # orchestrator.md next to its SKILL.md.
@@ -399,7 +400,7 @@ udir_frag() {
   source "$REPO_ROOT/scripts/lib/models.sh"
   local skill dir found=0
   for skill in "$REPO_ROOT"/skills/*/SKILL.md; do
-    grep -qE '^scripts/(bulk-read|code-write) ' "$skill" || continue
+    grep -qE '^("\$\{CLAUDE_PLUGIN_ROOT\}"/)?scripts/(bulk-read|code-write) ' "$skill" || continue
     found=$((found + 1))
     dir="${skill%/SKILL.md}"
     [ -f "$dir/orchestrator.md" ] || { echo "missing orchestrator.md in $dir"; return 1; }
