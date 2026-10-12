@@ -374,7 +374,7 @@ JSON
   assert_line --partial "falling back to priority order"
 }
 
-@test "shunt_models_candidates reads the registry with a single jq call" {
+@test "shunt_models_candidates reads the registry without spawning jq" {
   cat >"$SHUNT_MODELS_FILE" <<'JSON'
 {"version":1,"active":"p/second","models":[
   {"id":"p/first","agent":"a1"},
@@ -388,7 +388,7 @@ JSON
   chmod +x "$shim_dir/jq"
   PATH="$shim_dir:$PATH" run shunt_models_candidates code-write
   assert_success
-  [ "$(wc -l <"$TEST_TMPDIR/jq-calls" | tr -d ' ')" -eq 1 ]
+  [ ! -e "$TEST_TMPDIR/jq-calls" ]
 }
 
 @test "shunt_models_agent_for returns the registered agent name" {

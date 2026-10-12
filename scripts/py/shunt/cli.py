@@ -3,6 +3,7 @@
 import argparse
 from collections.abc import Sequence
 
+from . import models
 from .version import plugin_version
 
 
@@ -16,6 +17,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     version = sub.add_parser("version", help="print the plugin version")
     version.set_defaults(func=_cmd_version)
+    models.register(sub)
     return parser
 
 
