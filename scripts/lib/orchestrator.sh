@@ -139,16 +139,74 @@ shunt_orchestrator_body() {
   printf '%s\n' "$_SHUNT_ORCHESTRATOR_BODY"
 }
 
+# Caps so a huge or junk-filled directory cannot slow session start: at most
+# MAX_USER_FRAGMENTS valid fragments are kept, and at most MAX_USER_CANDIDATES
+# files are examined, so invalid files cannot crowd out valid ones for long.
+SHUNT_ORCHESTRATOR_MAX_USER_FRAGMENTS=16
+SHUNT_ORCHESTRATOR_MAX_USER_CANDIDATES=64
+
+# shunt_orchestrator_user_dir
+# Prints the user fragment directory: SHUNT_ORCHESTRATOR_DIR, else
+# $XDG_CONFIG_HOME (default $HOME/.config) + /agent-model-shunt/orchestrator.d,
+# the same convention as the models.json default. Evaluated at call time.
+shunt_orchestrator_user_dir() {
+  printf '%s\n' "${SHUNT_ORCHESTRATOR_DIR:-${XDG_CONFIG_HOME:-${HOME:-}/.config}/agent-model-shunt/orchestrator.d}"
+}
+
+# _shunt_orchestrator_dir_trusted <dir>
+# True when <dir> is an absolute path owned by the current user and not
+# group- or world-writable. Fragments are injected as trusted rules, so a
+# relative path (resolved against the project) or a shared directory is refused.
+_shunt_orchestrator_dir_trusted() {
+  local d="$1" loose
+  case "$d" in /*) ;; *) return 1 ;; esac
+  [ -d "$d" ] && [ -r "$d" ] && [ -O "$d" ] || return 1
+  loose=$(find "$d" -prune \( -perm -020 -o -perm -002 \) -print 2>/dev/null)
+  [ -z "$loose" ]
+}
+
 # shunt_orchestrator_list [plugin_root]
-# Prints the built-in fragment paths (skills/*/orchestrator.md), sorted with
-# LC_ALL=C. The root defaults to the plugin this file lives in.
+# Prints fragment paths, one per line: the built-ins (skills/*/orchestrator.md)
+# sorted with LC_ALL=C, then the valid user fragments (*.md in the user dir)
+# sorted the same way. The root defaults to the plugin this file lives in.
+# A built-in's identity is <skill-dir-name>.md (all built-ins are called
+# orchestrator.md), so a user fragment bulk-reader.md replaces
+# skills/bulk-reader/orchestrator.md, but only if it is itself valid. Only
+# regular, non-symlink, user-owned, non-dotfile .md files are taken. An absent,
+# unreadable, relative or shared directory is skipped silently.
 shunt_orchestrator_list() {
-  local root="${1:-$_SHUNT_ORCHESTRATOR_ROOT}" f
-  for f in "$root"/skills/*/orchestrator.md; do
-    # Names holding a newline would break the one-path-per-line output.
-    case "$f" in *$'\n'*) continue ;; esac
-    [ -e "$f" ] && printf '%s\n' "$f"
-  done | LC_ALL=C sort
+  local root="${1:-$_SHUNT_ORCHESTRATOR_ROOT}" f dir id udir kept=0 seen=0 skip u
+  local LC_COLLATE=C
+  local -a users=()
+  udir=$(shunt_orchestrator_user_dir)
+  if _shunt_orchestrator_dir_trusted "$udir"; then
+    for f in "$udir"/*.md; do
+      # Names holding a newline would break the one-path-per-line output.
+      case "$f" in *$'\n'*) continue ;; esac
+      [ -L "$f" ] && continue
+      [ -f "$f" ] && [ -O "$f" ] || continue
+      seen=$((seen + 1))
+      _shunt_orchestrator_load "$f" || { [ "$seen" -lt "$SHUNT_ORCHESTRATOR_MAX_USER_CANDIDATES" ] && continue || break; }
+      users+=("$f")
+      kept=$((kept + 1))
+      [ "$kept" -lt "$SHUNT_ORCHESTRATOR_MAX_USER_FRAGMENTS" ] || break
+      [ "$seen" -lt "$SHUNT_ORCHESTRATOR_MAX_USER_CANDIDATES" ] || break
+    done
+  fi
+  {
+    for f in "$root"/skills/*/orchestrator.md; do
+      case "$f" in *$'\n'*) continue ;; esac
+      [ -e "$f" ] || continue
+      dir="${f%/orchestrator.md}"
+      id="${dir##*/}.md"
+      skip=0
+      for u in ${users[@]+"${users[@]}"}; do
+        [ "${u##*/}" != "$id" ] || skip=1
+      done
+      [ "$skip" = 1 ] || printf '%s\n' "$f"
+    done | LC_ALL=C sort
+    for u in ${users[@]+"${users[@]}"}; do printf '%s\n' "$u"; done | LC_ALL=C sort
+  }
 }
 
 SHUNT_ORCHESTRATOR_MAX_RENDER_CHARS=3000

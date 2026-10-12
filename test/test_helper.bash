@@ -18,7 +18,15 @@ shunt_test_setup() {
   export SHUNT_BREAKER_STATE_FILE="$TEST_TMPDIR/breaker-state.json"
   export SHUNT_BREAKER_CONFIG_FILE="$TEST_TMPDIR/breaker-config.json"
   export SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE="$TEST_TMPDIR/code-write-self-fix-config.json"
-  mkdir -p "$SHUNT_OPENCODE_CONFIG_HOME"
+  # Keep HOME, XDG and TMPDIR inside the temp dir so no test can reach the
+  # real user config, state, cache or temp files.
+  export HOME="$TEST_TMPDIR/home"
+  export XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config"
+  export XDG_STATE_HOME="$TEST_TMPDIR/xdg-state"
+  export XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache"
+  export SHUNT_ORCHESTRATOR_DIR="$TEST_TMPDIR/orchestrator.d"
+  export TMPDIR="$TEST_TMPDIR/tmp"
+  mkdir -p "$SHUNT_OPENCODE_CONFIG_HOME" "$HOME" "$XDG_CONFIG_HOME" "$XDG_STATE_HOME" "$XDG_CACHE_HOME" "$TMPDIR"
 }
 
 shunt_test_teardown() {

@@ -243,3 +243,148 @@ frag() {
   run shunt_orchestrator_body "$TEST_TMPDIR/frag/f"
   [ "$output" = '- a' ]
 }
+
+# udir_frag <name> <printf-format> [args]: writes into the user fragment dir.
+udir_frag() {
+  local name="$1"
+  shift
+  mkdir -p "$SHUNT_ORCHESTRATOR_DIR"
+  printf "$@" >"$SHUNT_ORCHESTRATOR_DIR/$name"
+}
+
+@test "user fragments are listed after the built-ins" {
+  udir_frag mine.md -- '- my rule\n'
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 3 ]
+  assert_line --index 0 --regexp 'skills/bulk-reader/orchestrator.md$'
+  assert_line --index 1 --regexp 'skills/code-writer/orchestrator.md$'
+  assert_line --index 2 "$SHUNT_ORCHESTRATOR_DIR/mine.md"
+}
+
+@test "user fragments are sorted by basename in the C locale" {
+  udir_frag b.md -- '- b\n'
+  udir_frag B.md -- '- B\n'
+  udir_frag a.md -- '- a\n'
+  run shunt_orchestrator_list
+  assert_success
+  assert_line --index 2 "$SHUNT_ORCHESTRATOR_DIR/B.md"
+  assert_line --index 3 "$SHUNT_ORCHESTRATOR_DIR/a.md"
+  assert_line --index 4 "$SHUNT_ORCHESTRATOR_DIR/b.md"
+}
+
+@test "a user fragment named like a built-in skill replaces it" {
+  udir_frag bulk-reader.md -- 'role: bulk-read\n- custom bulk rule\n'
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 2 ]
+  assert_line --index 0 --regexp 'skills/code-writer/orchestrator.md$'
+  assert_line --index 1 "$SHUNT_ORCHESTRATOR_DIR/bulk-reader.md"
+}
+
+@test "the default override name is the skill directory name, not orchestrator.md" {
+  udir_frag orchestrator.md -- '- plain\n'
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 3 ]
+}
+
+@test "symlinks, directories, FIFOs, non-md files and dotfiles are skipped" {
+  mkdir -p "$SHUNT_ORCHESTRATOR_DIR/dir.md"
+  mkfifo "$SHUNT_ORCHESTRATOR_DIR/fifo.md"
+  udir_frag real.md -- '- real\n'
+  udir_frag notes.txt -- '- txt\n'
+  udir_frag .hidden.md -- '- hidden\n'
+  udir_frag .md -- '- dot\n'
+  ln -s "$SHUNT_ORCHESTRATOR_DIR/real.md" "$SHUNT_ORCHESTRATOR_DIR/link.md"
+  ln -s /nonexistent "$SHUNT_ORCHESTRATOR_DIR/dangling.md"
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 3 ]
+  assert_line --index 2 "$SHUNT_ORCHESTRATOR_DIR/real.md"
+}
+
+@test "a missing fragment dir is fine" {
+  export SHUNT_ORCHESTRATOR_DIR="$TEST_TMPDIR/nope"
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "an unreadable or non-directory fragment path is skipped silently" {
+  printf 'x' >"$TEST_TMPDIR/afile"
+  export SHUNT_ORCHESTRATOR_DIR="$TEST_TMPDIR/afile"
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 2 ]
+  [ -z "$(shunt_orchestrator_list 2>&1 >/dev/null)" ]
+}
+
+@test "at most 16 user fragments are listed" {
+  local i
+  for i in $(seq -w 1 40); do udir_frag "f$i.md" -- '- x\n'; done
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 18 ]
+  assert_line --index 2 "$SHUNT_ORCHESTRATOR_DIR/f01.md"
+  assert_line --index 17 "$SHUNT_ORCHESTRATOR_DIR/f16.md"
+}
+
+@test "filenames with a newline are skipped" {
+  udir_frag $'a\nb.md' -- '- nl\n'
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 2 ]
+}
+
+@test "the default fragment dir follows XDG_CONFIG_HOME, then HOME" {
+  unset SHUNT_ORCHESTRATOR_DIR
+  mkdir -p "$XDG_CONFIG_HOME/agent-model-shunt/orchestrator.d" "$HOME/.config/agent-model-shunt/orchestrator.d"
+  printf -- '- xdg\n' >"$XDG_CONFIG_HOME/agent-model-shunt/orchestrator.d/x.md"
+  printf -- '- home\n' >"$HOME/.config/agent-model-shunt/orchestrator.d/h.md"
+  run shunt_orchestrator_list
+  assert_success
+  assert_line "$XDG_CONFIG_HOME/agent-model-shunt/orchestrator.d/x.md"
+  refute_output --partial "h.md"
+  unset XDG_CONFIG_HOME
+  run shunt_orchestrator_list
+  assert_success
+  assert_line "$HOME/.config/agent-model-shunt/orchestrator.d/h.md"
+}
+
+@test "test isolation points HOME and the XDG dirs into the temp dir" {
+  [[ "$HOME" == "$TEST_TMPDIR"/* ]]
+  [[ "$XDG_CONFIG_HOME" == "$TEST_TMPDIR"/* ]]
+  [[ "$XDG_STATE_HOME" == "$TEST_TMPDIR"/* ]]
+  [[ "$XDG_CACHE_HOME" == "$TEST_TMPDIR"/* ]]
+  [[ "$TMPDIR" == "$TEST_TMPDIR"/* ]]
+  [ -d "$TMPDIR" ]
+}
+
+@test "invalid user files do not crowd out valid fragments within the candidate cap" {
+  local i
+  for i in $(seq -w 1 20); do udir_frag "a$i.md" -- 'junk\n'; done
+  udir_frag z.md -- '- valid\n'
+  run shunt_orchestrator_list
+  assert_success
+  assert_line "$SHUNT_ORCHESTRATOR_DIR/z.md"
+}
+
+@test "an invalid user override keeps the built-in" {
+  udir_frag bulk-reader.md -- 'garbage\n'
+  run shunt_orchestrator_list
+  assert_success
+  [ "${#lines[@]}" -eq 2 ]
+  assert_line --index 0 --regexp 'skills/bulk-reader/orchestrator.md$'
+}
+
+@test "a relative or group/world-writable fragment dir is ignored" {
+  udir_frag mine.md -- '- mine\n'
+  chmod 777 "$SHUNT_ORCHESTRATOR_DIR"
+  run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 2 ]
+  chmod 755 "$SHUNT_ORCHESTRATOR_DIR"
+  cd "$TEST_TMPDIR"
+  SHUNT_ORCHESTRATOR_DIR=orchestrator.d run shunt_orchestrator_list
+  [ "${#lines[@]}" -eq 2 ]
+}
