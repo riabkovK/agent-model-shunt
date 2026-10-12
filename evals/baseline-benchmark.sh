@@ -48,7 +48,7 @@
 
 set -uo pipefail
 
-EVALS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EVALS_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EVALS_DIR/.." && pwd)"
 BENCHMARKS="$EVALS_DIR/benchmarks.json"
 RESULTS_DIR="$EVALS_DIR/results"

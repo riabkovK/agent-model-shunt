@@ -178,14 +178,18 @@ _mg_negate_match() {
 # On success sets MG_NEW, MG_START (0-based), MG_LEN=3, returns 0.
 _mg_find_arith() {
   local line="$1" best=-1 bestnew="" rest pos op
-  local -A newop=([" + "]=" - " [" - "]=" + " [" * "]=" / " [" / "]=" * ")
   for op in " + " " - " " * " " / "; do
     if [[ "$line" == *"$op"* ]]; then
       rest="${line%%"$op"*}"
       pos=${#rest}
       if ((best == -1 || pos < best)); then
         best=$pos
-        bestnew="${newop[$op]}"
+        case "$op" in
+          " + ") bestnew=" - " ;;
+          " - ") bestnew=" + " ;;
+          " * ") bestnew=" / " ;;
+          " / ") bestnew=" * " ;;
+        esac
       fi
     fi
   done
@@ -289,7 +293,7 @@ cmd_list() {
 }
 
 cmd_select() {
-  local n="$1" file="$2" i op id gi c count=0 more=1
+  local n="$1" file="$2" i op id gi c alen count=0 more=1
   if [[ ! "$n" =~ ^[0-9]+$ ]]; then
     echo "mutate-go: --select count must be a non-negative integer" >&2
     return 2
@@ -320,10 +324,11 @@ cmd_select() {
   while ((count < n && more)); do
     more=0
     for gi in 0 1 2 3; do
-      local -n arr="${names[gi]}"
+      # eval instead of a nameref (bash 4.3). The names are the fixed list above.
       c="${cursors[gi]}"
-      if ((c < ${#arr[@]})); then
-        selected+=("${arr[c]}")
+      eval "alen=\${#${names[gi]}[@]}"
+      if ((c < alen)); then
+        eval "selected+=(\"\${${names[gi]}[c]}\")"
         cursors[gi]=$((c + 1))
         count=$((count + 1))
         more=1

@@ -37,7 +37,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_line "opencode config=absent importable=none"
   refute_line --partial "provider "
   refute_line --partial "model "
-  assert_equal "${lines[-1]}" "setup: empty"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: empty"
 }
 
 @test "dashboard with an empty registry file is still empty" {
@@ -45,7 +45,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   run "$SHUNT_MODELS_BIN" dashboard
   assert_success
   assert_line "registry: ok"
-  assert_equal "${lines[-1]}" "setup: empty"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: empty"
 }
 
 @test "dashboard lists providers and models and is ok when everything is set" {
@@ -61,7 +61,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_line "first_choice code-write acme/m1"
   refute_line --partial "issue "
   refute_output --partial "secret-value-123"
-  assert_equal "${lines[-1]}" "setup: ok"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: ok"
 }
 
 @test "dashboard never prints a stored plaintext key" {
@@ -71,7 +71,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_success
   assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=plaintext key_present=yes"
   refute_output --partial "plain-secret-456"
-  assert_equal "${lines[-1]}" "setup: ok"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: ok"
 }
 
 @test "dashboard flags an http provider without a key as incomplete" {
@@ -81,7 +81,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_success
   assert_line --partial "key_present=no"
   assert_line "issue key-missing acme"
-  assert_equal "${lines[-1]}" "setup: incomplete"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: incomplete"
 }
 
 @test "dashboard flags an http model without context_tokens as incomplete" {
@@ -92,7 +92,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_line --partial "key=none key_present=yes"
   assert_line --partial "context_tokens=unset"
   assert_line "issue context-missing acme/m1"
-  assert_equal "${lines[-1]}" "setup: incomplete"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: incomplete"
 }
 
 @test "dashboard flags a registry with no enabled bulk-read model" {
@@ -103,7 +103,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_line "breaker_state oc/m2 code-write failures=0 open=false"
   refute_line --partial "breaker_state oc/m2 bulk-read"
   assert_line "issue no-bulk-read-model -"
-  assert_equal "${lines[-1]}" "setup: incomplete"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: incomplete"
 }
 
 @test "dashboard flags providers without any model" {
@@ -111,7 +111,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   ACME_KEY=k run "$SHUNT_MODELS_BIN" dashboard
   assert_success
   assert_line "issue no-models -"
-  assert_equal "${lines[-1]}" "setup: incomplete"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: incomplete"
 }
 
 @test "dashboard offers the opencode migration for registry models on opencode providers" {
@@ -122,7 +122,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_success
   assert_line "opencode config=present importable=oc"
   refute_output --partial "oc-literal-789"
-  assert_equal "${lines[-1]}" "setup: opencode-importable"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: opencode-importable"
 }
 
 @test "dashboard does not offer the migration over an invalid providers file" {
@@ -133,7 +133,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   run "$SHUNT_MODELS_BIN" dashboard
   assert_success
   assert_line "issue providers-invalid providers.json"
-  assert_equal "${lines[-1]}" "setup: incomplete"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: incomplete"
 }
 
 @test "dashboard does not offer the migration once a provider is on http" {
@@ -144,7 +144,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   ACME_KEY=k run "$SHUNT_MODELS_BIN" dashboard
   assert_success
   assert_line "opencode config=present importable=none"
-  assert_equal "${lines[-1]}" "setup: ok"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: ok"
 }
 
 @test "dashboard reports an invalid registry and an invalid providers file" {
@@ -157,7 +157,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_line "provider acme invalid"
   assert_line "issue registry-invalid models.json"
   assert_line "issue providers-invalid providers.json"
-  assert_equal "${lines[-1]}" "setup: incomplete"
+  assert_equal "${lines[${#lines[@]}-1]}" "setup: incomplete"
 }
 
 @test "dashboard shows configured breaker, open state and self-fix retries" {
@@ -182,4 +182,12 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   run "$SHUNT_MODELS_BIN" dashboard extra
   assert_failure
   assert_output --partial "usage: shunt-models dashboard"
+}
+
+@test "thinking counts as on only for boolean true" {
+  write_models '{"version":1,"active":null,"models":[{"id":"oc/m2","agent":"a2","enabled":true,"thinking":"on","roles":["bulk-read"]}]}'
+  run "$SHUNT_MODELS_BIN" dashboard
+  assert_success
+  assert_line --partial "model oc/m2 "
+  assert_line --partial "thinking=off"
 }

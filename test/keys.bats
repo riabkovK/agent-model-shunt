@@ -134,3 +134,26 @@ SH
   run jq -r '.providers.p.key.ref' "$SHUNT_PROVIDERS_FILE"
   refute_output "$key"
 }
+
+@test "key set and key status refuse a provider name outside the allowed charset" {
+  local name action
+  echo '{"version":1,"providers":{"p":{"transport":"http","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  for action in set status; do
+    for name in 'a;rm -rf x' '$(id)'; do
+      run bash -c "echo k | '$SHUNT_MODELS_BIN' key $action \"\$1\"" _ "$name"
+      assert_failure
+      assert_output --partial "invalid provider name"
+    done
+  done
+}
+
+@test "key set and key status on an existing entry with a rejected name say to edit providers.json" {
+  local action
+  echo '{"version":1,"providers":{"_old":{"transport":"http","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  for action in set status; do
+    run bash -c "echo k | '$SHUNT_MODELS_BIN' key $action _old"
+    assert_failure
+    assert_output --partial '"_old"'
+    assert_output --partial "edit providers.json"
+  done
+}

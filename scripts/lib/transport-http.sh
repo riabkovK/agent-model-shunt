@@ -27,6 +27,28 @@
 # the Authorization header cannot be replayed to another host.
 
 SHUNT_HTTP_EXCERPT_CHARS=300
+# Largest reply body accepted, in bytes (default 16 MiB). curl stops at this size
+# when the server sends a Content-Length. Without one, --max-filesize also stops
+# a chunked transfer only on curl >= 8.4.0. On older curl the size check after the
+# download plus the --max-time deadline bound it instead.
+SHUNT_HTTP_MAX_RESPONSE_BYTES_DEFAULT=16777216
+SHUNT_HTTP_CURL_TOO_LARGE=63
+
+# _shunt_http_max_response_bytes
+# Prints the cap: SHUNT_HTTP_MAX_RESPONSE_BYTES when it is a positive integer.
+_shunt_http_max_response_bytes() {
+  local v="${SHUNT_HTTP_MAX_RESPONSE_BYTES:-}"
+  [[ "$v" =~ ^[1-9][0-9]{0,14}$ ]] || v=$SHUNT_HTTP_MAX_RESPONSE_BYTES_DEFAULT
+  printf '%s' "$v"
+}
+
+# _shunt_http_too_large <file>
+# Succeeds when the file is bigger than the response cap.
+_shunt_http_too_large() {
+  local size
+  size=$(wc -c <"$1" 2>/dev/null) || return 1
+  [ "${size//[^0-9]/}" -gt "$(_shunt_http_max_response_bytes)" ]
+}
 # Oversize guard: tokens are estimated as ceil(bytes / SHUNT_HTTP_BYTES_PER_TOKEN)
 # and must fit in SHUNT_HTTP_CONTEXT_BUDGET_PERCENT of the model's context_tokens.
 # A model without context_tokens is only trusted with requests up to
@@ -58,22 +80,43 @@ _SHUNT_HTTP_TMP=()
 # key is written into it, so the cleanup cannot miss it.
 _SHUNT_HTTP_HDR_FILE=""
 
-_SHUNT_HTTP_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_SHUNT_HTTP_LIB_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=transport-http-deadline.sh
 source "$_SHUNT_HTTP_LIB_DIR/transport-http-deadline.sh"
 # shellcheck source=transport-http-chunking.sh
 source "$_SHUNT_HTTP_LIB_DIR/transport-http-chunking.sh"
 
+# shunt_http_budget_tokens <context_tokens>
+# Prints the tokens a request may use: SHUNT_HTTP_CONTEXT_BUDGET_PERCENT of the
+# context window, rounded down.
+shunt_http_budget_tokens() {
+  # Only plain decimal digits reach the arithmetic: anything else (empty, a
+  # sign, an array subscript with a command substitution) counts as 0.
+  [[ "${1:-}" =~ ^[0-9]{1,12}$ ]] || { echo 0; return 0; }
+  echo $(( 10#$1 * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 ))
+}
+
+# _shunt_rm_tracked <hdr-var> <list-var>
+# Removes the file named by the variable <hdr-var> (the auth header file, first)
+# and every file in the array <list-var>, then empties both. Shared by the HTTP
+# transport and the context detection cleanups. Both arguments must be plain
+# variable names, otherwise it returns 1 and touches nothing.
+_shunt_rm_tracked() {
+  local _shunt_rt_re='^[A-Za-z_][A-Za-z0-9_]*$' _shunt_rt_f
+  [[ "$1" =~ $_shunt_rt_re && "$2" =~ $_shunt_rt_re ]] || return 1
+  eval "_shunt_rt_f=\${$1:-}"
+  [ -z "$_shunt_rt_f" ] || rm -f -- "$_shunt_rt_f"
+  printf -v "$1" '%s' ""
+  # Iterate over the values, not indexes, so a sparse array leaks nothing.
+  # The ${a[@]+...} form keeps an empty array safe under set -u on bash 3.2.
+  eval "for _shunt_rt_f in \${$2[@]+\"\${$2[@]}\"}; do rm -f -- \"\$_shunt_rt_f\"; done"
+  eval "$2=()"
+}
+
 # _shunt_http_cleanup
 # Removes every temp file the current call created, the auth header file first.
 _shunt_http_cleanup() {
-  local f
-  [ -z "$_SHUNT_HTTP_HDR_FILE" ] || rm -f "$_SHUNT_HTTP_HDR_FILE"
-  _SHUNT_HTTP_HDR_FILE=""
-  for f in ${_SHUNT_HTTP_TMP[@]+"${_SHUNT_HTTP_TMP[@]}"}; do
-    rm -f "$f"
-  done
-  _SHUNT_HTTP_TMP=()
+  _shunt_rm_tracked _SHUNT_HTTP_HDR_FILE _SHUNT_HTTP_TMP
 }
 
 # _shunt_http_new_tmp <varname>
@@ -88,21 +131,67 @@ _shunt_http_new_tmp() {
   printf -v "$1" '%s' "$f"
 }
 
+# _shunt_http_ascii_json_forms <text>
+# Prints the text as a JSON string body in two spellings, lower case hex only:
+# non-ASCII characters as \uxxxx (surrogate pairs above U+FFFF), and then every
+# character as \uxxxx (ASCII and control characters too).
+_shunt_http_ascii_json_forms() {
+  local all
+  for all in false true; do
+    printf '%s' "$1" | jq -Rrsj --argjson all "$all" '
+      def hex4: [(./4096|floor)%16, (./256|floor)%16, (./16|floor)%16, .%16]
+        | map("0123456789abcdef"[.:.+1]) | join("");
+      def esc: if . < 128 and ($all | not) then ([.] | implode | tojson | .[1:-1])
+        elif . < 65536 then "\\u" + hex4
+        else (. - 65536) as $c | (55296 + ($c/1024|floor)) as $h | (56320 + ($c%1024)) as $l
+          | "\\u" + ($h|hex4) + "\\u" + ($l|hex4) end;
+      explode | map(esc) | join("") | ., "\n"' 2>/dev/null || true
+  done
+}
+
+# _shunt_http_lower_u_escapes
+# Filter: lower-cases the hex digits of every \uXXXX escape, so one spelling is
+# enough when matching. Plain awk (no GNU sed \L), safe for mawk and BusyBox.
+_shunt_http_lower_u_escapes() {
+  awk '{
+    out = ""; line = $0
+    while (match(line, /\\u[0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f][0-9A-Fa-f]/)) {
+      out = out substr(line, 1, RSTART - 1) tolower(substr(line, RSTART, RLENGTH))
+      line = substr(line, RSTART + RLENGTH)
+    }
+    print out line
+  }'
+}
+
 # _shunt_http_excerpt <file> <key>
 # Prints a one-line excerpt of the file that is safe for stderr: control
-# characters removed, the key value scrubbed, cut to SHUNT_HTTP_EXCERPT_CHARS.
+# characters removed, every spelling of the whole key value scrubbed (see
+# below), cut to SHUNT_HTTP_EXCERPT_CHARS. Only the complete key is matched, a
+# fragment of it is not redacted.
 _shunt_http_excerpt() {
-  local s key="$2" escaped
-  s=$(head -c 4000 "$1" | tr -d '[:cntrl:]')
+  local s key="$2" rawkey="$2" raw_escaped escaped form
+  s=$(head -c 4000 "$1" | tr -d '[:cntrl:]' | _shunt_http_lower_u_escapes)
   if [ -n "$key" ]; then
     # The key as it may be echoed: as is, and in the form jq writes it into a JSON
-    # string, plus the "\/" spelling some servers use for a slash. Control characters
-    # are stripped from the key like from the body, so a key holding one still matches.
+    # string, plus the "\/" spelling some servers use for a slash. The body had its
+    # control characters stripped, so the key is stripped the same way for the plain
+    # forms. The JSON form with control characters escaped (\t, \n) comes from the
+    # unstripped key.
+    raw_escaped=$(printf '%s' "$rawkey" | jq -Rsrj 'tojson | .[1:-1]' 2>/dev/null) || raw_escaped=""
     key=$(printf '%s' "$key" | tr -d '[:cntrl:]')
     escaped=$(jq -Rrj 'tojson | .[1:-1]' <<<"$key" 2>/dev/null) || escaped=""
     [ -z "$key" ] || s="${s//"$key"/[redacted]}"
+    [ -z "$raw_escaped" ] || s="${s//"$raw_escaped"/[redacted]}"
     [ -z "$escaped" ] || s="${s//"$escaped"/[redacted]}"
     [ -z "$escaped" ] || s="${s//"${escaped//\//\\\/}"/[redacted]}"
+    # The \uxxxx forms (non-ASCII only, and every character), lower case hex.
+    while IFS= read -r form; do
+      [ -z "$form" ] || s="${s//"$form"/[redacted]}"
+    done < <(_shunt_http_ascii_json_forms "$key")
+    # Same for the unstripped key, whose control characters become \u0009 and so on.
+    while IFS= read -r form; do
+      [ -z "$form" ] || s="${s//"$form"/[redacted]}"
+    done < <(_shunt_http_ascii_json_forms "$rawkey")
   fi
   printf '%s' "${s:0:$SHUNT_HTTP_EXCERPT_CHARS}"
 }
@@ -111,7 +200,7 @@ _shunt_http_excerpt() {
 # the working directory, so a relative scripts/shunt-models would not resolve.
 # Shell-quoted so a plugin root with spaces still pastes as one word.
 printf -v _SHUNT_HTTP_MODELS_CMD '%q' \
-  "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"
+  "$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"
 
 # _shunt_http_check_base_url <provider> <base_url> <outvar>
 # Stores the URL to use in <outvar>. An explicit http:// or https:// is taken
@@ -174,13 +263,13 @@ _shunt_http_clear() {
 # $(...). Fails, leaving nothing resolved, when the
 # registry is missing or has no such model.
 _shunt_http_resolve() {
-  local agent="$1" id a rb rrb ct op tf tb
+  local agent="$1" id a w rb rrb ct op tf tb
   _shunt_http_clear
   shunt_models_available || return 1
-  while IFS=$'\x1f' read -r id a rb rrb ct op tf tb; do
+  while IFS=$'\x1f' read -r id a w rb rrb ct op tf tb; do
     if [ "$agent" = "$a" ]; then
       _SHUNT_HTTP_ROLE=bulk-reader
-    elif [ "$agent" = "$(shunt_models_code_writer_agent_for "$id")" ]; then
+    elif [ "$agent" = "$w" ]; then
       _SHUNT_HTTP_ROLE=code-writer
     else
       continue
@@ -190,7 +279,7 @@ _shunt_http_resolve() {
     _SHUNT_HTTP_CONTEXT_TOKENS="$ct" _SHUNT_HTTP_OVERSIZE_POLICY="$op"
     _SHUNT_HTTP_THINKING_FIELD="$tf" _SHUNT_HTTP_THINKING_BODY="$tb"
     return 0
-  done < <(jq -r '.models[] | [.id, (.agent // ""), ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | if type == "number" then floor | tostring else tostring end), (.oversize_policy // ""),
+  done < <(jq -r "$SHUNT_MODELS_SLUG_JQ"' .models[] | [.id, bulk_agent, writer_agent, ((.request_body // {}) | tojson), ((.role_request_body // {}) | tojson), ((.context_tokens // "") | if type == "number" then floor | tostring else tostring end), (.oversize_policy // ""),
     (if .thinking == true then "thinking_options", (.thinking_options | tojson) else "thinking_off_options", (.thinking_off_options | tojson) end)] | join("\u001f")' "$SHUNT_MODELS_FILE")
   return 1
 }
@@ -268,7 +357,7 @@ _shunt_http_guard_size() {
     echo "shunt: model $id has no context_tokens. Run: shunt-models detect-context $id --write, or shunt-models set-context $id <tokens> (config problem, no request sent)." >&2
     return "$SHUNT_TRY_INVOKE_CONFIG"
   fi
-  budget=$(( ct * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 ))
+  budget=$(shunt_http_budget_tokens "$ct")
   [ "$tokens" -le "$budget" ] && return 0
   if [ "$_SHUNT_HTTP_ROLE" != code-writer ] \
     && [ "${policy:-$SHUNT_HTTP_DEFAULT_OVERSIZE_POLICY}" = map_reduce ]; then
@@ -339,10 +428,27 @@ _shunt_http_setup() {
   # override a deliberate `thinking off`, while a role key still can.
   local role_key=bulk-read
   [ "$_SHUNT_HTTP_ROLE" = code-writer ] && role_key=code-write
-  _SHUNT_HTTP_REQUEST_BODY=$(jq -c --arg role "$role_key" --argjson rrb "$_SHUNT_HTTP_ROLE_REQUEST_BODY" \
+  # Only the thinking options are converted (a run of capitals is one word:
+  # HTTPProxy becomes http_proxy). Keys without an uppercase letter pass through,
+  # and two keys that collide after conversion are a config error.
+  local merged
+  merged=$(jq -c --arg role "$role_key" --argjson rrb "$_SHUNT_HTTP_ROLE_REQUEST_BODY" \
     --argjson think "$_SHUNT_HTTP_THINKING_BODY" \
-    '. + (($think // {}) | with_entries(.key |= gsub("(?<c>[A-Z])"; "_" + (.c | ascii_downcase))))
-      + ($rrb[$role] // {})' <<<"$_SHUNT_HTTP_REQUEST_BODY") || return "$SHUNT_TRY_INVOKE_CONFIG"
+    'def snake_key: if test("[A-Z]") then
+          gsub("(?<a>[a-z0-9])(?<b>[A-Z])"; "\(.a)_\(.b)") | gsub("(?<a>[A-Z]+)(?<b>[A-Z][a-z])"; "\(.a)_\(.b)") | ascii_downcase
+        else . end;
+      def snake: if type == "object" then
+          (to_entries | map((.key |= snake_key) | (.value |= snake))) as $e
+          | ($e | group_by(.key) | map(select(length > 1)) | first) as $dup
+          | if $dup then error("collision:" + $dup[0].key) else ($e | from_entries) end
+        elif type == "array" then map(snake) else . end;
+      . + (($think // {}) | snake) + ($rrb[$role] // {})' <<<"$_SHUNT_HTTP_REQUEST_BODY" 2>&1) \
+    || { local why="${merged#*collision:}"
+         if [ "$why" != "$merged" ]; then
+           echo "shunt: model '$id': $_SHUNT_HTTP_THINKING_FIELD has keys that collide after snake_case conversion (key '${why%%[\"]*}')." >&2
+         else echo "shunt: model '$id': cannot merge the request body: $merged" >&2; fi
+         return "$SHUNT_TRY_INVOKE_CONFIG"; }
+  _SHUNT_HTTP_REQUEST_BODY="$merged"
   _shunt_http_system_prompt "$_SHUNT_HTTP_ROLE" _SHUNT_HTTP_SYSTEM || return $?
   _shunt_http_new_tmp _SHUNT_HTTP_BODY_FILE && _shunt_http_new_tmp _SHUNT_HTTP_RESP_FILE \
     && _shunt_http_new_tmp _SHUNT_HTTP_ERR_FILE
@@ -381,9 +487,21 @@ _shunt_http_build_request() {
 # stores the path of the normalized response in _SHUNT_HTTP_OUT.
 _shunt_http_check_reply() {
   local http_code="$1" curl_status="$2" provider="$_SHUNT_HTTP_PROVIDER" key="$_SHUNT_HTTP_KEY" out finish
+  local status_known=0
+  # An auth or rate-limit status is mapped even when its body was too large (or
+  # curl stopped at the cap with exit 63): the status says more than the size.
+  case "$http_code" in
+    401 | 403 | 429)
+      if [ "$curl_status" -eq 0 ] || [ "$curl_status" -eq "$SHUNT_HTTP_CURL_TOO_LARGE" ]; then status_known=1; fi ;;
+  esac
+  if [ "$status_known" -eq 0 ] && { [ "$curl_status" -eq "$SHUNT_HTTP_CURL_TOO_LARGE" ] \
+    || { [ "$curl_status" -eq 0 ] && _shunt_http_too_large "$_SHUNT_HTTP_RESP_FILE"; }; }; then
+    echo "shunt: provider '$provider' sent a response larger than $(_shunt_http_max_response_bytes) bytes." >&2
+    return "$SHUNT_TRY_INVOKE_ERROR"
+  fi
   if [ "$curl_status" -eq 28 ]; then
     return "$SHUNT_TRY_INVOKE_TIMEOUT"
-  elif [ "$curl_status" -ne 0 ]; then
+  elif [ "$curl_status" -ne 0 ] && [ "$status_known" -eq 0 ]; then
     echo "shunt: request to provider '$provider' failed (curl exit $curl_status): $(_shunt_http_excerpt "$_SHUNT_HTTP_ERR_FILE" "$key")" >&2
     if [ "${_SHUNT_HTTP_ASSUMED_HTTPS:-0}" = 1 ]; then
       echo "shunt: provider '$provider': cannot reach $_SHUNT_HTTP_BASE_URL (no scheme in base_url, https was assumed; write http://... explicitly for a plain http endpoint)." >&2
@@ -393,7 +511,7 @@ _shunt_http_check_reply() {
   case "$http_code" in
     2??) ;;
     401 | 403)
-      echo "shunt: auth failed for provider $provider: the key was rejected or is missing. Re-enter it through /model-config (it opens a password window), or without a desktop: ! $_SHUNT_HTTP_MODELS_CMD key set $provider" >&2
+      echo "shunt: auth failed for provider $provider: the key was rejected or is missing. Re-enter it through /model-config (it opens a password window), or without a desktop: ! $_SHUNT_HTTP_MODELS_CMD key set $(printf '%q' "$provider")" >&2
       return "$SHUNT_TRY_INVOKE_AUTH"
       ;;
     400 | 404 | 413)
@@ -434,6 +552,7 @@ _shunt_http_send() {
   _shunt_http_request_max_time || return $?
   _shunt_http_prepare_auth || return $?
   http_code=$(curl -q -sS --globoff --max-time "$_SHUNT_HTTP_MAX_TIME" --proto '=http,https' \
+    --max-filesize "$(_shunt_http_max_response_bytes)" \
     -H 'Content-Type: application/json' ${_SHUNT_HTTP_HDR_ARGS[@]+"${_SHUNT_HTTP_HDR_ARGS[@]}"} \
     --data-binary "@$_SHUNT_HTTP_BODY_FILE" -o "$_SHUNT_HTTP_RESP_FILE" -w '%{http_code}' \
     "${_SHUNT_HTTP_BASE_URL%/}/chat/completions" 2>"$_SHUNT_HTTP_ERR_FILE" </dev/null) || curl_status=$?

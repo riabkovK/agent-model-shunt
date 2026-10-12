@@ -349,3 +349,27 @@ kill_group_when_curl_starts() {
   assert_success
   assert_output 32768
 }
+
+@test "detect: curl gets --max-filesize and an over-limit answer counts as not found" {
+  route v1_models_m1 "$(printf '{"context_length":131072,"pad":"%s"}' "$(printf 'x%.0s' $(seq 1 3000))")"
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr detect acme/m1
+  assert_failure
+  [[ "$stderr" == *"larger than 1000 bytes"* ]]
+  grep -q -- '--max-filesize 1000' "$FAKE_CURL_ARGV"
+}
+
+@test "detect: curl exit 63 prints the same larger-than note as the post-download check" {
+  FAKE_CURL_EXIT=63 SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr detect acme/m1
+  assert_failure
+  [[ "$stderr" == *"larger than 1000 bytes"* ]]
+}
+
+@test "context-detect.sh sources transport-http.sh itself when sourced alone" {
+  run bash -c 'source "$1/scripts/lib/context-detect.sh"; type _shunt_http_too_large >/dev/null && type _shunt_http_max_response_bytes >/dev/null' _ "$REPO_ROOT"
+  assert_success
+}
+
+@test "detect: an id missing from the registry is refused before any request" {
+  run ! detect acme/ghost
+  [ ! -e "$FAKE_CURL_ARGV" ]
+}

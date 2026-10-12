@@ -98,7 +98,7 @@ _dashboard_models() {
     | "\(.id)\tenabled=\(if .enabled == false then "no" else "yes" end)"
       + " active=\(if .id == $active then "yes" else "no" end)"
       + " roles=\((.roles // $all_roles) | join(","))"
-      + " thinking=\(if .thinking == true or .thinking == "on" then "on" else "off" end)"
+      + " thinking=\(if .thinking == true then "on" else "off" end)"
       + " thinking_off=\(if .thinking_off_options == null then "none" else "set" end)"
       + " context_tokens=\(.context_tokens // "unset")"
       + " oversize_policy=\(.oversize_policy // "map_reduce(default)")"

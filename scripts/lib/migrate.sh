@@ -40,14 +40,14 @@ _migrate_opencode_json() { printf '%s' "$SHUNT_OPENCODE_CONFIG_HOME/opencode.jso
 # with the key classified as none | env | file | literal (a literal key itself
 # is dropped, a file key keeps its path).
 _migrate_collect_providers() {
-  jq -c --slurpfile reg "$SHUNT_MODELS_FILE" '
+  jq -c --arg name_re "$SHUNT_PROVIDER_NAME_REGEX_JQ" --slurpfile reg "$SHUNT_MODELS_FILE" '
     ([$reg[0].models[]?.id | split("/")[0]] | unique) as $used
     | (.provider // {}) | to_entries[] | select(.key as $k | $used | index($k))
     | (.value.options.apiKey // "") as $raw
     | (if ($raw | type) == "string" then $raw else "" end) as $k
     | (if ($k | type) == "string" then ($k | capture("^\\{env:(?<n>[A-Za-z_][A-Za-z0-9_]*)\\}$")? // null) else null end) as $env
     | (if ($k | type) == "string" then ($k | capture("^\\{file:(?<p>.+)\\}$")? // null) else null end) as $file
-    | {name: .key, base_url: (.value.options.baseURL // ""),
+    | {name: .key, bad_name: (.key | test($name_re) | not), base_url: (.value.options.baseURL // ""),
        bad_key: ($raw | type) != "string" and $raw != "",
        key_kind: (if $k == "" then "none" elif $env != null then "env" elif $file != null then "file" else "literal" end),
        env_ref: ($env.n // ""), key_path: ($file.p // "")}' "$(_migrate_opencode_json)"
@@ -144,10 +144,12 @@ _migrate_ask_storage() {
   [ -z "$(shunt_keyring_backend)" ] || default=keyring
   read -r -p "Key storage for '$name' ($MIGRATE_STORAGE_CHOICES, default $default): " choice
   choice="${choice:-$default}"
-  case " $MIGRATE_STORAGE_CHOICES " in
-    *" $choice "*) printf '%s' "$choice" ;;
-    *) echo "shunt: '$choice' is not a storage choice, skipping the key of '$name'." >&2; printf skip ;;
-  esac
+  if shunt_word_in_list "$choice" "$MIGRATE_STORAGE_CHOICES"; then
+    printf '%s' "$choice"
+  else
+    echo "shunt: '$choice' is not a storage choice, skipping the key of '$name'." >&2
+    printf skip
+  fi
 }
 
 # _migrate_resolve_storage <provider> <kind> <apply 0|1> <flag>
@@ -211,12 +213,14 @@ _migrate_key_source() {
 # Prints the plan entry for one provider.
 _migrate_plan_provider() {
   local line="$1" apply="$2" flag="$3" name raw kind ref state=new storage=none reason="" base="" entry=null err
-  local path source=""
+  local path source="" bad_note=""
   name=$(jq -r .name <<<"$line"); raw=$(jq -r .base_url <<<"$line")
   kind=$(jq -r .key_kind <<<"$line"); ref=$(jq -r .env_ref <<<"$line"); path=$(jq -r .key_path <<<"$line")
   [ "$(jq -r .bad_key <<<"$line")" != true ] \
-    || reason="the apiKey in opencode.json is not a string, so it is not imported as a key"
-  if [ "$(shunt_provider_transport "$name")" = http ]; then
+    || bad_note="the apiKey in opencode.json is not a string, so it is not imported as a key"
+  if [ "$(jq -r .bad_name <<<"$line")" = true ]; then
+    state=skip; reason="the provider name has characters other than letters, digits, dot, dash and underscore, so it stays on opencode"
+  elif [ "$(shunt_provider_transport "$name")" = http ]; then
     state=done; reason="already on the http transport"
   elif ! err=$(_shunt_http_check_base_url "$name" "$raw" _ 2>&1 >/dev/null); then
     state=skip; reason="${err#shunt: }"
@@ -234,6 +238,14 @@ _migrate_plan_provider() {
     fi
     case "$storage" in skip | ask) state=pending ;; esac
     entry=$(_migrate_entry "$storage" "$base" "$ref")
+  fi
+  # Nothing is imported for a provider already on http, so the note is moot there.
+  if [ -n "$bad_note" ] && [ "$state" != done ]; then
+    case "$reason" in
+      "") reason="$bad_note" ;;
+      *[.!?]) reason="$reason $bad_note" ;;
+      *) reason="$reason. $bad_note" ;;
+    esac
   fi
   jq -n -c --arg n "$name" --arg b "$base" --arg st "$state" --arg s "$storage" --arg r "$ref" \
     --arg why "$reason" --argjson e "$entry" --arg src "$source" --arg kp "$path" \
@@ -467,7 +479,7 @@ cmd_migrate_from_opencode() {
       --apply) apply=1; shift ;;
       --yes) yes=1; shift ;;
       --key-storage)
-        [ -n "${2:-}" ] && case " $MIGRATE_STORAGE_CHOICES " in *" $2 "*) true ;; *) false ;; esac \
+        [ -n "${2:-}" ] && shunt_word_in_list "$2" "$MIGRATE_STORAGE_CHOICES" \
           || shunt_report_error "--key-storage takes one of: $MIGRATE_STORAGE_CHOICES."
         flag="$2"; shift 2 ;;
       *) shunt_report_error "usage: shunt-models --migrate-from-opencode [--apply [--yes]] [--key-storage $(echo "$MIGRATE_STORAGE_CHOICES" | tr ' ' '|')]" ;;

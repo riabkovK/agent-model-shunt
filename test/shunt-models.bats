@@ -831,3 +831,43 @@ teardown() {
   assert_success
   [ "$(echo "$output" | grep -c "falling back to priority order")" -eq 1 ]
 }
+
+@test "add with a missing prompt file fails and leaves the registry unwritten" {
+  shunt_write_provider "p"
+  SHUNT_PROMPTS_DIR="$TEST_TMPDIR/no-prompts" run "$SHUNT_MODELS_BIN" add "p/m"
+  assert_failure
+  assert_output --partial "prompt"
+  [ ! -e "$SHUNT_MODELS_FILE" ]
+}
+
+@test "roles with a missing prompt file fails and leaves the registry unchanged" {
+  shunt_write_provider "p"
+  "$SHUNT_MODELS_BIN" add "p/m" bulk-read
+  local before
+  before=$(cat "$SHUNT_MODELS_FILE")
+  SHUNT_PROMPTS_DIR="$TEST_TMPDIR/no-prompts" run "$SHUNT_MODELS_BIN" roles "p/m" bulk-read,code-write
+  assert_failure
+  assert_output --partial "prompt"
+  [ "$(cat "$SHUNT_MODELS_FILE")" = "$before" ]
+}
+
+@test "add with only bulk-read works when code-writer.md is missing" {
+  shunt_write_provider "p"
+  local pd="$TEST_TMPDIR/only-reader"
+  mkdir -p "$pd"
+  cp "$REPO_ROOT/prompts/bulk-reader.md" "$pd/"
+  SHUNT_PROMPTS_DIR="$pd" run "$SHUNT_MODELS_BIN" add "p/n" bulk-read
+  assert_success
+  [ -f "$SHUNT_MODELS_FILE" ]
+}
+
+@test "add with code-write still needs code-writer.md" {
+  shunt_write_provider "p"
+  local pd="$TEST_TMPDIR/only-reader"
+  mkdir -p "$pd"
+  cp "$REPO_ROOT/prompts/bulk-reader.md" "$pd/"
+  SHUNT_PROMPTS_DIR="$pd" run "$SHUNT_MODELS_BIN" add "p/n" bulk-read,code-write
+  assert_failure
+  assert_output --partial "code-writer.md"
+  [ ! -e "$SHUNT_MODELS_FILE" ]
+}

@@ -427,3 +427,58 @@ rebuild_from_plan() {
   assert_success
   [ "$(jq -r '.text' "$output")" = "ok" ]
 }
+
+@test "write_chunk: a source that cannot be read fails instead of writing an empty chunk" {
+  _CH_FILE[0]="$TEST_TMPDIR/missing.txt" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=5
+  _CH_OFF[0]=0
+  run ! _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  _CH_OFF[0]=-1
+  run ! _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+}
+
+@test "write_chunk: a byte slice shorter than the line still succeeds when head closes the pipe early" {
+  local f="$TEST_TMPDIR/long.txt"
+  { repeat 200000 a; echo; } >"$f"
+  _CH_FILE[0]="$f" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=10 _CH_OFF[0]=0
+  _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  [ "$(wc -c <"$TEST_TMPDIR/c" | tr -d ' ')" = 10 ]
+}
+
+@test "write_chunk: a small slice of a huge line succeeds when SIGPIPE is ignored" {
+  local f="$TEST_TMPDIR/long.txt"
+  { repeat 300000 a; echo; } >"$f"
+  run bash -c "trap '' PIPE; source '$REPO_ROOT/scripts/lib/opencode.sh'
+    _CH_FILE[0]='$f' _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=10 _CH_OFF[0]=0
+    _shunt_http_write_chunk 0 '$TEST_TMPDIR/c2'"
+  assert_success
+  [ "$(wc -c <"$TEST_TMPDIR/c2" | tr -d ' ')" = 10 ]
+}
+
+@test "write_chunk: an unreadable source is rejected up front with a clear error" {
+  _CH_FILE[0]="$TEST_TMPDIR/missing.txt" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=5 _CH_OFF[0]=0
+  run --separate-stderr _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  assert_failure
+  [[ "$stderr" == *"cannot read"* ]]
+}
+
+@test "write_chunk: a directory as the source is rejected" {
+  mkdir "$TEST_TMPDIR/d"
+  _CH_FILE[0]="$TEST_TMPDIR/d" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=100 _CH_OFF[0]=2
+  run --separate-stderr _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  assert_failure
+  [[ "$stderr" == *"cannot read"* ]]
+}
+
+@test "write_chunk: a file truncated after planning fails instead of writing a short chunk" {
+  local f="$TEST_TMPDIR/short.txt"
+  printf 'abcdef\n' >"$f"
+  _CH_FILE[0]="$f" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=100 _CH_OFF[0]=2
+  run --separate-stderr _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  assert_failure
+  [[ "$stderr" == *"expected 100 bytes"* ]]
+}
+
+@test "plan_long_line fails when the line cannot be read" {
+  run _shunt_http_plan_long_line "$TEST_TMPDIR/missing.txt" 1 100
+  assert_failure
+}

@@ -245,7 +245,7 @@ no_secret_anywhere_but() {
       "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{m:{}}}}}' \
     >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
   jq -n '{version:1,active:null,models:[
-    {id:"a-b/m",agent:"a1",enabled:true},{id:"a.b/m",agent:"a2",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/m",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
   run --separate-stderr migrate --apply --yes --key-storage env
   assert_success
   run jq -r '.providers["a-b"].key.ref, .providers["a.b"].key.ref' "$SHUNT_PROVIDERS_FILE"
@@ -351,7 +351,7 @@ SH
       "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{m:{}}}}}' \
     >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
   jq -n '{version:1,active:null,models:[
-    {id:"a-b/m",agent:"a1",enabled:true},{id:"a.b/m",agent:"a2",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/m",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
   run --separate-stderr migrate --key-storage env
   assert_success
   assert_output --partial "SHUNT_A_B_KEY_2"
@@ -416,4 +416,44 @@ isolate_home() {
   assert_success
   run jq -r '.providers.acme.key | "\(.type) [\(.ref // "-")]"' "$SHUNT_PROVIDERS_FILE"
   refute_output "plaintext [   ]"
+}
+
+@test "a provider name outside the allowed charset is skipped with a reason, never in a hint" {
+  jq -n '{provider:{"a;id":{options:{baseURL:"https://x.test/v1",apiKey:"sk-hostile-000"},models:{}}}}' \
+    >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+  jq -n '{version:1,active:null,models:[{id:"a;id/m",agent:"a1",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+  run migrate
+  assert_output --partial "skipped, the provider name has characters other than"
+  refute_output --partial "key set"
+  refute_output --partial "sk-hostile-000"
+}
+
+@test "a non-string apiKey is not mentioned for a provider already on http" {
+  jq -n '{provider:{acme:{options:{baseURL:"https://api.acme.test/v1",apiKey:123},models:{m1:{}}}}}' \
+    >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+  jq -n '{version:1,providers:{acme:{transport:"http",base_url:"https://api.acme.test/v1",key:{type:"none"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  run --separate-stderr migrate
+  assert_success
+  assert_output --partial "already on the http transport"
+  refute_output --partial "not imported as a key"
+}
+
+@test "a non-string apiKey is explained for a skipped provider without a doubled period" {
+  local bad
+  for bad in 123 '{}'; do
+    jq -n --argjson k "$bad" '{provider:{
+      "bad name":{options:{baseURL:"https://api.acme.test/v1",apiKey:$k},models:{m1:{}}}}}' \
+      >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
+    echo '{"version":1,"active":null,"models":[{"id":"bad name/m1","agent":"a1","enabled":true}]}' >"$SHUNT_MODELS_FILE"
+    run --separate-stderr migrate
+    assert_success
+    assert_output --partial "stays on opencode. the apiKey in opencode.json is not a string"
+    refute_output --partial ".."
+    refute_output --partial ". ."
+  done
+}
+
+@test "migrate --key-storage matches whole words only" {
+  run --separate-stderr migrate --key-storage "env plaintext"
+  assert_failure
 }

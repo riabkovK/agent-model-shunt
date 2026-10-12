@@ -9,7 +9,7 @@
 
 set -euo pipefail
 
-EVALS_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+EVALS_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EVALS_DIR/.." && pwd)"
 
 echo "== transport eval: scripts/bulk-read against a live OpenCode agent =="

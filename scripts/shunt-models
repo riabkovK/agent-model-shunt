@@ -44,9 +44,11 @@
 
 # A BASH_ENV startup file may have turned xtrace on, which would print a key read below.
 set +x
+# No child may source a caller's startup file (it could turn on xtrace or log a key).
+unset BASH_ENV ENV
 set -euo pipefail
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/opencode.sh
 source "$SCRIPT_DIR/lib/opencode.sh"
 # shellcheck source=lib/models.sh
@@ -147,6 +149,7 @@ cmd_add() {
     shunt_report_error "provider '$provider' not found in $opencode_json. Add it to your OpenCode config first, or configure it for the HTTP transport with: shunt-models provider set $provider --transport http --base-url <url> --key <type>"
   fi
 
+  shunt_models_require_prompts $(echo "$roles_json" | jq -r '.[]')
   local current
   current=$(shunt_models_read_or_empty)
 
@@ -174,9 +177,7 @@ cmd_remove() {
   local current
   current=$(cat "$SHUNT_MODELS_FILE")
 
-  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
-    shunt_report_error "model '$id' is not in the registry."
-  fi
+  shunt_models_require_entry "$id"
 
   local agent writer
   agent=$(shunt_models_agent_for "$id")
@@ -207,9 +208,7 @@ cmd_reorder() {
   local current
   current=$(cat "$SHUNT_MODELS_FILE")
 
-  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
-    shunt_report_error "model '$id' is not in the registry."
-  fi
+  shunt_models_require_entry "$id"
 
   local updated
   updated=$(echo "$current" | jq --arg id "$id" --argjson pos "$((position - 1))" '
@@ -230,9 +229,7 @@ cmd_activate() {
   local current
   current=$(cat "$SHUNT_MODELS_FILE")
 
-  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
-    shunt_report_error "model '$id' is not in the registry."
-  fi
+  shunt_models_require_entry "$id"
 
   if echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id and .enabled == false)' >/dev/null; then
     shunt_report_error "model '$id' is disabled. Enable it first: shunt-models enable $id"
@@ -257,9 +254,7 @@ cmd_set_enabled() {
   local current
   current=$(cat "$SHUNT_MODELS_FILE")
 
-  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
-    shunt_report_error "model '$id' is not in the registry."
-  fi
+  shunt_models_require_entry "$id"
 
   local updated
   updated=$(echo "$current" | jq --arg id "$id" --argjson v "$value" \
@@ -280,9 +275,7 @@ cmd_thinking() {
   local current
   current=$(cat "$SHUNT_MODELS_FILE")
 
-  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
-    shunt_report_error "model '$id' is not in the registry."
-  fi
+  shunt_models_require_entry "$id"
 
   local updated
   if [ "$state" = "on" ]; then
@@ -345,8 +338,7 @@ cmd_request_body() {
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
   local current updated
   current=$(cat "$SHUNT_MODELS_FILE")
-  echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null \
-    || shunt_report_error "model '$id' is not in the registry."
+  shunt_models_require_entry "$id"
   updated=$(echo "$current" | jq --arg id "$id" --arg role "$role" --argjson body "$body" '
     .models |= map(if .id != $id then . elif $role == "" then
         (if $body == null then del(.request_body) else .request_body = $body end)
@@ -373,16 +365,12 @@ cmd_roles() {
 
   # Deliberately not shunt_models_available: this command is the way to fix a
   # registry that is invalid only because of a bad `roles` value.
-  [ -f "$SHUNT_MODELS_FILE" ] || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
-  jq -e '.models | type == "array"' "$SHUNT_MODELS_FILE" >/dev/null 2>&1 \
-    || shunt_report_error "$SHUNT_MODELS_FILE is not a valid models registry."
+  shunt_models_require_entry "$id"
 
   local current
   current=$(cat "$SHUNT_MODELS_FILE")
 
-  if ! echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
-    shunt_report_error "model '$id' is not in the registry."
-  fi
+  shunt_models_require_prompts $(echo "$roles_json" | jq -r '.[]')
 
   local updated
   updated=$(echo "$current" | jq --arg id "$id" --argjson roles "$roles_json" \
@@ -440,6 +428,7 @@ cmd_detect_context() {
   local id="${1:-}" write="${2:-}" tokens rc=0
   [ -n "$id" ] && { [ -z "$write" ] || [ "$write" = --write ]; } \
     || shunt_report_error "usage: shunt-models detect-context <provider/model> [--write]"
+  shunt_models_require_entry "$id"
   tokens=$(shunt_models_detect_context "$id") || rc=$?
   if [ "$rc" -eq "$SHUNT_DETECT_AUTH_FAILED" ]; then
     echo "shunt: auth failed for the provider of '$id' (the key was rejected with 401 or 403): re-enter the key through /model-config." >&2
@@ -492,16 +481,15 @@ shunt_parse_key_spec() {
   esac
 }
 
-# provider set <name> [--transport http|opencode] [--base-url <url>] [--key <spec>]
-# Creates or updates a providers.json entry. Fields not given are kept. A key
-# type change drops the stored ref unless it stays plaintext.
-cmd_provider_set() {
-  local name="${1:-}" transport="" base_url="" _shunt_key_type="" _shunt_key_ref=""
-  local usage="usage: shunt-models provider set <name> [--transport http|opencode] [--base-url <url>] [--key keyring|plaintext|none|env:<VARNAME>]"
-  [[ "$name" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] || shunt_report_error "$usage"
-  shift
+_SHUNT_PROVIDER_SET_USAGE="usage: shunt-models provider set <name> [--transport http|opencode] [--base-url <url>] [--key keyring|plaintext|none|env:<VARNAME>]"
+
+# Parses and checks the options of `provider set` (everything after <name>).
+# Assigns transport, base_url and, through shunt_parse_key_spec, the key
+# variables of cmd_provider_set (bash dynamic scope). Exits with an error on
+# bad input.
+_shunt_provider_set_parse() {
   while [ $# -gt 0 ]; do
-    [ $# -ge 2 ] || shunt_report_error "$usage"
+    [ $# -ge 2 ] || shunt_report_error "$_SHUNT_PROVIDER_SET_USAGE"
     case "$1" in
       --transport | --base-url | --key)
         [ -n "$2" ] || shunt_report_error "$1 needs a non-empty value." ;;
@@ -510,11 +498,11 @@ cmd_provider_set() {
       --transport) transport="$2" ;;
       --base-url) base_url="$2" ;;
       --key) shunt_parse_key_spec "$2" ;;
-      *) shunt_report_error "$usage" ;;
+      *) shunt_report_error "$_SHUNT_PROVIDER_SET_USAGE" ;;
     esac
     shift 2
   done
-  if [ -n "$transport" ] && [[ " $SHUNT_PROVIDER_TRANSPORTS " != *" $transport "* ]]; then
+  if [ -n "$transport" ] && ! shunt_word_in_list "$transport" "$SHUNT_PROVIDER_TRANSPORTS"; then
     shunt_report_error "--transport must be one of: $SHUNT_PROVIDER_TRANSPORTS."
   fi
   if [ -n "$base_url" ]; then
@@ -526,10 +514,15 @@ cmd_provider_set() {
       *) shunt_report_error "--base-url is malformed: it needs a host and must not contain user:password@, whitespace or control characters." ;;
     esac
   fi
+}
+
+# Writes the entry for <name> under the providers lock. transport, base_url and
+# the key variables are those set by _shunt_provider_set_parse.
+_shunt_provider_set_write() {
+  local name="$1" current updated
   shunt_providers_lock || exit 1
   shunt_providers_validate || exit 1
 
-  local current updated
   if [ -f "$SHUNT_PROVIDERS_FILE" ]; then
     current=$(cat "$SHUNT_PROVIDERS_FILE")
   else
@@ -558,6 +551,17 @@ cmd_provider_set() {
   case "$_shunt_key_type" in
     keyring | plaintext) echo "shunt: enter the key through /model-config (it opens a password window), or without a desktop: ! $SHUNT_MODELS_HINT_CMD key set $name. Never paste it into chat." ;;
   esac
+}
+
+# provider set <name> [--transport http|opencode] [--base-url <url>] [--key <spec>]
+# Creates or updates a providers.json entry. Fields not given are kept. A key
+# type change drops the stored ref unless it stays plaintext.
+cmd_provider_set() {
+  local name="${1:-}" transport="" base_url="" _shunt_key_type="" _shunt_key_ref=""
+  shunt_provider_name_ok "$name" || shunt_report_error "$_SHUNT_PROVIDER_SET_USAGE"
+  shift
+  _shunt_provider_set_parse "$@"
+  _shunt_provider_set_write "$name"
 }
 
 # provider list: name, transport, base_url and key type. Only env refs (a
@@ -679,6 +683,7 @@ shunt_read_key() {
 cmd_key() {
   local action="${1:-}" provider="${2:-}"
   [ -n "$provider" ] || shunt_report_error "usage: shunt-models key <set|status> <provider>"
+  shunt_provider_name_ok "$provider" || { shunt_provider_name_refuse "$provider"; exit 1; }
   [ -f "$SHUNT_PROVIDERS_FILE" ] && jq -e --arg p "$provider" '.providers[$p]' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1 \
     || shunt_report_error "provider '$provider' is not in $SHUNT_PROVIDERS_FILE."
   local type

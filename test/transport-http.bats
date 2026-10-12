@@ -80,7 +80,9 @@ write_providers() {
 
 # ok_body <text> <finish_reason> [extra-json-object-merged-into-root]
 ok_body() {
-  jq -n --arg t "$1" --arg f "$2" --argjson x "${3:-{\}}" \
+  local extra="${3:-}"
+  [ -n "$extra" ] || extra='{}'
+  jq -n --arg t "$1" --arg f "$2" --argjson x "$extra" \
     '{choices:[{message:{role:"assistant",content:$t},finish_reason:$f}],
       usage:{prompt_tokens:12,completion_tokens:5}} + $x' >"$FAKE_CURL_BODY"
 }
@@ -1262,4 +1264,164 @@ SH
   run --separate-stderr shunt_transport_invoke "$AGENT" "q"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
   [[ "$stderr" != *"abcdef0123456789secret"* ]]
+}
+
+@test "an error body echoing a non-ASCII key as \\uXXXX escapes is redacted" {
+  local key=$'k\xc3\xa9y-123-\xf0\x9f\x94\x91'
+  export ACME_KEY="$key"
+  printf '{"error":"bad %s %s"}' 'kéy-123-🔑' 'kéy-123-🔑' >"$FAKE_CURL_BODY"
+  FAKE_CURL_CODE=400 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"bad"* ]]
+  [[ "$stderr" != *'u00e9'* ]]
+  [[ "$stderr" != *'u00E9'* ]]
+  [[ "$stderr" != *'123'* ]]
+}
+
+@test "curl exit 63 maps to ERROR naming the response size cap" {
+  FAKE_CURL_EXIT=63 SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"response larger than 1000 bytes"* ]]
+}
+
+@test "a reply bigger than the cap without a Content-Length is an ERROR after the download" {
+  ok_body "$(printf 'x%.0s' $(seq 1 3000))" stop
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"response larger than 1000 bytes"* ]]
+}
+
+@test "the request curl gets --max-filesize with the default 16 MiB cap" {
+  run shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq 0 ]
+  grep -qx -- '--max-filesize' "$FAKE_CURL_ARGV"
+  grep -qx '16777216' "$FAKE_CURL_ARGV"
+}
+
+@test "a 401 with an oversized body is still an auth failure" {
+  export FAKE_CURL_CODE=401
+  printf 'x%.0s' $(seq 1 3000) >"$FAKE_CURL_BODY"
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_AUTH" ]
+}
+
+@test "a 429 with an oversized body is reported as HTTP 429, not as a too-large reply" {
+  export FAKE_CURL_CODE=429
+  printf 'x%.0s' $(seq 1 3000) >"$FAKE_CURL_BODY"
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [[ "$stderr" == *"answered HTTP 429"* ]]
+}
+
+@test "an error body echoing the key with mixed-case hex escapes, ASCII as \\u00XX or control chars is redacted" {
+  local key=$'ab\tc-é-KEY123' body
+  export ACME_KEY="$key"
+  # mixed-case hex for the e-acute, and every character written as \u00xx
+  body='{"e":"x ab\tc-\u00E9-KEY123 y \u0061\u0062\u0009\u0063\u002d\u00e9\u002d\u004b\u0045\u0059\u0031\u0032\u0033 z"}'
+  printf '%s' "$body" >"$FAKE_CURL_BODY"
+  FAKE_CURL_CODE=400 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+  [[ "$stderr" == *"x [redacted] y"* ]]
+  [[ "$stderr" != *"KEY123"* ]]
+  [[ "$stderr" != *"EY123"* ]]
+  [[ "$stderr" != *"\\u0033"* ]]
+}
+
+@test "a registry entry without an agent field still goes through HTTP" {
+  jq -n '{version:1,models:[{id:"acme/m1",enabled:true}]}' >"$SHUNT_MODELS_FILE"
+  [ "$(shunt_models_agent_for acme/m1)" = "$AGENT" ]
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(cat "$FAKE_CURL_COUNT")" = 1 ]
+}
+
+@test "nested thinking option keys are converted to snake_case too" {
+  write_registry_thinking true '{"outerKey":{"innerKey":1,"deepList":[{"itemKey":2}]}}' null
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.outer_key.inner_key' "$FAKE_CURL_SENT")" = 1 ]
+  [ "$(jq -r '.outer_key.deep_list[0].item_key' "$FAKE_CURL_SENT")" = 2 ]
+}
+
+@test "thinking options: a run of capitals is one word and never gets a leading underscore" {
+  write_registry_thinking false null '{"HTTPProxy":1,"maxTokensV2":2,"Foo":3,"already_snake":4}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.http_proxy' "$FAKE_CURL_SENT")" = "1" ]
+  [ "$(jq -r '.max_tokens_v2' "$FAKE_CURL_SENT")" = "2" ]
+  [ "$(jq -r '.foo' "$FAKE_CURL_SENT")" = "3" ]
+  [ "$(jq -r '.already_snake' "$FAKE_CURL_SENT")" = "4" ]
+  [ "$(jq -r 'keys | map(select(startswith("_"))) | length' "$FAKE_CURL_SENT")" = "0" ]
+}
+
+@test "thinking options: keys that collide after conversion are a config error naming the key" {
+  write_registry_thinking false null '{"aB":1,"a_b":2}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_failure
+  assert_output --partial "a_b"
+  assert_output --partial "thinking"
+}
+
+@test "request_body keys are sent verbatim, never converted" {
+  write_registry '{"someCamelKey":1,"Nested":{"innerKey":2}}'
+  run shunt_transport_invoke "$AGENT" "q"
+  assert_success
+  [ "$(jq -r '.someCamelKey' "$FAKE_CURL_SENT")" = "1" ]
+  [ "$(jq -r '.Nested.innerKey' "$FAKE_CURL_SENT")" = "2" ]
+}
+
+@test "shunt_http_budget_tokens takes the budget percent of the context, rounded down" {
+  [ "$(shunt_http_budget_tokens 100000)" = 60000 ]
+  [ "$(shunt_http_budget_tokens 1)" = 0 ]
+  [ "$(shunt_http_budget_tokens 0)" = 0 ]
+  [ "$(shunt_http_budget_tokens 7)" = 4 ]
+  [ "$(shunt_http_budget_tokens 999999999999)" = 599999999999 ]
+}
+
+@test "_shunt_rm_tracked removes the header file and every listed file and empties both" {
+  local h="$TEST_TMPDIR/hdr" a="$TEST_TMPDIR/a" b="$TEST_TMPDIR/b"
+  touch "$h" "$a" "$b"
+  HDR="$h" LIST=("$a" "$b")
+  _shunt_rm_tracked HDR LIST
+  [ ! -e "$h" ] && [ ! -e "$a" ] && [ ! -e "$b" ]
+  [ -z "$HDR" ] && [ "${#LIST[@]}" = 0 ]
+  _shunt_rm_tracked HDR LIST
+}
+
+@test "shunt_http_budget_tokens prints 0 for empty or non-numeric input and never evaluates it" {
+  cd "$TEST_TMPDIR"
+  [ "$(shunt_http_budget_tokens "")" = 0 ]
+  [ "$(shunt_http_budget_tokens 08)" = 4 ]
+  [ "$(shunt_http_budget_tokens 1234567890123)" = 0 ]
+  [ "$(shunt_http_budget_tokens -5)" = 0 ]
+  [ "$(shunt_http_budget_tokens 'a[$(touch x)]')" = 0 ]
+  [ ! -e x ]
+}
+
+@test "_shunt_rm_tracked handles leading-dash names, sparse arrays and caller vars named f or n" {
+  cd "$TEST_TMPDIR"
+  touch ./-dash ./s1 ./s3 ./hf
+  HDR="./hf"
+  LIST=("-dash" "./s1" "./s3")
+  unset 'LIST[1]'
+  [ ! -e s2 ]
+  local f="keep-f" n="keep-n"
+  _shunt_rm_tracked HDR LIST
+  [ ! -e ./-dash ] && [ ! -e ./s3 ] && [ ! -e ./hf ]
+  [ "${#LIST[@]}" = 0 ]
+  [ "$f" = keep-f ] && [ "$n" = keep-n ]
+  # the f and n arrays themselves
+  touch ./x1 ./x2
+  f="" ; n=()
+  n=(./x1 ./x2)
+  _shunt_rm_tracked f n
+  [ ! -e ./x1 ] && [ ! -e ./x2 ]
+}
+
+@test "_shunt_rm_tracked rejects variable names that are not identifiers" {
+  cd "$TEST_TMPDIR"
+  run _shunt_rm_tracked 'a[$(touch pwned)]' LIST
+  assert_failure
+  run _shunt_rm_tracked HDR 'L;touch pwned'
+  assert_failure
+  [ ! -e pwned ]
 }

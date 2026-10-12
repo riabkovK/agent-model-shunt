@@ -58,7 +58,7 @@ SHUNT_OPENCODE_MAX_FILE_LINES=2000
 SHUNT_OPENCODE_MAX_FILE_BYTES=51200
 SHUNT_OPENCODE_MAX_LINE_CHARS=2000
 
-_SHUNT_TRANSPORT_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+_SHUNT_TRANSPORT_LIB_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=providers.sh
 source "$_SHUNT_TRANSPORT_LIB_DIR/providers.sh"
 # shellcheck source=transport-http.sh
@@ -148,7 +148,7 @@ _shunt_opencode_guard_size() {
     bytes=$(( bytes + $(wc -c <"$f" | tr -d ' ') ))
   done
   tokens=$(( (bytes + SHUNT_HTTP_BYTES_PER_TOKEN - 1) / SHUNT_HTTP_BYTES_PER_TOKEN ))
-  budget=$(( _SHUNT_HTTP_CONTEXT_TOKENS * SHUNT_HTTP_CONTEXT_BUDGET_PERCENT / 100 ))
+  budget=$(shunt_http_budget_tokens "$_SHUNT_HTTP_CONTEXT_TOKENS")
   [ "$tokens" -le "$budget" ] && return 0
   echo "shunt: model $name: input is too large for the model (about $tokens tokens, budget $budget), no request sent." >&2
   return "$SHUNT_TRY_INVOKE_OVERSIZE"

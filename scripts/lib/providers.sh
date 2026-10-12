@@ -20,9 +20,68 @@ SHUNT_KEYRING_SERVICE="agent-model-shunt"
 SHUNT_KWALLET_WALLET="kdewallet"
 SHUNT_PROVIDER_TRANSPORTS="http opencode"
 SHUNT_PROVIDER_KEY_TYPES="keyring env plaintext none"
+# The one provider name charset. Names reach shell hints the user copies.
+# Two spellings of it exist on purpose: bash ERE has no \A and \z and its $ only
+# matches at the very end, while Oniguruma (jq) lets $ match before a final
+# newline, so "ok\n" would pass there. The jq form is anchored with \A and \z.
+SHUNT_PROVIDER_NAME_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]*$'
+SHUNT_PROVIDER_NAME_REGEX_JQ='\A[A-Za-z0-9][A-Za-z0-9._-]*\z'
+
+# shunt_provider_name_ok <name>
+shunt_provider_name_ok() { [[ "$1" =~ $SHUNT_PROVIDER_NAME_REGEX ]]; }
+
+# shunt_word_in_list <word> <space separated list>
+# Succeeds when <word> equals one whole entry of the list.
+shunt_word_in_list() {
+  local w
+  for w in $2; do
+    [ "$w" != "$1" ] || return 0
+  done
+  return 1
+}
+
+# shunt_provider_name_refuse <name>
+# Explains on stderr why the name is refused. When providers.json already holds
+# an entry under that name, says so and what to do. The name is shown through
+# jq tojson, so it is quoted and has no raw control characters.
+shunt_provider_name_refuse() {
+  local q
+  if [ -f "$SHUNT_PROVIDERS_FILE" ] \
+    && jq -e --arg p "$1" '.providers[$p] != null' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1; then
+    q=$(jq -rn --arg p "$1" '$p | tojson')
+    echo "shunt: invalid provider name: $SHUNT_PROVIDERS_FILE has an entry named $q, which uses characters other than letters, digits, dot, dash and underscore (or does not start with a letter or digit). Please edit providers.json to remove or rename that entry." >&2
+  else
+    echo "shunt: invalid provider name (use letters, digits, dot, dash, underscore)." >&2
+  fi
+}
 
 SHUNT_PROVIDERS_LOCK_TIMEOUT="${SHUNT_PROVIDERS_LOCK_TIMEOUT:-10}"
 _SHUNT_PROVIDERS_LOCK_DEPTH=0 _SHUNT_PROVIDERS_LOCK_FD="" _SHUNT_PROVIDERS_LOCK_DIR=""
+
+# _shunt_open_lock_fd <lockfile>
+# Opens <lockfile> for append on a file descriptor that is not in use and sets
+# _SHUNT_PROVIDERS_LOCK_FD to it. Bash 4.1+ allocates one. Older bash scans
+# fds 8 to 19 for a free one, so a caller's open fd is never clobbered.
+_shunt_open_lock_fd() {
+  local lock="$1" n
+  if [ "${BASH_VERSINFO[0]}" -gt 4 ] || { [ "${BASH_VERSINFO[0]}" -eq 4 ] && [ "${BASH_VERSINFO[1]}" -ge 1 ]; }; then
+    eval 'exec {_SHUNT_PROVIDERS_LOCK_FD}>>"$lock"' || { _SHUNT_PROVIDERS_LOCK_FD=""; return 1; }
+    return 0
+  fi
+  for n in 8 9 10 11 12 13 14 15 16 17 18 19; do
+    if ! { true >&"$n"; } 2>/dev/null; then
+      eval 'exec '"$n"'>>"$lock"' || return 1
+      _SHUNT_PROVIDERS_LOCK_FD=$n
+      return 0
+    fi
+  done
+  return 1
+}
+
+_shunt_close_lock_fd() {
+  eval "exec ${_SHUNT_PROVIDERS_LOCK_FD}>&-"
+  _SHUNT_PROVIDERS_LOCK_FD=""
+}
 
 # _shunt_guard_install <prefix> <cleanup-command>
 # Runs <cleanup-command> when the shell exits, including on INT, TERM and HUP,
@@ -43,11 +102,14 @@ _shunt_guard_install() {
   done
   # The trap text only acts in the process that installed it: a subshell that
   # inherits it (trap -p reports the parent's traps) must not run the cleanup.
-  local pid="${BASHPID:-$$}"
+  # BASHPID needs bash 4. Without it, $$ plus BASH_SUBSHELL (bash 3.0+, one
+  # more per subshell level) tells the installing shell from its subshells.
+  # It must be expanded inline: a command substitution would add a level.
+  local pid="${BASHPID:-$$.$BASH_SUBSHELL}"
   # shellcheck disable=SC2064 # pid and the commands are meant to be expanded now
   # The caller's trap goes on its own lines: a trailing comment in it must not
   # swallow the closing "fi".
-  trap "if [ \"\${BASHPID:-\$\$}\" = $pid ]; then
+  trap "if [ \"\${BASHPID:-\$\$.\$BASH_SUBSHELL}\" = $pid ]; then
 $cleanup
 ${old_exit:+$old_exit
 }fi" EXIT
@@ -72,7 +134,8 @@ _shunt_guard_remove() {
 _SHUNT_PROVIDER_ENTRY_PROBLEM_JQ='
   def entry_problem($transports; $types):
     .key as $n | .value as $v
-    | if ($v | type) != "object" then "provider \"\($n)\": entry is not an object"
+    | if ($n | test($name_re) | not) then "provider \($n | tojson): provider name has characters other than letters, digits, dot, dash and underscore, or does not start with a letter or digit. Please edit providers.json to remove or rename that entry"
+      elif ($v | type) != "object" then "provider \"\($n)\": entry is not an object"
       elif ($v.transport // "opencode" | type) != "string" then "provider \"\($n)\": transport is not a string"
       elif ($transports | index($v.transport // "opencode")) == null
         then "provider \"\($n)\": unknown transport \"\($v.transport)\" (allowed: \($transports | join(" ")))"
@@ -97,7 +160,7 @@ shunt_providers_validate() {
     return 1
   fi
   local bad
-  if ! bad=$(jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" \
+  if ! bad=$(jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" --arg name_re "$SHUNT_PROVIDER_NAME_REGEX_JQ" \
     "$_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ"'
     .providers | to_entries[] | entry_problem($ts | split(" "); $kt | split(" ")) // empty' \
     "$SHUNT_PROVIDERS_FILE" 2>/dev/null); then
@@ -115,7 +178,7 @@ shunt_providers_validate() {
 # key type (env:<VAR> for env keys). An invalid entry gets "invalid: <reason>"
 # instead, so one bad entry does not hide the others. Never prints a key value.
 shunt_providers_list_lines() {
-  jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" \
+  jq -r --arg ts "$SHUNT_PROVIDER_TRANSPORTS" --arg kt "$SHUNT_PROVIDER_KEY_TYPES" --arg name_re "$SHUNT_PROVIDER_NAME_REGEX_JQ" \
     "$_SHUNT_PROVIDER_ENTRY_PROBLEM_JQ"'
     .providers | to_entries[]
     | entry_problem($ts | split(" "); $kt | split(" ")) as $bad
@@ -160,20 +223,19 @@ shunt_providers_lock() {
   local lock="$SHUNT_PROVIDERS_FILE.lock" tries
   mkdir -p "$(dirname "$SHUNT_PROVIDERS_FILE")" || return 1
   tries=$((SHUNT_PROVIDERS_LOCK_TIMEOUT * 10))
-  # flock on a fixed fd works on every bash. The `{fd}>` form needs bash 4.1.
+  # The lock fd is picked by _shunt_open_lock_fd so a caller's fds survive.
   # Polls with -n instead of -w: BusyBox flock has no -w.
   if command -v flock >/dev/null 2>&1; then
-    exec 8>>"$lock" || return 1
-    until flock -x -n 8; do
+    _shunt_open_lock_fd "$lock" || return 1
+    until flock -x -n "$_SHUNT_PROVIDERS_LOCK_FD"; do
       tries=$((tries - 1))
       if [ "$tries" -le 0 ]; then
-        exec 8>&-
+        _shunt_close_lock_fd
         echo "shunt: timed out waiting for the lock on $SHUNT_PROVIDERS_FILE." >&2
         return 1
       fi
       sleep 0.1
     done
-    _SHUNT_PROVIDERS_LOCK_FD=8
   else
     until mkdir "$lock.d" 2>/dev/null; do
       tries=$((tries - 1))
@@ -194,8 +256,7 @@ shunt_providers_unlock() {
   _SHUNT_PROVIDERS_LOCK_DEPTH=$((_SHUNT_PROVIDERS_LOCK_DEPTH - 1))
   [ "$_SHUNT_PROVIDERS_LOCK_DEPTH" -eq 0 ] || return 0
   if [ -n "$_SHUNT_PROVIDERS_LOCK_FD" ]; then
-    exec 8>&-
-    _SHUNT_PROVIDERS_LOCK_FD=""
+    _shunt_close_lock_fd
   elif [ -n "$_SHUNT_PROVIDERS_LOCK_DIR" ]; then
     rmdir "$_SHUNT_PROVIDERS_LOCK_DIR" 2>/dev/null
     _shunt_guard_remove _SHUNT_PL
@@ -296,11 +357,11 @@ shunt_provider_key_resolve() {
       printf '%s\n' "${!ref}" ;;
     plaintext)
       ref=$(_shunt_provider_key_ref "$provider") || return 1
-      [ -n "$ref" ] || { echo "shunt: provider '$provider': no plaintext key stored. Run: shunt-models key set $provider" >&2; return 1; }
+      [ -n "$ref" ] || { echo "shunt: provider '$provider': no plaintext key stored. Run: shunt-models key set $(printf '%q' "$provider")" >&2; return 1; }
       printf '%s\n' "$ref" ;;
     keyring)
       shunt_keyring_get "$provider" \
-        || { echo "shunt: provider '$provider': no key found in the keyring. Run: shunt-models key set $provider" >&2; return 1; } ;;
+        || { echo "shunt: provider '$provider': no key found in the keyring. Run: shunt-models key set $(printf '%q' "$provider")" >&2; return 1; } ;;
   esac
 }
 
@@ -379,4 +440,4 @@ shunt_provider_plaintext_store() {
 # Absolute, shell-quoted path of shunt-models for user-facing hints. Plugin users
 # run from their own project, so a relative scripts/shunt-models would not resolve.
 printf -v SHUNT_MODELS_HINT_CMD '%q' \
-  "$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"
+  "$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/scripts/shunt-models"

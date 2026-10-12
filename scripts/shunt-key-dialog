@@ -36,7 +36,7 @@ set +x
 # No child (the dialog tool, shunt-models) may run a startup file with the key at hand.
 unset BASH_ENV ENV
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+SCRIPT_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=lib/providers.sh
 source "$SCRIPT_DIR/lib/providers.sh"
 MODELS_BIN="$SCRIPT_DIR/shunt-models"
@@ -44,8 +44,8 @@ MODELS_BIN="$SCRIPT_DIR/shunt-models"
 provider="${1:-}"
 [ -n "$provider" ] && [ $# -eq 1 ] || { echo "usage: shunt-key-dialog <provider>" >&2; exit "$EXIT_USAGE"; }
 
-[[ "$provider" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*$ ]] \
-  || { echo "shunt: invalid provider name (use letters, digits, dot, dash, underscore)." >&2; exit "$EXIT_REFUSED"; }
+shunt_provider_name_ok "$provider" \
+  || { shunt_provider_name_refuse "$provider"; exit "$EXIT_REFUSED"; }
 provider_q=$(printf '%q' "$provider")
 
 timeout_s="${SHUNT_KEY_DIALOG_TIMEOUT:-$DEFAULT_DIALOG_TIMEOUT}"
@@ -67,21 +67,34 @@ case "$key_type" in
     exit "$EXIT_REFUSED" ;;
 esac
 
+# _dialog_usable <tool>
+# kdialog has no timeout of its own, so it is only used where `timeout` exists.
+_dialog_usable() {
+  command -v "$1" >/dev/null 2>&1 || return 1
+  [ "$1" != kdialog ] || command -v timeout >/dev/null 2>&1
+}
+
 # pick_dialog: prints the dialog to use, or "none".
 pick_dialog() {
   local choice="${SHUNT_KEY_DIALOG:-auto}"
   case "$choice" in
     zenity | kdialog | osascript)
-      command -v "$choice" >/dev/null 2>&1 && echo "$choice" || echo none
+      _dialog_usable "$choice" && echo "$choice" || echo none
       return ;;
     none) echo none; return ;;
   esac
+  # Over SSH a GUI dialog would open on the remote desktop, not where the user is.
+  if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; then
+    echo "shunt: no key window opened because this is an SSH session. Set SHUNT_KEY_DIALOG=zenity (or kdialog, osascript) to force one." >&2
+    echo none
+    return
+  fi
   if [ "$(uname -s)" = Darwin ]; then
     command -v osascript >/dev/null 2>&1 && { echo osascript; return; }
   elif [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
     local tool
     for tool in zenity kdialog; do
-      command -v "$tool" >/dev/null 2>&1 && { echo "$tool"; return; }
+      _dialog_usable "$tool" && { echo "$tool"; return; }
     done
   fi
   echo none
@@ -94,14 +107,10 @@ run_dialog() {
   local dialog="$1" prompt="Enter the API key for provider $provider" rc=0
   case "$dialog" in
     zenity)
-      zenity --password --title="Model Shunt: $provider API key" --timeout="$timeout_s" || rc=$?
+      zenity --password --title="Model Shunt: $provider API key" --timeout="$timeout_s" 2>/dev/null || rc=$?
       [ "$rc" -eq 5 ] && rc=124 ;;
     kdialog)
-      if command -v timeout >/dev/null 2>&1; then
-        timeout "$timeout_s" kdialog --title "Model Shunt: $provider" --password "$prompt" || rc=$?
-      else
-        kdialog --title "Model Shunt: $provider" --password "$prompt" || rc=$?
-      fi ;;
+      timeout "$timeout_s" kdialog --title "Model Shunt: $provider" --password "$prompt" 2>/dev/null || rc=$? ;;
     osascript)
       local out
       out=$(osascript \
@@ -110,7 +119,7 @@ run_dialog() {
         -e "if gave up of r then return \"$OSASCRIPT_GAVE_UP\"" \
         -e 'return text returned of r' \
         -e 'end run' \
-        -- "$prompt" "Model Shunt: $provider" "$timeout_s") || rc=$?
+        -- "$prompt" "Model Shunt: $provider" "$timeout_s" 2>/dev/null) || rc=$?
       if [ "$out" = "$OSASCRIPT_GAVE_UP" ]; then rc=124; out=""; fi
       printf '%s' "$out" ;;
   esac
@@ -153,6 +162,12 @@ esac
 if [ -z "$key" ]; then
   unset key
   echo "shunt: no key entered, nothing stored." >&2
+  exit "$EXIT_NO_KEY"
+fi
+# A key never spans lines. Storing only the first line would keep a wrong key silently.
+if [[ "$key" == *$'\n'* ]]; then
+  unset key
+  echo "shunt: the pasted key contains a line break, nothing stored. Paste the key alone." >&2
   exit "$EXIT_NO_KEY"
 fi
 
