@@ -95,18 +95,6 @@ _shunt_breaker_py() {
     shunt_py breaker "$@"
 }
 
-# shunt_breaker_now
-# Prints the current epoch seconds, or SHUNT_NOW_EPOCH when set to a plain
-# non-negative integer (test hook). Any other SHUNT_NOW_EPOCH value is ignored.
-# Stays in bash: it is one `date` call at most and Python would cost more.
-shunt_breaker_now() {
-  if [[ "${SHUNT_NOW_EPOCH-}" =~ ^[0-9]{1,15}$ ]]; then
-    echo "$((10#$SHUNT_NOW_EPOCH))"
-  else
-    date +%s
-  fi
-}
-
 # shunt_breaker_key <id> [role]
 # Prints the state key that holds <id>'s failure counter for <role>. The
 # bulk-read role (the default) keeps the plain model id, so state written
@@ -120,32 +108,6 @@ shunt_breaker_key() {
   else
     echo "$id#$role"
   fi
-}
-
-# shunt_breaker_model_state <id>
-# Prints the model's state object, or "null" if no state file or no entry
-# exists yet for <id>.
-shunt_breaker_model_state() {
-  _shunt_breaker_py model-state -- "$1"
-}
-
-# shunt_breaker_is_open <id>
-# Success (0) if <id>'s breaker is currently open (failures at/above
-# threshold and still within its cooldown window); failure (1) otherwise,
-# including when there is no recorded state.
-shunt_breaker_is_open() {
-  _shunt_breaker_py is-open -- "$1"
-}
-
-# shunt_breaker_write_state <id> <failures> <cooldown_until>
-# Atomically writes the given fields for <id> into the state file, under the
-# state file lock. The file is self-healing: a missing, empty, truncated or
-# otherwise unparsable file (or one that is not a JSON object) is treated as an
-# empty state and overwritten with a fresh one. Reads keep treating such a file
-# as a closed breaker and never touch it. Returns non-zero only when the write
-# itself fails (for example the directory is not writable or the lock times out).
-shunt_breaker_write_state() {
-  _shunt_breaker_py write-state -- "$1" "$2" "$3"
 }
 
 # shunt_breaker_clear_state <id>
@@ -163,22 +125,6 @@ shunt_breaker_clear_state() {
 # and the write happen under one lock, so concurrent failures are all counted.
 shunt_breaker_record_failure() {
   _shunt_breaker_py record-failure -- "$1"
-}
-
-# shunt_breaker_record_success <id>
-# Resets <id>'s failure count and closes its breaker.
-shunt_breaker_record_success() {
-  _shunt_breaker_py record-success -- "$1"
-}
-
-# shunt_breaker_any_closed <id...>
-# Success (0) if at least one of the given ids is currently closed
-# (usable); failure (1) if every given id is open, or if no ids were given.
-# One state file read for all ids (used by hooks/check-file-size on every
-# large-file Read).
-shunt_breaker_any_closed() {
-  [ "$#" -gt 0 ] || return 1
-  _shunt_breaker_py any-closed -- "$@"
 }
 
 # shunt_breaker_status <id>

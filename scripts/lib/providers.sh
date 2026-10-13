@@ -103,9 +103,7 @@ shunt_base_url_check() {
 # Print a field of the provider, or the default when it is unset (opencode,
 # empty, none). Validate the whole file first and fail with its message.
 shunt_provider_transport() { _shunt_providers_py field transport -- "$1"; }
-shunt_provider_base_url() { _shunt_providers_py field base-url -- "$1"; }
 shunt_provider_key_type() { _shunt_providers_py field key-type -- "$1"; }
-_shunt_provider_key_ref() { _shunt_providers_py field key-ref -- "$1"; }
 
 # shunt_provider_plaintext_warning
 shunt_provider_plaintext_warning() {
@@ -126,12 +124,6 @@ shunt_keyring_backend() {
 # visible in that process's argv. Use an env-type key on macOS if that matters.
 shunt_keyring_store() {
   _shunt_providers_py keyring-store -- "$1"
-}
-
-# shunt_keyring_get <provider>
-# Prints the stored key, or returns 1 when there is none.
-shunt_keyring_get() {
-  _shunt_providers_py keyring-get -- "$1"
 }
 
 # shunt_provider_key_resolve <provider>

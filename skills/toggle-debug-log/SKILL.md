@@ -6,7 +6,7 @@ model: haiku
 
 # Toggle Debug Log
 
-Turns `scripts/lib/opencode.sh`'s `shunt_log_usage()` recording on or off by
+Turns the usage log of the Python core (`usage_log.py`) on or off by
 setting `SHUNT_DEBUG_LOG` for the current project. Off by default; when on,
 every real `${CLAUDE_PLUGIN_ROOT}/scripts/bulk-read` delegation appends one line to
 `SHUNT_DEBUG_LOG_PATH` (default `~/.cache/agent-model-shunt/usage.jsonl`).

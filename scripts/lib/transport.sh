@@ -6,17 +6,17 @@
 #    "usage": {"input": int, "output": int},   # absent if none was reported
 #    "cost": number}          # cost only when the provider reported it
 #
-# The extractors and the debug log (opencode.sh) read only this format, so a
-# new transport only has to produce it. `opencode` (the OpenCode CLI) is the
+# The usage log reads only this format, so a new transport only has to produce
+# it. `opencode` (the OpenCode CLI) is the
 # default, `http` posts straight to an OpenAI-compatible API. The transport is
 # chosen per provider.
 #
 # The work lives in scripts/py/shunt: transport.py (dispatch), opencode_cli.py
 # (the CLI transport: size guard, isolated config, child process and timeout,
 # normalizing the transcript), transport_http.py (the HTTP transport) and
-# failover.py (the loop over the candidate models). This file holds the
-# SHUNT_TRY_INVOKE_* statuses, the per-call environment of the Python process
-# and the thin wrappers other scripts call. Meant to be sourced by opencode.sh.
+# failover.py (the loop over the candidate models). This file only holds the
+# timeout default and the SHUNT_TRY_INVOKE_* statuses the bats tests compare
+# against. Meant to be sourced by opencode.sh.
 
 # One OpenCode CLI request is limited to SHUNT_TIMEOUT_SECONDS (GNU timeout
 # syntax, 0 is no limit). SHUNT_TOTAL_TIMEOUT_SECONDS (http transport only) is
@@ -27,7 +27,7 @@
 # 0), see scripts/py/shunt/deadline.py.
 SHUNT_TIMEOUT_SECONDS="${SHUNT_TIMEOUT_SECONDS:-300}"
 
-# Exit statuses of shunt_transport_invoke that name the failure, so the failover
+# Exit statuses of a transport call that name the failure, so the failover
 # loop can say why a model failed. Every failure a transport knows
 # about has one of the statuses below and is explained on stderr. Any other
 # non-zero status (1) is unexpected. Keep them in step with transport_reply.py.
@@ -56,49 +56,3 @@ source "$_SHUNT_TRANSPORT_LIB_DIR/providers.sh"
 # shellcheck source=py.sh
 source "$_SHUNT_TRANSPORT_LIB_DIR/py.sh"
 unset _SHUNT_TRANSPORT_LIB_DIR
-
-# _shunt_oc_py <group> <command> [args...]
-# Runs one Python subcommand with the paths and limits this shell resolved,
-# exported only for the call: they may be unexported shell variables. No secret
-# is passed. An API key is read by Python itself and never reaches argv.
-_shunt_oc_py() {
-  SHUNT_MODELS_FILE="$SHUNT_MODELS_FILE" SHUNT_PROVIDERS_FILE="$SHUNT_PROVIDERS_FILE" \
-    SHUNT_PROC_VERSION_FILE="$SHUNT_PROC_VERSION_FILE" SHUNT_PROMPTS_DIR="$SHUNT_PROMPTS_DIR" \
-    SHUNT_AGENTS_DIR="$SHUNT_AGENTS_DIR" SHUNT_OPENCODE_CONFIG_HOME="${SHUNT_OPENCODE_CONFIG_HOME-}" \
-    SHUNT_ISOLATED_CONFIG_DIR="${SHUNT_ISOLATED_CONFIG_DIR-}" SHUNT_OPENCODE_BIN="${SHUNT_OPENCODE_BIN-}" \
-    SHUNT_DEBUG_LOG_PATH="${SHUNT_DEBUG_LOG_PATH-}" SHUNT_TRANSPORT="${SHUNT_TRANSPORT-}" \
-    SHUNT_TIMEOUT_SECONDS="$SHUNT_TIMEOUT_SECONDS" \
-    SHUNT_TOTAL_TIMEOUT_SECONDS="${SHUNT_TOTAL_TIMEOUT_SECONDS:-}" \
-    SHUNT_HTTP_MAX_CHUNKS="${SHUNT_HTTP_MAX_CHUNKS:-}" \
-    SHUNT_BREAKER_STATE_FILE="${SHUNT_BREAKER_STATE_FILE-}" SHUNT_BREAKER_CONFIG_FILE="${SHUNT_BREAKER_CONFIG_FILE-}" \
-    SHUNT_BREAKER_THRESHOLD="${SHUNT_BREAKER_THRESHOLD-}" \
-    SHUNT_BREAKER_COOLDOWN_SECONDS="${SHUNT_BREAKER_COOLDOWN_SECONDS-}" \
-    SHUNT_NOW_EPOCH="${SHUNT_NOW_EPOCH-}" SHUNT_PROVIDERS_LOCK_TIMEOUT="${SHUNT_PROVIDERS_LOCK_TIMEOUT-}" \
-    TMPDIR="${TMPDIR:-}" \
-    shunt_py "$@"
-}
-
-# shunt_opencode_normalize <jsonl-file>
-# Prints the normalized JSON for an `opencode run --format json` transcript (see
-# opencode_cli.normalize_text): last text event, reason of the last step_finish,
-# tokens and cost summed over every step_finish. Output that is not JSON gives
-# the empty answer, so the callers' own checks judge it.
-shunt_opencode_normalize() {
-  _shunt_oc_py transport normalize -- "$1"
-}
-
-# shunt_transport_invoke <agent> <question> [file...]
-# Dispatches on SHUNT_TRANSPORT (default: the provider's transport, opencode
-# when unknown) and prints the path to the normalized response file. Returns the
-# SHUNT_TRY_INVOKE_* statuses on a failed call, with the reason on stderr.
-shunt_transport_invoke() {
-  _shunt_oc_py transport invoke -- "$@"
-}
-
-# shunt_transport_for_agent <agent>
-# Prints the transport for the agent's model (SHUNT_TRANSPORT override, else
-# models.json model -> provider -> providers.json transport, else opencode).
-# Fails when providers.json is invalid.
-shunt_transport_for_agent() {
-  _shunt_oc_py transport for-agent -- "$1"
-}

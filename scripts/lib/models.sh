@@ -6,7 +6,7 @@
 # The logic lives in scripts/py/shunt/models.py. Every function here is a thin
 # wrapper around `shunt_py models <subcommand>` that keeps the old name, stdout,
 # stderr and exit code. Each call that reaches Python costs one interpreter
-# start. Callers that loop (shunt_invoke_role_with_failover) pay it per
+# start. Callers that loop pay it per
 # candidate. The no-registry legacy path stays free: shunt_models_available
 # checks for the file in bash before spawning anything.
 #
@@ -14,7 +14,7 @@
 # scripts/lib/opencode.sh. Requires scripts/lib/opencode.sh's
 # shunt_report_error to already be sourced (or define your own).
 #
-# Compatibility: when no registry file exists at shunt_models_file, every
+# Compatibility: when no registry file exists at SHUNT_MODELS_FILE, every
 # function here fails closed (shunt_models_available returns non-zero) so
 # callers can fall back to the legacy single-agent path untouched.
 
@@ -42,12 +42,6 @@ SHUNT_MODELS_ROLES_JSON='["bulk-read","code-write"]'
 _shunt_models_py() {
   SHUNT_MODELS_FILE="$SHUNT_MODELS_FILE" SHUNT_AGENTS_DIR="$SHUNT_AGENTS_DIR" \
     SHUNT_PROMPTS_DIR="$SHUNT_PROMPTS_DIR" shunt_py models "$@"
-}
-
-# shunt_models_file
-# Prints the path to the registry file.
-shunt_models_file() {
-  echo "$SHUNT_MODELS_FILE"
 }
 
 # shunt_models_available
@@ -122,41 +116,6 @@ shunt_models_agent_for() {
   _shunt_models_py agent-for -- "$1" || return 1
 }
 
-# shunt_models_thinking_for <id>
-# Prints "true" or "false" for whether <id> has thinking/extended-reasoning
-# enabled.
-shunt_models_thinking_for() {
-  _shunt_models_py thinking-for -- "$1"
-}
-
-# shunt_models_thinking_options_for <id>
-# Prints the raw thinking_options JSON for <id> (or "null").
-shunt_models_thinking_options_for() {
-  _shunt_models_py thinking-options-for -- "$1"
-}
-
-# shunt_models_thinking_off_options_for <id>
-# Prints the raw thinking_off_options JSON for <id> (or "null"). A registry
-# written before this field existed reads as null.
-shunt_models_thinking_off_options_for() {
-  _shunt_models_py thinking-off-options-for -- "$1"
-}
-
-# _shunt_models_slug_core <id>
-# Lowercase, dash-separated form of a provider/model id, shared by every
-# agent name derived from the id.
-_shunt_models_slug_core() {
-  _shunt_models_py slug-core -- "$1"
-}
-
-# shunt_models_slug <id>
-# Derives a lowercase, dash-separated OpenCode agent name from a
-# provider/model id, e.g. "Spark/deepseek-ai/DeepSeek-V4-Flash-0731" ->
-# "shunt-bulk-reader-spark-deepseek-ai-deepseek-v4-flash-0731".
-shunt_models_slug() {
-  _shunt_models_py slug -- "$1"
-}
-
 # shunt_models_code_writer_agent_for <id>
 # Prints the name of <id>'s code-writer agent, e.g. "shunt-code-writer-spark-
 # deepseek-ai-deepseek-v4-flash-0731". Derived from the id, not stored in the
@@ -170,20 +129,6 @@ shunt_models_code_writer_agent_for() {
 # role.
 shunt_models_has_role() {
   _shunt_models_py has-role -- "$1" "$2" 2>/dev/null
-}
-
-# _shunt_models_thinking_block <id>
-# Prints the extra agent frontmatter lines for <id>'s thinking options, or
-# nothing. thinking defaults OFF (docs/TODO.md): reasoning-related frontmatter
-# is omitted unless the user explicitly turned thinking on and supplied
-# provider-specific options (flat key/value pairs) via `shunt-models thinking
-# <id> on <json>`. Those pairs are passed through verbatim as extra top-level
-# agent frontmatter fields, since OpenCode's AgentConfig accepts arbitrary
-# provider-specific keys and their shape varies by provider. A model may also
-# carry explicit off options, rendered the same way while thinking is off and
-# never while it is on.
-_shunt_models_thinking_block() {
-  _shunt_models_py thinking-block -- "$1"
 }
 
 # shunt_models_require_prompts [role...]

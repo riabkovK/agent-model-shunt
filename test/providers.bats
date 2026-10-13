@@ -57,14 +57,6 @@ use_fake_path() {
   assert_output "none"
 }
 
-@test "transport and base_url are read from the provider" {
-  write_providers '{"version":1,"providers":{"p":{"transport":"http","base_url":"https://x/v1","key":{"type":"none"}}}}'
-  run shunt_provider_transport p
-  assert_output "http"
-  run shunt_provider_base_url p
-  assert_output "https://x/v1"
-}
-
 @test "unknown transport is rejected with a clear message" {
   write_providers '{"version":1,"providers":{"p":{"transport":"grpc"}}}'
   run shunt_provider_transport p
@@ -147,27 +139,6 @@ use_fake_path() {
   echo "Linux version 5.15 microsoft-standard-WSL2" >"$SHUNT_PROC_VERSION_FILE"
   run shunt_keyring_backend
   assert_output ""
-}
-
-@test "secret-tool store and get round trip keeps the key out of argv" {
-  fake_tool secret-tool
-  use_fake_path
-  printf '%s\n' "$SECRET" | shunt_keyring_store p
-  run shunt_keyring_get p
-  assert_output "$SECRET"
-  run grep -c "$SECRET" "$FAKE_ARGV"
-  assert_output "0"
-  grep -q "account p" "$FAKE_ARGV"
-}
-
-@test "kwallet-query store and get round trip keeps the key out of argv" {
-  fake_tool kwallet-query
-  use_fake_path
-  printf '%s\n' "$SECRET" | shunt_keyring_store p
-  run shunt_keyring_get p
-  assert_output "$SECRET"
-  run grep -c "$SECRET" "$FAKE_ARGV"
-  assert_output "0"
 }
 
 @test "security store and get round trip works (key in argv is the documented limitation)" {

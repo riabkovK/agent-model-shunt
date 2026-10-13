@@ -212,13 +212,3 @@ def test_cli_root_hit_and_canon_dir(proj):
 def test_cli_placement_failure_prints_the_reason(proj):
     result = cli("placement", "--", str(proj), str(proj.parent), "x.py")
     assert (result.returncode, result.stdout) == (1, b"it resolves outside the project root\n")
-
-
-def test_bash_wrappers_fail_closed_when_the_interpreter_is_broken():
-    lib = SHUNT_MAIN.parents[2] / "scripts" / "lib" / "codewrite.sh"
-    script = (f'source "{lib}"; SHUNT_PYTHON=false; '
-              '_shunt_cw_has_unsafe_chars clean && echo unsafe-hit; '
-              'shunt_cw_sensitive_component src/a.py >/dev/null && echo sensitive-hit; '
-              '_shunt_cw_check_text /dev/null || echo text-refused')
-    out = subprocess.run(["bash", "-c", script], capture_output=True, text=True).stdout.split()
-    assert out == ["unsafe-hit", "sensitive-hit", "text-refused"]

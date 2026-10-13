@@ -49,4 +49,4 @@ Port the core to Python in 12 sub-phases on 4 phase branches (see
   `python:3.11-alpine` lane (`make test-py311`) next to the bash 3.2 lane.
 - During the port both languages exist, and every wrapper is a temporary seam
   that is deleted with its bash body.
-- ADR 0004 is marked superseded only when the port completes, not before.
+- ADR 0004 is marked superseded now that the port is complete (sub-phase 12c).

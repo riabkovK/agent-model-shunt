@@ -1,7 +1,7 @@
 #!/bin/bash
 # Delegate the generation of ONE NEW file to a custom model via OpenCode.
 # The model only returns text, this script validates the response and writes
-# the file (scripts/lib/codewrite.sh), so the model never touches the disk.
+# the file (scripts/py/shunt/cw_publish.py), so the model never touches the disk.
 #
 # Usage:
 #   code-write --kind test|generic --spec "<what to generate>" \

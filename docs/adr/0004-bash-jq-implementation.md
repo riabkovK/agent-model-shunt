@@ -2,7 +2,7 @@
 
 ## Status
 
-Accepted
+Superseded by [ADR 0022](0022-python-core-port.md)
 
 ## Context
 

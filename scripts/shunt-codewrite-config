@@ -2,7 +2,7 @@
 # Write side of the shunt-owned self-fix loop config
 # (~/.config/agent-model-shunt/code-write-self-fix-config.json by default).
 # Lets a user tune how many times code-write's self-fix loop (orchestrated
-# in skills/code-writer/SKILL.md, not in codewrite.sh itself) retries a
+# in skills/code-writer/SKILL.md, not in the Python code-write path itself) retries a
 # failing generated file before falling back to Claude fixing it by hand,
 # without hand-editing JSON or exporting env vars. Driven by the
 # /model-config skill; never hand-edit code-write-self-fix-config.json

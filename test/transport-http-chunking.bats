@@ -141,22 +141,6 @@ rebuild_from_plan() {
   done
 }
 
-@test "split: chunk requests of an overlong UTF-8 line carry the exact bytes and no replacement character" {
-  local f="$TEST_TMPDIR/u.txt" n i
-  { printf 'ab'; repeat 9000 $'\xf0\x9f\x98\x80'; } >"$f"
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$f"
-  assert_success
-  n=$(request_count)
-  : >"$TEST_TMPDIR/all"
-  for (( i = 1; i < n; i++ )); do
-    sent_chunk "$i" "$TEST_TMPDIR/c"
-    cat "$TEST_TMPDIR/c" >>"$TEST_TMPDIR/all"
-    [ "$(grep -c $'\xef\xbf\xbd' "$TEST_TMPDIR/c")" -eq 0 ]
-    [ "$(sent_text_bytes "$i")" -le 10800 ]
-  done
-  cmp "$f" "$TEST_TMPDIR/all"
-}
-
 @test "split: invalid UTF-8 (lone continuation bytes, truncated and overlong sequences) loses no bytes" {
   local f="$TEST_TMPDIR/bad.bin"
   { repeat 3000 $'\x80\x80\x80\x80\x80'; repeat 2000 $'\xe2\x82'; repeat 2000 $'\xc0\xaf'; repeat 2000 $'\xf0\x9f'; } >"$f"
@@ -228,58 +212,6 @@ rebuild_from_plan() {
   done
 }
 
-@test "budget: exactly SHUNT_HTTP_MAX_CHUNKS chunks is sent, one more is refused with nothing sent" {
-  local f="$TEST_TMPDIR/m.txt" room
-  room=$(room_for q "$f" 99999)
-  SHUNT_HTTP_MAX_CHUNKS=3
-  repeat $(( 3 * room )) a >"$f"
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$f"
-  assert_success
-  [ "$(request_count)" -eq 4 ]
-  : >"$HTTP_LOG"
-  repeat $(( 3 * room + 1 )) a >"$f"
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$f"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
-  [[ "$stderr" == *"more chunks than the limit of 3"* ]]
-  [ "$(request_count)" -eq 0 ]
-}
-
-@test "budget: a question that alone exceeds the budget fails fast with nothing sent" {
-  local f="$TEST_TMPDIR/s.txt"
-  printf 'x\n' >"$f"
-  run --separate-stderr timeout 20 bash -c '
-    source "$1/scripts/lib/opencode.sh"; unset SHUNT_TRANSPORT
-    shunt_transport_invoke "$2" "$(head -c 20000 /dev/zero | tr "\0" q)" "$3"' _ "$REPO_ROOT" "$AGENT" "$f"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
-  [[ "$stderr" == *"leave no room for file content"* ]]
-  [ "$(request_count)" -eq 0 ]
-}
-
-@test "budget: empty question, empty file and 1-byte file next to a big file all chunk within budget" {
-  local n i
-  : >"$TEST_TMPDIR/empty.txt"
-  printf 'z' >"$TEST_TMPDIR/one.txt"
-  lines_file "$TEST_TMPDIR/big.txt" 300
-  run --separate-stderr shunt_transport_invoke "$AGENT" "" "$TEST_TMPDIR/empty.txt" "$TEST_TMPDIR/one.txt" "$TEST_TMPDIR/big.txt"
-  assert_success
-  n=$(request_count)
-  [ "$n" -gt 3 ]
-  for (( i = 1; i <= n; i++ )); do [ "$(sent_text_bytes "$i")" -le 10800 ]; done
-}
-
-@test "budget: hostile file names (spaces, newline, quotes, unicode, leading dash) keep every request in budget" {
-  local d="$TEST_TMPDIR/dir" f n i
-  mkdir -p "$d"
-  f="$d/-n a \"q\" 'r'"$'\n'"ünï€😀 $(repeat 100 ж).txt"
-  lines_file "$f" 300
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$f"
-  assert_success
-  n=$(request_count)
-  [ "$n" -gt 2 ]
-  for (( i = 1; i <= n; i++ )); do [ "$(sent_text_bytes "$i")" -le 10800 ]; done
-  jq -r '.messages[1].content' "$FAKE_CURL_SENT.1" | grep -qF "ünï€😀"
-}
-
 # ---- planning cost -------------------------------------------------------------
 
 @test "dos: planning a 40 MB file of newlines is refused within 15 seconds" {
@@ -301,118 +233,7 @@ rebuild_from_plan() {
 
 # ---- total deadline ------------------------------------------------------------
 
-@test "deadline: a 10-digit SHUNT_TIMEOUT_SECONDS keeps the default total at three times it" {
-  lines_file "$TEST_TMPDIR/big.txt" 300
-  use_fake_clock 1000
-  export SHUNT_TIMEOUT_SECONDS=1000000000
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
-  assert_success
-  [ "$(request_count)" -eq 5 ]
-}
-
-@test "deadline: SHUNT_TIMEOUT_SECONDS=0 (no per-request limit) does not shrink the default total to 900s" {
-  lines_file "$TEST_TMPDIR/big.txt" 300
-  use_fake_clock 1000
-  export SHUNT_TIMEOUT_SECONDS=0
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
-  assert_success
-  [ "$(request_count)" -eq 5 ]
-}
-
-@test "deadline: an explicit total caps max-time when SHUNT_TIMEOUT_SECONDS is 0" {
-  export SHUNT_TIMEOUT_SECONDS=0 SHUNT_TOTAL_TIMEOUT_SECONDS=10
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
-  assert_success
-  [ "$(max_time_of 1)" = 10 ]
-}
-
-@test "deadline: an explicit total caps max-time when SHUNT_TIMEOUT_SECONDS has more than 9 digits" {
-  export SHUNT_TIMEOUT_SECONDS=99999999999 SHUNT_TOTAL_TIMEOUT_SECONDS=10
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
-  assert_success
-  [ "$(max_time_of 1)" = 10 ]
-}
-
-@test "deadline: a fractional SHUNT_TIMEOUT_SECONDS above the time left is capped to the time left" {
-  export SHUNT_TIMEOUT_SECONDS=2.5 SHUNT_TOTAL_TIMEOUT_SECONDS=2
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
-  assert_success
-  [ "$(max_time_of 1)" = 2 ]
-}
-
-@test "deadline: a total of 1 second still sends one request capped at 1" {
-  export SHUNT_TOTAL_TIMEOUT_SECONDS=1
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q"
-  assert_success
-  [ "$(max_time_of 1)" = 1 ]
-}
-
-@test "deadline: a total of 1 second with the real clock never fails before sending (30 tries)" {
-  local i fails=0
-  export SHUNT_TOTAL_TIMEOUT_SECONDS=1
-  for (( i = 0; i < 30; i++ )); do
-    shunt_transport_invoke "$AGENT" "q" >/dev/null 2>&1 || fails=$(( fails + 1 ))
-  done
-  echo "failed $fails of 30, requests sent $(request_count)" >&2
-  [ "$fails" -eq 0 ]
-}
-
-@test "deadline: reached during the merge returns DEADLINE after all chunks" {
-  lines_file "$TEST_TMPDIR/big.txt" 300
-  use_fake_clock 10
-  export SHUNT_TOTAL_TIMEOUT_SECONDS=40
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_DEADLINE" ]
-  [ "$(request_count)" -eq 4 ]
-  [[ "$stderr" == *"4 of 4 chunks finished"* ]]
-}
-
-@test "deadline: the DEADLINE status records a breaker failure and fails over to the next model" {
-  write_sized_registry 6000 two
-  export FAKE_CURL_EXIT=28 SHUNT_TOTAL_TIMEOUT_SECONDS=7
-  run --separate-stderr shunt_invoke_with_failover "q"
-  assert_failure
-  [[ "$stderr" == *"acme/m1 failed: total deadline reached"* ]]
-  [[ "$stderr" == *"acme/m2 failed: total deadline reached"* ]]
-  [ "$(jq -r '."acme/m1".failures // .models."acme/m1".failures // empty' "$SHUNT_BREAKER_STATE_FILE")" = 1 ]
-}
-
-@test "deadline: each failover candidate gets its own total deadline" {
-  write_sized_registry 6000 two
-  lines_file "$TEST_TMPDIR/big.txt" 300
-  use_fake_clock 10
-  export SHUNT_TOTAL_TIMEOUT_SECONDS=15
-  run --separate-stderr shunt_invoke_with_failover "q" "$TEST_TMPDIR/big.txt"
-  assert_failure
-  # m1 sends at 0 and 10, stops at 20. m2 starts a fresh 15s at 20.
-  [ "$(request_count)" -eq 4 ]
-  [ "$(max_time_of 1)" = 15 ]
-  [ "$(max_time_of 2)" = 5 ]
-  [ "$(max_time_of 3)" = 15 ]
-  [ "$(max_time_of 4)" = 5 ]
-  [[ "$stderr" == *"model acme/m1: total deadline of 15s"* ]]
-  [[ "$stderr" == *"model acme/m2: total deadline of 15s"* ]]
-}
-
 # ---- hostile server bodies in the map/reduce usage totals ----------------------
-
-@test "hostile: a usage token count of x[\$(cmd)] in a chunk reply runs no command (arithmetic injection)" {
-  lines_file "$TEST_TMPDIR/big.txt" 300
-  export SHUNT_PWNED="$TEST_TMPDIR/pwned"
-  jq -n '{choices:[{message:{role:"assistant",content:"ok"},finish_reason:"stop"}],
-    usage:{prompt_tokens:"x[$(date>$SHUNT_PWNED)]",completion_tokens:1}}' >"$FAKE_CURL_BODY"
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
-  [ ! -e "$SHUNT_PWNED" ]
-}
-
-@test "hostile: a fractional usage token count in chunk replies does not break the chunked call" {
-  lines_file "$TEST_TMPDIR/big.txt" 300
-  jq -n '{choices:[{message:{role:"assistant",content:"ok"},finish_reason:"stop"}],
-    usage:{prompt_tokens:1.5,completion_tokens:1}}' >"$FAKE_CURL_BODY"
-  run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
-  assert_success
-  [ "$(jq -r '.text' "$output")" = "ok" ]
-}
 
 # write_chunk_py <file> <start> <end> <offset> <length> <outfile>: cuts one planned chunk with
 # chunk_plan.write_chunk, writes it to <outfile>, exits with the Abort status.

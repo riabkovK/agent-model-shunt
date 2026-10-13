@@ -1,5 +1,5 @@
 # Self-fix loop retry-count config for code-write. The loop itself lives in
-# skills/code-writer/SKILL.md orchestration, not in codewrite.sh; this file
+# skills/code-writer/SKILL.md orchestration, not in the Python code-write path; this file
 # only resolves how many times that orchestration may re-call `code-write`
 # on a mechanical build/test failure before falling back to Claude fixing
 # the file by hand.

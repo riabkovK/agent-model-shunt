@@ -403,72 +403,6 @@ JSON
   assert_output "shunt-bulk-reader-p-m"
 }
 
-@test "shunt_models_thinking_for returns the registered thinking flag" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":true,"thinking_options":null}
-]}
-JSON
-  run shunt_models_thinking_for "p/m"
-  assert_success
-  assert_output "true"
-}
-
-@test "shunt_models_thinking_off_options_for prints null when the field is missing" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null}
-]}
-JSON
-  run shunt_models_thinking_off_options_for "p/m"
-  assert_success
-  assert_output "null"
-}
-
-@test "shunt_models_thinking_off_options_for prints the stored object" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null,"thinking_off_options":{"reasoningEffort":"none"}}
-]}
-JSON
-  run shunt_models_thinking_off_options_for "p/m"
-  assert_success
-  assert_output '{"reasoningEffort":"none"}'
-}
-
-@test "the thinking block renders off options when thinking is off" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null,"thinking_off_options":{"reasoningEffort":"none"}}
-]}
-JSON
-  run _shunt_models_thinking_block "p/m"
-  assert_success
-  assert_output "reasoningEffort: none"
-}
-
-@test "the thinking block is empty when thinking is off and no off options are stored" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null}
-]}
-JSON
-  run _shunt_models_thinking_block "p/m"
-  assert_success
-  assert_output ""
-}
-
-@test "the thinking block ignores off options when thinking is on" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":true,"thinking_options":{"reasoningEffort":"high"},"thinking_off_options":{"reasoningEffort":"none"}}
-]}
-JSON
-  run _shunt_models_thinking_block "p/m"
-  assert_success
-  assert_output "reasoningEffort: high"
-}
-
 @test "shunt_models_materialize_agent writes off options into both agent files when thinking is off" {
   cat >"$SHUNT_MODELS_FILE" <<'JSON'
 {"version":1,"active":null,"models":[
@@ -481,18 +415,6 @@ JSON
   assert_output "1"
   run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
   assert_output "1"
-}
-
-@test "shunt_models_slug lowercases and dashes a provider/model id" {
-  run shunt_models_slug "Spark/deepseek-ai/DeepSeek-V4-Flash-0731"
-  assert_success
-  assert_output "shunt-bulk-reader-spark-deepseek-ai-deepseek-v4-flash-0731"
-}
-
-@test "shunt_models_slug handles dots and consecutive separators" {
-  run shunt_models_slug "P.rovider/Model--Name"
-  assert_success
-  assert_output "shunt-bulk-reader-p-rovider-model-name"
 }
 
 @test "shunt_models_materialize_agent writes an OpenCode agent file with the model id" {
