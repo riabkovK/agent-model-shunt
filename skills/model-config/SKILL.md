@@ -61,7 +61,7 @@ while, and how long before it tries that model again".
    - `empty`, `opencode-importable` or `incomplete`: run the wizard below.
    - `ok`: render the dashboard.
 3. Render compact tables, in the user's language:
-   - Providers: name, transport, base_url, key type, key present.
+   - Providers: name, transport, base_url, key type, key present, healthcheck (on/off).
    - Models, one row each, every model: enabled, active, roles, thinking
      (on/off, explicit off set or not), context window, oversize policy,
      transport.
@@ -84,6 +84,7 @@ pick among options. Candidates, with the reference.md section to read:
 |---|---|
 | Add a provider | Providers and keys; Adding an HTTP model, in order |
 | Enter or change a key | Providers and keys |
+| Healthcheck on/off | Providers and keys |
 | Add a model | Roles, per model; Adding an HTTP model, in order |
 | Migrate from OpenCode | Migrating providers from OpenCode |
 | Change roles, order or the active model | Editing the model registry; Roles, per model |
@@ -103,8 +104,11 @@ when `importable=` is not `none`.
 
 1. Ask the provider name and base_url, and whether it needs a key. Offer key
    storage with AskUserQuestion: keyring (recommended if available), env
-   variable, plaintext (last resort), none (local, e.g. Ollama).
-2. `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-models provider set <name> --transport http --base-url <url> --key <type>`.
+   variable, plaintext (last resort), none (local, e.g. Ollama). Ask in the
+   same AskUserQuestion call "Healthcheck before each task": on (recommended)
+   or off. One line of explanation: a quick `GET /models`, so a sleeping or
+   down server is skipped in seconds instead of waiting for the request timeout.
+2. `${CLAUDE_PLUGIN_ROOT}/scripts/shunt-models provider set <name> --transport http --base-url <url> --key <type> --healthcheck <on|off>`.
 3. For keyring or plaintext, run `shunt-key-dialog <name>` (see Hard rules)
    and say a password window is open. For env, ask the user to export the
    variable. Confirm with `key status <name>`.

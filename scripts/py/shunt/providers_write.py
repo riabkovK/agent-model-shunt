@@ -79,8 +79,12 @@ def _new_key(old: dict[str, Any], key_type: str, key_ref: str) -> dict[str, Any]
     return {"key": {"type": key_type}}
 
 
-def set_provider(path: str, name: str, transport: str, base_url: str, key_type: str, key_ref: str) -> str:
-    """Create or update an entry, keeping fields not given. Returns the summary shown to the user."""
+def set_provider(path: str, name: str, transport: str, base_url: str, key_type: str, key_ref: str,
+                 healthcheck: str = "") -> str:
+    """Create or update an entry, keeping fields not given. Returns the summary shown to the user.
+
+    healthcheck is "on", "off" or "" (not given): a new entry then gets true, an existing one keeps its value.
+    """
     doc = _current(path)
     table = doc["providers"]
     if not transport and name not in table:
@@ -93,6 +97,10 @@ def set_provider(path: str, name: str, transport: str, base_url: str, key_type: 
     if base_url:
         entry["base_url"] = base_url
     entry.update(_new_key(old, key_type, key_ref))
+    if healthcheck:
+        entry["healthcheck"] = healthcheck == "on"
+    elif name not in table:
+        entry["healthcheck"] = True
     if (entry.get("transport") or "opencode") == "http" and not (entry.get("base_url") or ""):
         raise ProviderError(
             f"provider '{name}': transport http needs a base_url (--base-url http://... or https://...).")
@@ -132,7 +140,7 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     elif cmd == "set":
         with _lock(path, environ):
             sys.stdout.write(set_provider(path, args.name, args.transport, args.base_url,
-                                          args.key_type, args.key_ref) + "\n")
+                                          args.key_type, args.key_ref, args.healthcheck) + "\n")
     elif cmd == "plaintext-store":
         key = _read_key_line()
         with _lock(path, environ):
@@ -165,5 +173,6 @@ def register(subparsers: Any) -> None:
     setter = sub.add_parser("set")
     for name in ("name", "transport", "base_url", "key_type", "key_ref"):
         setter.add_argument(name)
+    setter.add_argument("healthcheck", nargs="?", default="", choices=("", "on", "off"))
     store = sub.add_parser("plaintext-store")
     store.add_argument("provider")

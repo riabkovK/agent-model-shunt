@@ -29,9 +29,10 @@
 #     set-context, detect-context --write and oversize-policy reset the model's breaker.
 #   shunt-models sync
 #   shunt-models provider set <name> [--transport http|opencode] [--base-url <url>]
-#                [--key keyring|plaintext|none|env:<VARNAME>]
+#                [--key keyring|plaintext|none|env:<VARNAME>] [--healthcheck on|off]
 #     Creates or updates a providers.json entry, keeping fields not given. Never
-#     takes a key value: store it with `key set`.
+#     takes a key value: store it with `key set`. A new entry gets healthcheck on
+#     unless --healthcheck off is given, an existing one keeps its value.
 #   shunt-models provider list           (name, transport, base_url, key type)
 #   shunt-models key set <provider>      (hidden prompt, or one line on piped stdin)
 #   shunt-models key status <provider>   (yes/no and key type, never the value)
@@ -358,23 +359,28 @@ shunt_parse_key_spec() {
   esac
 }
 
-_SHUNT_PROVIDER_SET_USAGE="usage: shunt-models provider set <name> [--transport http|opencode] [--base-url <url>] [--key keyring|plaintext|none|env:<VARNAME>]"
+_SHUNT_PROVIDER_SET_USAGE="usage: shunt-models provider set <name> [--transport http|opencode] [--base-url <url>] [--key keyring|plaintext|none|env:<VARNAME>] [--healthcheck on|off]"
 
 # Parses and checks the options of `provider set` (everything after <name>).
-# Assigns transport, base_url and, through shunt_parse_key_spec, the key
+# Assigns transport, base_url, healthcheck and, through shunt_parse_key_spec, the key
 # variables of cmd_provider_set (bash dynamic scope). Exits with an error on
 # bad input.
 _shunt_provider_set_parse() {
   while [ $# -gt 0 ]; do
     [ $# -ge 2 ] || shunt_report_error "$_SHUNT_PROVIDER_SET_USAGE"
     case "$1" in
-      --transport | --base-url | --key)
+      --transport | --base-url | --key | --healthcheck)
         [ -n "$2" ] || shunt_report_error "$1 needs a non-empty value." ;;
     esac
     case "$1" in
       --transport) transport="$2" ;;
       --base-url) base_url="$2" ;;
       --key) shunt_parse_key_spec "$2" ;;
+      --healthcheck)
+        case "$2" in
+          on | off) healthcheck="$2" ;;
+          *) shunt_report_error "--healthcheck must be on or off." ;;
+        esac ;;
       *) shunt_report_error "$_SHUNT_PROVIDER_SET_USAGE" ;;
     esac
     shift 2
@@ -399,18 +405,18 @@ _shunt_provider_set_write() {
   local name="$1" summary
   # Python takes the providers lock, validates the file, builds the entry,
   # writes it and prints the summary of what was saved.
-  summary=$(_shunt_providers_write_py set -- "$name" "$transport" "$base_url" "$_shunt_key_type" "$_shunt_key_ref") || exit "$?"
+  summary=$(_shunt_providers_write_py set -- "$name" "$transport" "$base_url" "$_shunt_key_type" "$_shunt_key_ref" "$healthcheck") || exit "$?"
   echo "shunt: provider '$name' saved ($summary)."
   case "$_shunt_key_type" in
     keyring | plaintext) echo "shunt: enter the key through /model-config (it opens a password window), or without a desktop: ! $SHUNT_MODELS_HINT_CMD key set $name. Never paste it into chat." ;;
   esac
 }
 
-# provider set <name> [--transport http|opencode] [--base-url <url>] [--key <spec>]
+# provider set <name> [--transport http|opencode] [--base-url <url>] [--key <spec>] [--healthcheck on|off]
 # Creates or updates a providers.json entry. Fields not given are kept. A key
 # type change drops the stored ref unless it stays plaintext.
 cmd_provider_set() {
-  local name="${1:-}" transport="" base_url="" _shunt_key_type="" _shunt_key_ref=""
+  local name="${1:-}" transport="" base_url="" healthcheck="" _shunt_key_type="" _shunt_key_ref=""
   shunt_provider_name_ok "$name" || shunt_report_error "$_SHUNT_PROVIDER_SET_USAGE"
   shift
   _shunt_provider_set_parse "$@"

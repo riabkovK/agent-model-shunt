@@ -291,7 +291,8 @@ def test_provider_set_creates_a_new_entry_with_key_none(reg):
 
     assert result.stdout == "transport http, key none\n"
     assert reg.pdoc() == {"version": 1, "providers": {"acme": {
-        "transport": "http", "base_url": "https://a.test/v1", "key": {"type": "none"}}}}
+        "transport": "http", "base_url": "https://a.test/v1", "key": {"type": "none"},
+        "healthcheck": True}}}
     assert stat.S_IMODE(reg.providers.stat().st_mode) == 0o600
 
 

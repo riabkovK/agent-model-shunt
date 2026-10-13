@@ -19,7 +19,7 @@ pfield() { jq -c ".providers.$1" "$SHUNT_PROVIDERS_FILE"; }
   run "$SHUNT_MODELS_BIN" provider set acme --transport http --base-url https://api.acme.test/v1 --key env:ACME_KEY
   assert_success
   run pfield acme
-  assert_output '{"transport":"http","base_url":"https://api.acme.test/v1","key":{"type":"env","ref":"ACME_KEY"}}'
+  assert_output '{"transport":"http","base_url":"https://api.acme.test/v1","key":{"type":"env","ref":"ACME_KEY"},"healthcheck":true}'
   [ "$(stat -c %a "$SHUNT_PROVIDERS_FILE")" = "600" ]
 }
 
@@ -98,7 +98,7 @@ pfield() { jq -c ".providers.$1" "$SHUNT_PROVIDERS_FILE"; }
   assert_success
   assert_output --partial "! $REPO_ROOT/scripts/shunt-models key set bolt"
   run pfield bolt
-  assert_output '{"transport":"http","base_url":"https://y","key":{"type":"plaintext"}}'
+  assert_output '{"transport":"http","base_url":"https://y","key":{"type":"plaintext"},"healthcheck":true}'
 }
 
 @test "provider set updating only the base_url keeps transport and key" {
@@ -302,4 +302,39 @@ pfield() { jq -c ".providers.$1" "$SHUNT_PROVIDERS_FILE"; }
   assert_output --partial "timed out waiting for the lock"
   run jq -r '.providers.p.key.ref' "$SHUNT_PROVIDERS_FILE"
   assert_output "k1"
+}
+
+@test "provider set writes healthcheck true for a new provider" {
+  run "$SHUNT_MODELS_BIN" provider set acme --transport http --base-url https://api.acme.test/v1 --key none
+  assert_success
+  run pfield acme.healthcheck
+  assert_output 'true'
+}
+
+@test "provider set --healthcheck off writes false and an update without the flag keeps it" {
+  run "$SHUNT_MODELS_BIN" provider set acme --transport http --base-url https://api.acme.test/v1 --key none --healthcheck off
+  assert_success
+  run "$SHUNT_MODELS_BIN" provider set acme --base-url https://api.acme.test/v2
+  assert_success
+  run pfield acme.healthcheck
+  assert_output 'false'
+  run "$SHUNT_MODELS_BIN" provider set acme --healthcheck on
+  assert_success
+  run pfield acme.healthcheck
+  assert_output 'true'
+}
+
+@test "provider set leaves a missing healthcheck absent on update" {
+  jq -n '{version:1,providers:{acme:{transport:"http",base_url:"https://a.test/v1",key:{type:"none"}}}}' >"$SHUNT_PROVIDERS_FILE"
+  run "$SHUNT_MODELS_BIN" provider set acme --base-url https://b.test/v1
+  assert_success
+  run pfield acme.healthcheck
+  assert_output 'null'
+}
+
+@test "provider set rejects an invalid --healthcheck value" {
+  run "$SHUNT_MODELS_BIN" provider set acme --transport http --base-url https://a.test/v1 --healthcheck maybe
+  assert_failure
+  assert_output --partial '--healthcheck must be on or off'
+  [ ! -f "$SHUNT_PROVIDERS_FILE" ]
 }

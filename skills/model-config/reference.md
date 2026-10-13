@@ -249,6 +249,7 @@ thinking is not measured, so do not change its default.
 ```bash
 scripts/shunt-models provider set <name> --transport http --base-url <url> --key <keyring|plaintext|none|env:VARNAME>
 scripts/shunt-models provider set <name> --base-url <url>   # update, other fields kept
+scripts/shunt-models provider set <name> --healthcheck on|off
 scripts/shunt-models provider list
 scripts/shunt-models key status <provider>                  # yes/no and type, never the value
 ```
@@ -258,6 +259,17 @@ starting with `http://` or `https://` and naming a host, with no
 `user:password@`, whitespace or control characters (put credentials in the
 key, never in the URL). Changing the key type away from
 plaintext drops a stored plaintext key.
+
+Healthcheck: `--healthcheck on|off` sets the provider's `healthcheck` flag.
+A new provider gets `on` when the flag is not given, and so do providers
+created by the OpenCode migration. An existing provider keeps its value (a
+provider with no field counts as off) until the flag is given. When on, shunt
+sends a quick `GET <base_url>/models` before each task, so a sleeping or down
+server is skipped in seconds and the next model is tried. Offer it as a choice
+next to key storage. Env knobs: `SHUNT_HEALTHCHECK_TIMEOUT` (seconds, default
+3, `0` disables), `SHUNT_HEALTHCHECK_TTL` (seconds a healthy answer is
+remembered, default 60) and `SHUNT_CONNECT_TIMEOUT` (TCP connect limit,
+default 5).
 
 Key storage trade-offs:
 
@@ -325,7 +337,8 @@ scripts/shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>
 
 ## Adding an HTTP model, in order
 
-1. Provider: `provider set <name> --transport http --base-url <url> --key <type>`.
+1. Provider: `provider set <name> --transport http --base-url <url> --key <type> --healthcheck <on|off>`
+   (healthcheck is on when the flag is left out).
 2. Key (keyring/plaintext): run `<plugin-root>/scripts/shunt-key-dialog <name>`
    (Bash timeout above 120 s) and tell the user a password window is open.
    Use the `!` fallback only on exit code 5. For env, the user exports the

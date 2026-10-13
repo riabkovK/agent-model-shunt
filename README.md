@@ -243,8 +243,16 @@ reads it from a hidden prompt:
 
 A server on a laptop (LM Studio, ollama, llama.cpp) may accept the TCP
 connection while the machine sleeps and still never answer. Set
-`"healthcheck": true` on such a provider in `providers.json` (default `false`,
-edit the file by hand, there is no flag):
+`"healthcheck": true` on such a provider in `providers.json`. Providers created
+with `provider set` or by the OpenCode migration get it on by default. A
+provider whose entry has no `healthcheck` field counts as off. Turn it on or
+off later with:
+
+```bash
+scripts/shunt-models provider set lmstudio --healthcheck off   # or: on
+```
+
+The entry then looks like this:
 
 ```json
 {"version": 1, "providers": {

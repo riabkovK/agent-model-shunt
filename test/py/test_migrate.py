@@ -132,7 +132,8 @@ def test_apply_with_plaintext_storage_writes_the_files_and_detects_with_the_key(
     out = capsys.readouterr()
     assert code == 0
     assert mig.pdoc()["providers"]["acme"] == {"transport": "http", "base_url": mig.server.url + "/v1",
-                                              "key": {"type": "plaintext", "ref": SECRET}}
+                                              "key": {"type": "plaintext", "ref": SECRET},
+                                              "healthcheck": True}
     assert stat.S_IMODE(mig.providers.stat().st_mode) == 0o600
     model = mig.mdoc()["models"][0]
     assert model["request_body"] == {"reasoning_effort": "low"} and model["context_tokens"] == 131072
