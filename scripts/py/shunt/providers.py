@@ -227,6 +227,10 @@ def field(path: str, provider: str, name: str) -> str:
     return _alt(value, default)
 
 
+def plaintext_warning(path: str) -> str:
+    return f"shunt: warning: the key is stored in plain text in {path} (mode 600). Prefer a keyring or an environment variable."
+
+
 # ---------------------------------------------------------------- keyring
 
 def is_wsl(version_file: str) -> bool:

@@ -3,7 +3,7 @@
 import argparse
 from collections.abc import Sequence
 
-from . import (breaker, breaker_config_cli, bulk_read, code_write, codewrite_config_cli, context_detect, cw_cli, dashboard, failover, healthcheck_bg, migrate, models, models_cli,
+from . import (breaker, breaker_config_cli, bulk_read, code_write, codewrite_config_cli, context_detect, cw_cli, dashboard, failover, healthcheck_bg, key_dialog, migrate, models, models_cli,
                models_write, opencode_cli, orchestrator, probe, providers, providers_write, selffix, transport, usage_log, usage_report)
 from .version import plugin_version
 
@@ -51,5 +51,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         return codewrite_config_cli.main(argv[1:] if argv[1:2] != ["--"] else argv[2:])
     if argv and argv[0] == models_cli.COMMAND:  # user words such as --clear or a JSON body are data, not options
         return models_cli.main(argv[1:] if argv[1:2] != ["--"] else argv[2:])
+    if argv and argv[0] == key_dialog.COMMAND:
+        return key_dialog.main(argv[1:] if argv[1:2] != ["--"] else argv[2:])
     args = build_parser().parse_args(argv)
     return args.func(args)

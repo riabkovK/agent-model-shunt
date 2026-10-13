@@ -549,8 +549,7 @@ def _store_key(provider: str, key_type: str) -> None:
     except ProviderError as exc:
         raise CliError(str(exc)) from None
     if key_type != "keyring":
-        _warn(f"shunt: warning: the key is stored in plain text in {_providers_path()} (mode 600). "
-              "Prefer a keyring or an environment variable.")
+        _warn(providers.plaintext_warning(_providers_path()))
     _say(f"shunt: key stored for '{provider}' (type {key_type}).")
 
 
