@@ -64,17 +64,6 @@ source "$SCRIPT_DIR/lib/selffix.sh"
 # shellcheck source=lib/dashboard.sh
 source "$SCRIPT_DIR/lib/dashboard.sh"
 
-# shunt_models_read_or_empty
-# Prints the current registry JSON, or an empty-but-valid-shaped registry
-# if the file doesn't exist yet.
-shunt_models_read_or_empty() {
-  if [ -f "$SHUNT_MODELS_FILE" ]; then
-    cat "$SHUNT_MODELS_FILE"
-  else
-    echo '{"version":1,"active":null,"models":[]}'
-  fi
-}
-
 # shunt_models_unavailable_notice
 # Explains why the registry is not in use: absent (legacy single-agent mode)
 # or present but invalid, in which case the validation reason is shown so a
@@ -87,43 +76,24 @@ shunt_models_unavailable_notice() {
   fi
 }
 
-# shunt_models_write <json>
-# Validates <json> and atomically replaces the registry file with it.
-# Never leaves a corrupt file behind: writes to a temp file in the same
-# directory, validates that, then moves it into place.
-shunt_models_write() {
-  local json="$1"
-  mkdir -p "$(dirname "$SHUNT_MODELS_FILE")"
-
-  local tmp_file
-  tmp_file=$(mktemp "$(dirname "$SHUNT_MODELS_FILE")/.models.json.XXXXXX")
-  echo "$json" | jq -e . >"$tmp_file" 2>/dev/null \
-    || { rm -f "$tmp_file"; shunt_report_error "refusing to write an invalid models registry."; }
-
-  mv "$tmp_file" "$SHUNT_MODELS_FILE"
+# _shunt_models_write_py <subcommand> [args...]
+# Runs a models-write subcommand (scripts/py/shunt/models_write.py) on the
+# registry file this script resolved. A failure has already printed its
+# `shunt:` line, so the script exits with the same status, like
+# shunt_report_error did.
+_shunt_models_write_py() {
+  local rc=0
+  SHUNT_MODELS_FILE="$SHUNT_MODELS_FILE" shunt_py models-write "$@" || rc=$?
+  [ "$rc" -eq 0 ] || exit "$rc"
 }
 
 # shunt_models_parse_roles <role>[,<role>...]
-# Prints the roles as a compact JSON array, order kept and duplicates dropped.
+# Prints the roles as a comma separated line, order kept and duplicates dropped.
 # Exits with an error on an empty, unknown or multi-line list.
 shunt_models_parse_roles() {
-  local roles_arg="$1"
-
-  case "$roles_arg" in
-    *$'\n'*) shunt_report_error "roles must be a single comma-separated line." ;;
-  esac
-
-  local role roles_json="[]"
-  local -a parsed
-  # read drops one trailing empty field, so append a comma to make a stray
-  # trailing comma show up as an empty role and get refused.
-  IFS=',' read -r -a parsed <<<"$roles_arg,"
-  for role in "${parsed[@]}"; do
-    [ -n "$role" ] || shunt_report_error "empty role in '$roles_arg'. Roles: ${SHUNT_MODELS_ROLES[*]}"
-    shunt_models_role_known "$role" || shunt_report_error "unknown role '$role'. Known roles: ${SHUNT_MODELS_ROLES[*]}"
-    roles_json=$(echo "$roles_json" | jq -c --arg r "$role" 'if index($r) then . else . + [$r] end')
-  done
-  echo "$roles_json"
+  local out
+  out=$(_shunt_models_write_py parse-roles -- "$1") || exit "$?"
+  printf '%s\n' "$out"
 }
 
 # cmd_add <id> [<role>[,<role>...]]
@@ -133,9 +103,10 @@ cmd_add() {
   local id="${1:-}" roles_arg="${2:-}"
   [ -n "$id" ] || shunt_report_error "usage: shunt-models add <provider/model> [<role>[,<role>...]] (roles: ${SHUNT_MODELS_ROLES[*]})"
 
-  local roles_json="$SHUNT_MODELS_ROLES_JSON"
+  local roles_csv="${SHUNT_MODELS_ROLES[*]}"
+  roles_csv="${roles_csv// /,}"
   if [ -n "$roles_arg" ]; then
-    roles_json=$(shunt_models_parse_roles "$roles_arg")
+    roles_csv=$(shunt_models_parse_roles "$roles_arg")
   fi
 
   # An http provider from providers.json needs nothing from opencode.json (add
@@ -145,28 +116,17 @@ cmd_add() {
   transport=$(shunt_provider_transport "$provider") || exit 1
   local opencode_json="$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
   if [ "$transport" != http ] \
-    && { [ ! -f "$opencode_json" ] || ! jq -e --arg p "$provider" '.provider[$p]' "$opencode_json" >/dev/null 2>&1; }; then
+    && { [ ! -f "$opencode_json" ] || ! shunt_probe opencode-provider -- "$provider"; }; then
     shunt_report_error "provider '$provider' not found in $opencode_json. Add it to your OpenCode config first, or configure it for the HTTP transport with: shunt-models provider set $provider --transport http --base-url <url> --key <type>"
   fi
 
-  shunt_models_require_prompts $(echo "$roles_json" | jq -r '.[]')
-  local current
-  current=$(shunt_models_read_or_empty)
+  shunt_models_require_prompts ${roles_csv//,/ }
 
-  if echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id)' >/dev/null; then
-    shunt_report_error "model '$id' is already in the registry."
-  fi
-
+  # Refuses a duplicate id, writes, and prints the agent name it derived.
   local slug
-  slug=$(shunt_models_slug "$id")
-
-  local updated
-  updated=$(echo "$current" | jq --arg id "$id" --arg agent "$slug" --argjson roles "$roles_json" \
-    '.models += [{id: $id, agent: $agent, enabled: true, thinking: false, thinking_options: null, thinking_off_options: null, roles: $roles}]')
-
-  shunt_models_write "$updated"
+  slug=$(_shunt_models_write_py add -- "$id" "$roles_csv") || exit "$?"
   shunt_models_materialize_agent "$id"
-  echo "shunt: added '$id' (agent: $slug, roles: $(echo "$roles_json" | jq -r 'join(",")'))."
+  echo "shunt: added '$id' (agent: $slug, roles: $roles_csv)."
 }
 
 cmd_remove() {
@@ -174,22 +134,13 @@ cmd_remove() {
   [ -n "$id" ] || shunt_report_error "usage: shunt-models remove <provider/model>"
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
 
-  local current
-  current=$(cat "$SHUNT_MODELS_FILE")
-
   shunt_models_require_entry "$id"
 
   local agent writer
   agent=$(shunt_models_agent_for "$id")
   writer=$(shunt_models_code_writer_agent_for "$id")
 
-  local updated
-  updated=$(echo "$current" | jq --arg id "$id" '
-    .models |= map(select(.id != $id))
-    | if .active == $id then .active = null else . end
-  ')
-
-  shunt_models_write "$updated"
+  _shunt_models_write_py remove -- "$id"
 
   # Registry write succeeded; now drop the model's leftovers so nothing stale
   # survives (its materialized agent files and its circuit breaker state).
@@ -205,19 +156,9 @@ cmd_reorder() {
   case "$position" in ''|*[!0-9]*) shunt_report_error "position must be a positive integer." ;; esac
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
 
-  local current
-  current=$(cat "$SHUNT_MODELS_FILE")
-
   shunt_models_require_entry "$id"
 
-  local updated
-  updated=$(echo "$current" | jq --arg id "$id" --argjson pos "$((position - 1))" '
-    (.models | map(select(.id == $id))) as $target
-    | (.models | map(select(.id != $id))) as $rest
-    | .models = ($rest[0:$pos] + $target + $rest[$pos:])
-  ')
-
-  shunt_models_write "$updated"
+  _shunt_models_write_py reorder -- "$id" "$position"
   echo "shunt: moved '$id' to position $position."
 }
 
@@ -226,18 +167,10 @@ cmd_activate() {
   [ -n "$id" ] || shunt_report_error "usage: shunt-models activate <provider/model>"
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
 
-  local current
-  current=$(cat "$SHUNT_MODELS_FILE")
-
   shunt_models_require_entry "$id"
 
-  if echo "$current" | jq -e --arg id "$id" '.models | any(.id == $id and .enabled == false)' >/dev/null; then
-    shunt_report_error "model '$id' is disabled. Enable it first: shunt-models enable $id"
-  fi
-
-  local updated
-  updated=$(echo "$current" | jq --arg id "$id" '.active = $id')
-  shunt_models_write "$updated"
+  # Python refuses a disabled model before it writes.
+  _shunt_models_write_py activate -- "$id"
   echo "shunt: activated '$id'."
 }
 
@@ -251,15 +184,9 @@ cmd_set_enabled() {
   [ -n "$id" ] || shunt_report_error "usage: shunt-models $verb <provider/model>"
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
 
-  local current
-  current=$(cat "$SHUNT_MODELS_FILE")
-
   shunt_models_require_entry "$id"
 
-  local updated
-  updated=$(echo "$current" | jq --arg id "$id" --argjson v "$value" \
-    '.models |= map(if .id == $id then .enabled = $v else . end)')
-  shunt_models_write "$updated"
+  _shunt_models_write_py set-enabled -- "$value" "$id"
   echo "shunt: ${verb}d '$id'."
 }
 
@@ -272,40 +199,12 @@ cmd_thinking() {
   esac
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
 
-  local current
-  current=$(cat "$SHUNT_MODELS_FILE")
-
   shunt_models_require_entry "$id"
 
-  local updated
-  if [ "$state" = "on" ]; then
-    local options_json="null"
-    if [ -n "$options" ]; then
-      echo "$options" | jq -e . >/dev/null 2>&1 || shunt_report_error "thinking options must be valid JSON: $options"
-      options_json="$options"
-    fi
-    updated=$(echo "$current" | jq --arg id "$id" --argjson opts "$options_json" '
-      .models |= map(if .id == $id then .thinking = true | .thinking_options = $opts else . end)
-    ')
-  else
-    # Without options-json the stored off options stay as they are. An empty
-    # object clears them. `on` never touches them.
-    local set_off=false off_options_json="null"
-    if [ -n "$options" ]; then
-      echo "$options" | jq empty >/dev/null 2>&1 || shunt_report_error "thinking options must be valid JSON: $options"
-      echo "$options" | jq -e 'type == "object"' >/dev/null 2>&1 || shunt_report_error "thinking off options must be a JSON object: $options"
-      set_off=true
-      off_options_json=$(echo "$options" | jq -c 'if length == 0 then null else . end')
-    fi
-    updated=$(echo "$current" | jq --arg id "$id" --argjson set_off "$set_off" --argjson off "$off_options_json" '
-      .models |= map(if .id == $id then
-        .thinking = false | .thinking_options = null
-        | (if $set_off then .thinking_off_options = $off else . end)
-      else . end)
-    ')
-  fi
-
-  shunt_models_write "$updated"
+  # Python validates the options and writes. Without options-json the stored
+  # off options stay as they are, an empty object clears them, and `on` never
+  # touches them.
+  _shunt_models_write_py thinking -- "$id" "$state" "$options"
   shunt_models_materialize_agent "$id"
   echo "shunt: thinking for '$id' set to $state."
 }
@@ -329,26 +228,16 @@ cmd_request_body() {
     printf '%s\n' "${SHUNT_MODELS_ROLES[@]}" | grep -qxF -- "$role" \
       || shunt_report_error "unknown role '$role' (roles: ${SHUNT_MODELS_ROLES[*]})."
   fi
-  local body="null"
+  # Checked here, before the registry is looked at, so the error order is unchanged.
   if [ "$value" != "--clear" ]; then
-    echo "$value" | jq -e 'type == "object"' >/dev/null 2>&1 \
+    printf '%s\n' "$value" | shunt_probe json-object \
       || shunt_report_error "request body must be a JSON object: $value"
-    body=$(echo "$value" | jq -c .)
   fi
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
-  local current updated
-  current=$(cat "$SHUNT_MODELS_FILE")
   shunt_models_require_entry "$id"
-  updated=$(echo "$current" | jq --arg id "$id" --arg role "$role" --argjson body "$body" '
-    .models |= map(if .id != $id then . elif $role == "" then
-        (if $body == null then del(.request_body) else .request_body = $body end)
-      else
-        (if $body == null then del(.role_request_body[$role]) else .role_request_body[$role] = $body end)
-        | (if (.role_request_body // {}) == {} then del(.role_request_body) else . end)
-      end)
-  ') || shunt_report_error "could not update the registry entry for '$id'."
-  shunt_models_write "$updated"
-  echo "shunt: request body for '$id'${role:+ (role $role)} $([ "$body" = null ] && echo cleared || echo set)."
+  local outcome
+  outcome=$(_shunt_models_write_py request-body -- "$id" "$role" "$value") || exit "$?"
+  echo "shunt: request body for '$id'${role:+ (role $role)} $outcome."
 }
 
 # cmd_roles <id> <role>[,<role>...]
@@ -360,43 +249,35 @@ cmd_roles() {
   local id="${1:-}" roles_arg="${2:-}"
   [ -n "$id" ] && [ -n "$roles_arg" ] || shunt_report_error "usage: shunt-models roles <provider/model> <role>[,<role>...] (roles: ${SHUNT_MODELS_ROLES[*]})"
 
-  local roles_json
-  roles_json=$(shunt_models_parse_roles "$roles_arg")
+  local roles_csv
+  roles_csv=$(shunt_models_parse_roles "$roles_arg")
 
   # Deliberately not shunt_models_available: this command is the way to fix a
   # registry that is invalid only because of a bad `roles` value.
   shunt_models_require_entry "$id"
 
-  local current
-  current=$(cat "$SHUNT_MODELS_FILE")
+  shunt_models_require_prompts ${roles_csv//,/ }
 
-  shunt_models_require_prompts $(echo "$roles_json" | jq -r '.[]')
-
-  local updated
-  updated=$(echo "$current" | jq --arg id "$id" --argjson roles "$roles_json" \
-    '.models |= map(if .id == $id then .roles = $roles else . end)')
-  shunt_models_write "$updated"
+  _shunt_models_write_py roles -- "$id" "$roles_csv"
   shunt_models_materialize_agent "$id"
-  echo "shunt: roles for '$id' set to $(echo "$roles_json" | jq -r 'join(",")')."
+  echo "shunt: roles for '$id' set to $roles_csv."
 
   local problem
   problem=$(shunt_models_validate) || echo "shunt: warning, the registry is still invalid: $problem" >&2
 }
 
-# Longest context_tokens accepted, in digits (keeps the value exact in jq).
+# Longest context_tokens accepted, in digits.
 SHUNT_CONTEXT_MAX_DIGITS=12
 
 # shunt_models_store_context <provider/model> <tokens>
 # Stores <tokens> as the model's context_tokens through the atomic registry
 # write. Like cmd_roles it does not need a valid registry to begin with.
 shunt_models_store_context() {
-  local id="$1" tokens="$2" updated
+  local id="$1" tokens="$2"
   [[ "$tokens" =~ ^[1-9][0-9]{0,$((SHUNT_CONTEXT_MAX_DIGITS - 1))}$ ]] \
     || shunt_report_error "tokens must be a positive integer of at most $SHUNT_CONTEXT_MAX_DIGITS digits."
   shunt_models_require_entry "$id"
-  updated=$(jq --arg id "$id" --argjson t "$tokens" \
-    '.models |= map(if .id == $id then .context_tokens = $t else . end)' "$SHUNT_MODELS_FILE")
-  shunt_models_write "$updated"
+  _shunt_models_write_py set-context -- "$id" "$tokens"
   # A missing context window was recorded as a model failure, start clean.
   shunt_breaker_clear_state "$id" || echo "shunt: warning, could not reset the breaker state of '$id'." >&2
   echo "shunt: context_tokens for '$id' set to $tokens."
@@ -408,9 +289,9 @@ shunt_models_store_context() {
 shunt_models_require_entry() {
   local id="$1"
   [ -f "$SHUNT_MODELS_FILE" ] || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
-  jq -e '.models | type == "array"' "$SHUNT_MODELS_FILE" >/dev/null 2>&1 \
+  shunt_probe has-models-array \
     || shunt_report_error "$SHUNT_MODELS_FILE is not a valid models registry."
-  jq -e --arg id "$id" '.models | any(.id == $id)' "$SHUNT_MODELS_FILE" >/dev/null \
+  shunt_probe has-model -- "$id" \
     || shunt_report_error "model '$id' is not in the registry."
 }
 
@@ -445,18 +326,14 @@ cmd_detect_context() {
 # oversize-policy <provider/model> <map_reduce|fail|--clear>
 # Sets or clears the model's oversize_policy (absent means map_reduce).
 cmd_oversize_policy() {
-  local id="${1:-}" policy="${2:-}" updated
+  local id="${1:-}" policy="${2:-}"
   case "$policy" in
     map_reduce | fail | --clear) ;;
     *) shunt_report_error "usage: shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>" ;;
   esac
   [ -n "$id" ] || shunt_report_error "usage: shunt-models oversize-policy <provider/model> <map_reduce|fail|--clear>"
   shunt_models_require_entry "$id"
-  updated=$(jq --arg id "$id" --arg p "$policy" '
-    .models |= map(if .id != $id then .
-      elif $p == "--clear" then del(.oversize_policy)
-      else .oversize_policy = $p end)' "$SHUNT_MODELS_FILE")
-  shunt_models_write "$updated"
+  _shunt_models_write_py oversize-policy -- "$id" "$policy"
   # An oversize failure under the old policy counted against the model.
   shunt_breaker_clear_state "$id" || echo "shunt: warning, could not reset the breaker state of '$id'." >&2
   if [ "$policy" = --clear ]; then
@@ -519,35 +396,11 @@ _shunt_provider_set_parse() {
 # Writes the entry for <name> under the providers lock. transport, base_url and
 # the key variables are those set by _shunt_provider_set_parse.
 _shunt_provider_set_write() {
-  local name="$1" current updated
-  shunt_providers_lock || exit 1
-  shunt_providers_validate || exit 1
-
-  if [ -f "$SHUNT_PROVIDERS_FILE" ]; then
-    current=$(cat "$SHUNT_PROVIDERS_FILE")
-  else
-    current='{"version":1,"providers":{}}'
-  fi
-  if [ -z "$transport" ] && ! echo "$current" | jq -e --arg n "$name" '.providers | has($n)' >/dev/null; then
-    shunt_report_error "provider '$name' is new: --transport is required."
-  fi
-  updated=$(echo "$current" | jq --arg n "$name" --arg t "$transport" --arg u "$base_url" \
-    --arg kt "$_shunt_key_type" --arg kr "$_shunt_key_ref" '
-    (.providers[$n] // {}) as $old
-    | .providers[$n] = $old
-      + (if $t != "" then {transport: $t} else {} end)
-      + (if $u != "" then {base_url: $u} else {} end)
-      + (if $kt == "" then (if $old | has("key") then {} else {key: {type: "none"}} end)
-         elif $kt == "env" then {key: {type: "env", ref: $kr}}
-         elif $kt == "plaintext" and $old.key.type == "plaintext" then {key: $old.key}
-         else {key: {type: $kt}} end)')
-  if echo "$updated" | jq -e --arg n "$name" '.providers[$n] | (.transport // "opencode") == "http" and ((.base_url // "") == "")' >/dev/null; then
-    shunt_report_error "provider '$name': transport http needs a base_url (--base-url http://... or https://...)."
-  fi
-  shunt_providers_write "$updated" || exit 1
-  shunt_providers_unlock
-  echo "shunt: provider '$name' saved ($(echo "$updated" | jq -r --arg n "$name" \
-    '.providers[$n] | "transport \(.transport // "opencode"), key \(.key.type)"'))."
+  local name="$1" summary
+  # Python takes the providers lock, validates the file, builds the entry,
+  # writes it and prints the summary of what was saved.
+  summary=$(_shunt_providers_write_py set -- "$name" "$transport" "$base_url" "$_shunt_key_type" "$_shunt_key_ref") || exit "$?"
+  echo "shunt: provider '$name' saved ($summary)."
   case "$_shunt_key_type" in
     keyring | plaintext) echo "shunt: enter the key through /model-config (it opens a password window), or without a desktop: ! $SHUNT_MODELS_HINT_CMD key set $name. Never paste it into chat." ;;
   esac
@@ -573,9 +426,9 @@ cmd_provider_list() {
     echo "shunt: no providers configured in $SHUNT_PROVIDERS_FILE."
     return 0
   fi
-  jq -e '(.providers | type) == "object"' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1 \
+  shunt_probe providers-object \
     || shunt_report_error "$SHUNT_PROVIDERS_FILE is invalid JSON or has no \"providers\" object."
-  if jq -e '.providers | length == 0' "$SHUNT_PROVIDERS_FILE" >/dev/null; then
+  if shunt_probe providers-empty; then
     echo "shunt: no providers configured in $SHUNT_PROVIDERS_FILE."
     return 0
   fi
@@ -598,8 +451,8 @@ cmd_provider() {
 cmd_list() {
   shunt_models_available || { shunt_models_unavailable_notice; return 0; }
   local active
-  active=$(jq -r '.active // empty' "$SHUNT_MODELS_FILE")
-  jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+  active=$(shunt_probe active)
+  shunt_probe model-ids | while IFS= read -r id; do
     if [ "$id" = "$active" ]; then
       echo "$id (active)"
     else
@@ -610,19 +463,11 @@ cmd_list() {
 
 cmd_status() {
   shunt_models_available || { shunt_models_unavailable_notice; return 0; }
-  if [ "$(jq '.models | length' "$SHUNT_MODELS_FILE")" -eq 0 ]; then
+  if [ "$(shunt_probe model-count)" -eq 0 ]; then
     echo "shunt: no delegate models configured (large reads are not redirected)."
     return 0
   fi
-  jq -r --argjson all_roles "$SHUNT_MODELS_ROLES_JSON" '
-    .active as $active
-    | .models[]
-    | "\(.id)\t\(.agent)\t" + (if .enabled == false then "disabled" else "enabled" end)
-      + "\tthinking=\(.thinking)\tthinking_off=\(if .thinking_off_options == null then "none" else "set" end)\troles=\((.roles // $all_roles) | join(","))\t"
-      + (if .id != $active then ""
-         elif .enabled == false then "active (skipped, disabled)"
-         else "active" end)
-  ' "$SHUNT_MODELS_FILE"
+  shunt_probe status-rows
 
   # Which model the next bulk-read call tries first: the active one if it is
   # enabled and has the role, otherwise the first such model in registry order.
@@ -631,7 +476,7 @@ cmd_status() {
   first="${candidates%%$'\n'*}"
   if [ -n "$first" ]; then
     echo "shunt: first choice: $first"
-  elif jq -e '.models | any(.enabled != false)' "$SHUNT_MODELS_FILE" >/dev/null; then
+  elif shunt_probe any-enabled; then
     echo "shunt: no enabled model has the bulk-read role (large reads are not redirected)."
   else
     echo "shunt: no enabled models (large reads are not redirected)."
@@ -650,16 +495,14 @@ cmd_status() {
 
   # code-write keeps its own failure counter per model, apart from bulk-read's.
   local id
-  jq -r --argjson all_roles "$SHUNT_MODELS_ROLES_JSON" \
-    '.models[] | select((.roles // $all_roles) | index("code-write") != null) | .id' \
-    "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+  shunt_probe role-ids -- code-write | while IFS= read -r id; do
     echo "shunt: code-write breaker $id: $(shunt_breaker_status "$(shunt_breaker_key "$id" code-write)")"
   done
 }
 
 cmd_sync() {
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
-  jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+  shunt_probe model-ids | while IFS= read -r id; do
     shunt_models_materialize_agent "$id"
     echo "shunt: re-materialized '$id'."
   done
@@ -684,7 +527,7 @@ cmd_key() {
   local action="${1:-}" provider="${2:-}"
   [ -n "$provider" ] || shunt_report_error "usage: shunt-models key <set|status> <provider>"
   shunt_provider_name_ok "$provider" || { shunt_provider_name_refuse "$provider"; exit 1; }
-  [ -f "$SHUNT_PROVIDERS_FILE" ] && jq -e --arg p "$provider" '.providers[$p]' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1 \
+  [ -f "$SHUNT_PROVIDERS_FILE" ] && shunt_probe provider-exists -- "$provider" \
     || shunt_report_error "provider '$provider' is not in $SHUNT_PROVIDERS_FILE."
   local type
   type=$(shunt_provider_key_type "$provider") || exit 1

@@ -39,7 +39,7 @@ SH
 use_fake_path() {
   local d="$TEST_TMPDIR/basic" t
   mkdir -p "$d"
-  for t in jq grep mktemp chmod cat dirname mv rm head bash; do ln -sf "$(command -v $t)" "$d/$t"; done
+  for t in jq grep mktemp chmod cat dirname mv rm head bash python3; do ln -sf "$(command -v $t)" "$d/$t"; done
   PATH="$FAKE_BIN:$d"
 }
 
@@ -55,14 +55,6 @@ use_fake_path() {
   assert_output "opencode"
   run shunt_provider_key_type other
   assert_output "none"
-}
-
-@test "transport and base_url are read from the provider" {
-  write_providers '{"version":1,"providers":{"p":{"transport":"http","base_url":"https://x/v1","key":{"type":"none"}}}}'
-  run shunt_provider_transport p
-  assert_output "http"
-  run shunt_provider_base_url p
-  assert_output "https://x/v1"
 }
 
 @test "unknown transport is rejected with a clear message" {
@@ -107,33 +99,11 @@ use_fake_path() {
   assert_output "$SECRET"
 }
 
-@test "key type none resolves to nothing and makes no header file" {
+@test "key type none resolves to nothing" {
   write_providers '{"providers":{"p":{"key":{"type":"none"}}}}'
   run shunt_provider_key_resolve p
   assert_success
   assert_output ""
-  run shunt_provider_write_auth_header_file p
-  assert_success
-  assert_output ""
-}
-
-@test "auth header file is mode 600 with a bearer line and no key in argv or stdout noise" {
-  write_providers "{\"providers\":{\"p\":{\"key\":{\"type\":\"plaintext\",\"ref\":\"$SECRET\"}}}}"
-  local f
-  f=$(shunt_provider_write_auth_header_file p)
-  [ -f "$f" ]
-  [ "$(stat -c %a "$f")" = "600" ]
-  [ "$(cat "$f")" = "Authorization: Bearer $SECRET" ]
-  rm -f "$f"
-}
-
-@test "auth header file refuses a key with a line break" {
-  export BAD_KEY=$'abc\nX-Evil: 1'
-  write_providers '{"providers":{"p":{"key":{"type":"env","ref":"BAD_KEY"}}}}'
-  run shunt_provider_write_auth_header_file p
-  assert_failure
-  assert_output --partial "line break"
-  refute_output --partial "abc"
 }
 
 @test "failure paths do not print the key" {
@@ -171,27 +141,6 @@ use_fake_path() {
   assert_output ""
 }
 
-@test "secret-tool store and get round trip keeps the key out of argv" {
-  fake_tool secret-tool
-  use_fake_path
-  printf '%s\n' "$SECRET" | shunt_keyring_store p
-  run shunt_keyring_get p
-  assert_output "$SECRET"
-  run grep -c "$SECRET" "$FAKE_ARGV"
-  assert_output "0"
-  grep -q "account p" "$FAKE_ARGV"
-}
-
-@test "kwallet-query store and get round trip keeps the key out of argv" {
-  fake_tool kwallet-query
-  use_fake_path
-  printf '%s\n' "$SECRET" | shunt_keyring_store p
-  run shunt_keyring_get p
-  assert_output "$SECRET"
-  run grep -c "$SECRET" "$FAKE_ARGV"
-  assert_output "0"
-}
-
 @test "security store and get round trip works (key in argv is the documented limitation)" {
   fake_tool security
   use_fake_path
@@ -211,27 +160,9 @@ use_fake_path() {
   assert_output "$SECRET"
 }
 
-@test "shunt_providers_write creates the file with mode 600" {
-  shunt_providers_write '{"version":1,"providers":{}}'
-  [ "$(stat -c %a "$SHUNT_PROVIDERS_FILE")" = "600" ]
-}
-
 @test "plaintext warning mentions plain text" {
   run shunt_provider_plaintext_warning
   assert_output --partial "plain text"
-}
-
-@test "_shunt_guard_install still runs its cleanup when the caller's EXIT trap ends in a comment" {
-  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache" TMPDIR="$TEST_TMPDIR"
-  local f="$TEST_TMPDIR/guarded-temp"
-  : >"$f"
-  run bash -c '
-    source "$1/scripts/lib/providers.sh"
-    trap "echo caller-trap-ran # remove the lock" EXIT
-    _shunt_guard_install G "rm -f \"$2\""
-    exit 0' _ "$REPO_ROOT" "$f"
-  assert_output --partial "caller-trap-ran"
-  [ ! -e "$f" ]
 }
 
 @test "validate rejects a provider name outside the allowed charset" {
@@ -263,33 +194,3 @@ use_fake_path() {
   assert_output --partial '"bad\nname"'
 }
 
-@test "providers lock leaves a caller's open fd 8 intact" {
-  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache" TMPDIR="$TEST_TMPDIR"
-  local mine="$TEST_TMPDIR/caller-fd8"
-  run bash -c '
-    source "$1/scripts/lib/providers.sh"
-    exec 8>"$2"
-    echo before >&8
-    shunt_providers_write "{\"version\":1,\"providers\":{}}" || exit 11
-    shunt_providers_lock || exit 12
-    shunt_providers_unlock
-    echo after >&8 || exit 13' _ "$REPO_ROOT" "$mine"
-  assert_success
-  [ "$(cat "$mine")" = "before
-after" ]
-}
-
-@test "_shunt_guard_install cleanup runs once in the installing shell, not in its subshells" {
-  export HOME="$TEST_TMPDIR/home" XDG_CONFIG_HOME="$TEST_TMPDIR/xdg-config" XDG_DATA_HOME="$TEST_TMPDIR/xdg-data" XDG_CACHE_HOME="$TEST_TMPDIR/xdg-cache" TMPDIR="$TEST_TMPDIR"
-  run bash -c '
-    source "$1/scripts/lib/providers.sh"
-    _shunt_guard_install G "echo cleanup-ran"
-    ( : )
-    ( ( : ) )
-    x=$(echo in-subshell)
-    echo body-done
-    exit 0' _ "$REPO_ROOT"
-  assert_success
-  [ "$(printf "%s\n" "$output" | grep -c cleanup-ran)" = 1 ]
-  [ "${lines[${#lines[@]}-1]}" = "cleanup-ran" ]
-}

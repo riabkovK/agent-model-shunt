@@ -4,7 +4,8 @@ bats_require_minimum_version 1.5.0
 
 BIN="$REPO_ROOT/scripts/shunt-models"
 
-# Fake curl (no route: 404, so detection fails unless a test adds a route) and
+# A local scripted HTTP server (test/py/httpserver.py, no route: 404, so detection
+# fails unless a test adds a route) and
 # a fake secret-tool that records its argv and what it was given on stdin.
 setup() {
   ORIG_PATH="$PATH"
@@ -17,24 +18,14 @@ setup() {
   export FAKE_ROUTES="$TEST_TMPDIR/routes" FAKE_ARGV="$TEST_TMPDIR/argv" FAKE_STORE="$TEST_TMPDIR/store"
   mkdir -p "$TMPDIR" "$TEST_TMPDIR/bin" "$FAKE_ROUTES"
   SECRET="sk-super-secret-value-123"
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-out="" prev="" url=""
-for a in "$@"; do
-  [ "$prev" = -o ] && out="$a"
-  prev="$a"; url="$a"
-done
-name=$(printf '%s' "${url#*://*/}" | tr '/' '_')
-if [ -f "$FAKE_ROUTES/$name" ]; then cp "$FAKE_ROUTES/$name" "$out"; printf 200
-else : >"$out"; printf 404; fi
-SH
   cat >"$TEST_TMPDIR/bin/secret-tool" <<'SH'
 #!/bin/bash
 echo "$*" >>"$FAKE_ARGV"
 [ "$1" = store ] && cat >"$FAKE_STORE"
 exit 0
 SH
-  chmod +x "$TEST_TMPDIR/bin/curl" "$TEST_TMPDIR/bin/secret-tool"
+  chmod +x "$TEST_TMPDIR/bin/secret-tool"
+  start_http_server "$FAKE_ROUTES"
   PATH="$TEST_TMPDIR/bin:$PATH"
   write_opencode "$SECRET"
   jq -n '{version:1,active:null,models:[
@@ -43,6 +34,7 @@ SH
 }
 
 teardown() {
+  stop_http_server
   PATH="$ORIG_PATH"
   shunt_test_teardown
 }
@@ -193,7 +185,7 @@ no_secret_anywhere_but() {
 }
 
 @test "context comes from the provider when it reports one" {
-  write_opencode -
+  write_opencode - "http://127.0.0.1:$HTTP_PORT/v1"
   printf '%s' '{"id":"m1","context_length":131072}' >"$FAKE_ROUTES/v1_models_m1"
   run --separate-stderr migrate --apply --yes
   assert_success
@@ -242,10 +234,10 @@ no_secret_anywhere_but() {
 @test "two providers whose names differ only in punctuation get distinct env refs" {
   jq -n --arg k "$SECRET" '{provider:{
       "a-b":{options:{baseURL:"https://ab1.test/v1",apiKey:$k},models:{m:{}}},
-      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{m:{}}}}}' \
+      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{n:{}}}}}' \
     >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
   jq -n '{version:1,active:null,models:[
-    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/m",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
+    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/n",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
   run --separate-stderr migrate --apply --yes --key-storage env
   assert_success
   run jq -r '.providers["a-b"].key.ref, .providers["a.b"].key.ref' "$SHUNT_PROVIDERS_FILE"
@@ -273,18 +265,15 @@ no_secret_anywhere_but() {
   # acme is already on http with a plaintext key (state done), so the dry run
   # detects its model's context through a temp providers file.
   jq -n --arg k "$SECRET" '{version:1,providers:{acme:{transport:"http",
-    base_url:"https://api.acme.test/v1",key:{type:"plaintext",ref:$k}}}}' >"$SHUNT_PROVIDERS_FILE"
+    base_url:("http://127.0.0.1:" + $port + "/v1"),key:{type:"plaintext",ref:$k}}}}' --arg port "$HTTP_PORT" >"$SHUNT_PROVIDERS_FILE"
   chmod 600 "$SHUNT_PROVIDERS_FILE"
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-: >"$TEST_TMPDIR/curl-started"
-exec sleep 30
-SH
-  export TEST_TMPDIR
+  # Every probe waits 30 s, so the request is still in flight when the group is killed.
+  printf '%s' '{"context_length":1}' >"$FAKE_ROUTES/v1_models_m1"
+  printf 30 >"$FAKE_ROUTES/v1_models_m1.delay"
   setsid "$BIN" --migrate-from-opencode </dev/null >/dev/null 2>&1 &
   pid=$!
   for i in $(seq 1 100); do
-    [ -f "$TEST_TMPDIR/curl-started" ] && break
+    [ -s "$HTTP_LOG" ] && break
     sleep 0.05
   done
   kill -TERM -- -"$pid" 2>/dev/null || true
@@ -348,10 +337,10 @@ SH
 @test "a clashing default env ref gets a suffix and the plan says so" {
   jq -n --arg k "$SECRET" '{provider:{
       "a-b":{options:{baseURL:"https://ab1.test/v1",apiKey:$k},models:{m:{}}},
-      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{m:{}}}}}' \
+      "a.b":{options:{baseURL:"https://ab2.test/v1",apiKey:"sk-other-key-456"},models:{n:{}}}}}' \
     >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
   jq -n '{version:1,active:null,models:[
-    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/m",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
+    {id:"a-b/m",agent:"a1",enabled:true,roles:["bulk-read"]},{id:"a.b/n",agent:"a2",enabled:true,roles:["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
   run --separate-stderr migrate --key-storage env
   assert_success
   assert_output --partial "SHUNT_A_B_KEY_2"
@@ -369,7 +358,7 @@ SH
 @test "context detection works for every model of a provider, not just the first" {
   jq -n '{version:1,active:null,models:[
     {id:"acme/m1",agent:"a1",enabled:true},{id:"acme/m2",agent:"a2",enabled:true}]}' >"$SHUNT_MODELS_FILE"
-  write_opencode -
+  write_opencode - "http://127.0.0.1:$HTTP_PORT/v1"
   printf '%s' '{"id":"m1","context_length":1111}' >"$FAKE_ROUTES/v1_models_m1"
   printf '%s' '{"id":"m2","context_length":2222}' >"$FAKE_ROUTES/v1_models_m2"
   run --separate-stderr migrate

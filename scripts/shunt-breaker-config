@@ -24,29 +24,12 @@ source "$SCRIPT_DIR/lib/breaker.sh"
 
 SHUNT_BREAKER_DISABLED_THRESHOLD=999999999
 
-# shunt_breaker_config_read_or_empty
-# Prints the current config file JSON, or an empty object if it doesn't
-# exist yet.
-shunt_breaker_config_read_or_empty() {
-  if [ -f "$SHUNT_BREAKER_CONFIG_FILE" ]; then
-    cat "$SHUNT_BREAKER_CONFIG_FILE"
-  else
-    echo '{}'
-  fi
-}
-
-# shunt_breaker_config_write <json>
-# Atomically replaces the config file with <json>, validating it first.
-shunt_breaker_config_write() {
-  local json="$1"
-  mkdir -p "$(dirname "$SHUNT_BREAKER_CONFIG_FILE")"
-
-  local tmp_file
-  tmp_file=$(mktemp "$(dirname "$SHUNT_BREAKER_CONFIG_FILE")/.breaker-config.json.XXXXXX")
-  echo "$json" | jq -e . >"$tmp_file" 2>/dev/null \
-    || { rm -f "$tmp_file"; shunt_report_error "refusing to write an invalid breaker config."; }
-
-  mv "$tmp_file" "$SHUNT_BREAKER_CONFIG_FILE"
+# The config file is written by scripts/py/shunt/breaker.py (`breaker config-*`):
+# read, change and atomic replace happen there under one lock. Argument checks and
+# the user-facing lines stay here.
+# shunt_breaker_config_py <config-subcommand> [value]
+shunt_breaker_config_py() {
+  _shunt_breaker_py "$@" || exit 1
 }
 
 cmd_show() {
@@ -58,7 +41,7 @@ cmd_show() {
 
   if shunt_models_available; then
     echo "---"
-    jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+    shunt_probe model-ids | while IFS= read -r id; do
       echo "$id: $(shunt_breaker_status "$id")"
       if shunt_models_has_role "$id" code-write; then
         echo "$id (code-write): $(shunt_breaker_status "$(shunt_breaker_key "$id" code-write)")"
@@ -76,9 +59,7 @@ cmd_set_threshold() {
   esac
   [ "$value" -ge 1 ] || shunt_report_error "threshold must be a positive integer."
 
-  local updated
-  updated=$(shunt_breaker_config_read_or_empty | jq --argjson t "$value" '.threshold = $t | .cooldown_seconds //= 300')
-  shunt_breaker_config_write "$updated"
+  shunt_breaker_config_py config-threshold -- "$value"
   echo "shunt: breaker threshold set to $value."
 }
 
@@ -88,9 +69,7 @@ cmd_set_cooldown() {
     ''|*[!0-9]*) shunt_report_error "cooldown must be a non-negative integer." ;;
   esac
 
-  local updated
-  updated=$(shunt_breaker_config_read_or_empty | jq --argjson c "$value" '.cooldown_seconds = $c | .threshold //= 3')
-  shunt_breaker_config_write "$updated"
+  shunt_breaker_config_py config-cooldown -- "$value"
   echo "shunt: breaker cooldown set to ${value}s."
 }
 
@@ -104,9 +83,7 @@ cmd_set() {
 }
 
 cmd_disable() {
-  local updated
-  updated=$(shunt_breaker_config_read_or_empty | jq --argjson t "$SHUNT_BREAKER_DISABLED_THRESHOLD" '.threshold = $t | .cooldown_seconds //= 300')
-  shunt_breaker_config_write "$updated"
+  shunt_breaker_config_py config-disable
   echo "shunt: circuit breaker disabled (threshold set to an unreachable value)."
 }
 

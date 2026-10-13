@@ -14,7 +14,7 @@ rather than duplicating it here.
 |---|---|---|---|
 | [0002](0002-wrap-opencode-cli-not-http-client.md) | Wrap the OpenCode CLI, not a custom HTTP client, for MVP | Superseded by 0018 | Superseded: `opencode` is now one of two transports (`scripts/lib/transport.sh`) |
 | [0003](0003-claude-code-only-scope.md) | Claude Code only scope for MVP | Accepted | Yes (`.claude-plugin/`, `hooks/hooks.json` remain Claude-Code-specific; no other host adapter exists) |
-| [0004](0004-bash-jq-implementation.md) | Bash + jq implementation | Accepted | Yes (all of `hooks/`, `scripts/` are Bash + jq) |
+| [0004](0004-bash-jq-implementation.md) | Bash + jq implementation | Superseded by [0022](0022-python-core-port.md) | No (the core is Python, `hooks/` and `scripts/` are thin launchers) |
 | [0005](0005-no-custom-mode-registry.md) | No custom mode registry, use OpenCode agents directly | Accepted | Yes (no registry code; agents addressed by name) |
 | [0006](0006-mvp-scope-bulk-read-only.md) | MVP scope is bulk-read only | Partially superseded by 0015-0017 | Superseded: `code-write` now exists (`scripts/code-write`, `skills/code-writer/`) |
 | [0007](0007-hard-pretooluse-gate-from-day-one.md) | Hard PreToolUse gate from day one | Accepted | Yes (`hooks/check-file-size`, `hooks/check-bash-read`) |
@@ -32,3 +32,4 @@ rather than duplicating it here.
 | [0019](0019-api-key-storage.md) | API key storage: keyring, env var, plaintext or none, never in argv | Accepted | Yes (`scripts/lib/providers.sh`, `scripts/shunt-models key`) |
 | [0020](0020-context-window-and-oversize-handling.md) | Context window from detection or the user, and `map_reduce` or `fail` for oversize input | Accepted | Yes (`scripts/lib/context-detect.sh`, `scripts/lib/transport-http.sh`) |
 | [0021](0021-thinking-options-apply-to-both-transports.md) | Thinking options apply to both transports | Accepted | Yes (`scripts/lib/transport-http.sh` request body merge) |
+| [0022](0022-python-core-port.md) | Port the core from bash and jq to Python | Accepted | Yes (`scripts/py/shunt/`, bridge `scripts/lib/py.sh`). Supersedes ADR 0004 |

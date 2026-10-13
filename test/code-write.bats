@@ -1098,25 +1098,6 @@ mode_of() {
   assert_output --partial "not allowed"
 }
 
-@test "refuses input files when no symlink resolver is available" {
-  add_models p/one
-  local farm
-  farm=$(path_without realpath readlink)
-  run env PATH="$farm" "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target a.go
-  assert_refused_early
-  assert_output --partial "cannot resolve"
-  [ ! -e a.go ]
-}
-
-@test "falls back to readlink -f when realpath is missing" {
-  add_models p/one
-  set_resp default "$(response none "x := 1")"
-  local farm
-  farm=$(path_without realpath)
-  run env PATH="$farm" "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target a.go
-  assert_success
-}
-
 @test "refuses a project root that is an ancestor of the home directory" {
   add_models p/one
   mkdir -p "$PROJ/src/deep/home"

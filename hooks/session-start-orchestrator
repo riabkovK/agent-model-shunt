@@ -1,24 +1,20 @@
 #!/bin/bash
-# SessionStart hook: injects the short delegation rule (assembled from the
-# skills' orchestrator fragments) as additionalContext. It must never fail or
-# slow down session start: any problem (no jq, unreadable registry, empty
-# render) prints nothing, and the exit code is always 0. stdin is not read.
+# SessionStart hook: injects the short delegation rule as additionalContext. Never fails, stdin is not read.
+# The whole hook is one Python process (scripts/py/shunt/hooks.py): no jq, no
+# other subprocess. It prints the hook JSON and always exits 0, also when the
+# interpreter is missing (then the call is allowed / nothing is injected).
 
-HOOK_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+case "${BASH_SOURCE[0]}" in
+  */*) HOOK_DIR="${BASH_SOURCE[0]%/*}" ;;
+  *) HOOK_DIR=. ;;
+esac
+# shellcheck source=../scripts/lib/py.sh
+source "$HOOK_DIR/../scripts/lib/py.sh"
 
-emit() {
-  local text
-  command -v jq >/dev/null || return 0
-  # shellcheck source=../scripts/lib/models.sh
-  source "$HOOK_DIR/../scripts/lib/models.sh" || return 0
-  # shellcheck source=../scripts/lib/breaker.sh
-  source "$HOOK_DIR/../scripts/lib/breaker.sh" || return 0
-  # shellcheck source=../scripts/lib/orchestrator.sh
-  source "$HOOK_DIR/../scripts/lib/orchestrator.sh" || return 0
-  text=$(shunt_orchestrator_render) || return 0
-  [ -n "$text" ] || return 0
-  jq -n --arg ctx "$text" '{hookSpecificOutput: {hookEventName: "SessionStart", additionalContext: $ctx}}'
-}
+SHUNT_HOOK_PYTHON="${SHUNT_PYTHON:-python3}"
+if ! command -v "$SHUNT_HOOK_PYTHON" >/dev/null 2>&1 || [ ! -r "${SHUNT_PY_MAIN:-}" ]; then
+  echo "shunt: the Python interpreter is unusable (not found or no entry script), the hook does nothing." >&2
+  exit 0
+fi
 
-emit 2>/dev/null
-exit 0
+exec "$SHUNT_HOOK_PYTHON" -I -B -S "$SHUNT_PY_MAIN" hook session-start

@@ -13,56 +13,15 @@
 #
 # Usage: scripts/usage-report [path-to-jsonl]
 
-set -euo pipefail
+# One process: scripts/py/shunt/usage_report.py reads the log and prints the
+# summary (stdout) and the three explanatory notes (stderr). This launcher only
+# starts it, with no other process in between.
 
-log_path="${1:-${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/agent-model-shunt/usage.jsonl}}"
+case "${BASH_SOURCE[0]}" in
+  */*) SCRIPT_DIR="${BASH_SOURCE[0]%/*}" ;;
+  *) SCRIPT_DIR=. ;;
+esac
+# shellcheck source=lib/py.sh
+source "$SCRIPT_DIR/lib/py.sh"
 
-if [ ! -s "$log_path" ]; then
-  echo "shunt: no usage log at $log_path (enable with SHUNT_DEBUG_LOG=1, see /usage-report skill)." >&2
-  exit 1
-fi
-
-# Entries written before the model field existed carry only the agent: a model
-# id in registry mode, the OpenCode agent name (e.g. bulk-reader) in legacy
-# single-agent mode, which is not a model.
-jq -s '
-  def model_label:
-    if (.model // "") != "" then .model
-    elif ((.agent // "") | contains("/")) then .agent
-    else "unknown (legacy OpenCode agent \(.agent // "?"))"
-    end;
-  {
-    calls: length,
-    delegate_input_tokens: (map(.delegate_input_tokens) | add),
-    delegate_output_tokens: (map(.delegate_output_tokens) | add),
-    delegate_cost_usd: (map(.delegate_cost_usd) | add),
-    avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add),
-    avoided_output_tokens_estimate: (map(.avoided_output_tokens_estimate // 0) | add),
-    by_tool: (
-      group_by(.tool // "bulk-read") | map({
-        tool: (.[0].tool // "bulk-read"),
-        calls: length,
-        delegate_cost_usd: (map(.delegate_cost_usd) | add),
-        avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add),
-        avoided_output_tokens_estimate: (map(.avoided_output_tokens_estimate // 0) | add),
-        generated_bytes: (map(.generated_bytes // 0) | add)
-      })
-    ),
-    by_model: (
-      map(. + {model_label: model_label}) |
-      group_by([(.tool // "bulk-read"), .model_label]) | map({
-        model: .[0].model_label,
-        tool: (.[0].tool // "bulk-read"),
-        calls: length,
-        delegate_cost_usd: (map(.delegate_cost_usd) | add),
-        avoided_tokens_estimate: (map(.avoided_tokens_estimate) | add),
-        avoided_output_tokens_estimate: (map(.avoided_output_tokens_estimate // 0) | add)
-      })
-    )
-  }
-' "$log_path"
-
-echo "" >&2
-echo "shunt: avoided_tokens_estimate is a chars/4 estimate of context Claude did not spend reading these files directly." >&2
-echo "shunt: avoided_output_tokens_estimate is a chars/4 estimate of the output Claude did not spend writing files that code-write generated." >&2
-echo "shunt: this does not include Claude's own actual token/dollar spend for the session - check that with Claude Code's own /cost." >&2
+exec "${SHUNT_PYTHON:-python3}" -I -B "$SHUNT_PY_MAIN" usage-report -- "$@"

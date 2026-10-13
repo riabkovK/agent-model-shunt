@@ -17,3 +17,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: make test-bash32
+
+  tests-py311:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: make test-py311

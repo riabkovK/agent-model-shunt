@@ -264,7 +264,7 @@ STUB
 @test "kdialog without a timeout binary is not used, the fallback line is printed" {
   local d="$TEST_TMPDIR/minbin" t
   mkdir -p "$d"
-  for t in jq env uname dirname cat rm mkdir mktemp head tr chmod stat sleep flock; do
+  for t in jq env uname dirname cat rm mkdir mktemp head tr chmod stat sleep flock python3; do
     command -v "$t" >/dev/null 2>&1 && ln -s "$(command -v "$t")" "$d/$t"
   done
   ln -s "$STUB_BIN/kdialog" "$d/kdialog"
@@ -274,14 +274,15 @@ STUB
 }
 
 @test "shunt-models drops BASH_ENV and ENV for its children" {
-  local real_jq
-  real_jq=$(command -v jq)
-  cat >"$STUB_BIN/jq" <<STUB
+  local real_py
+  real_py=$(command -v python3)
+  cat >"$STUB_BIN/py-spy" <<STUB
 #!/bin/bash
 echo "\${BASH_ENV:-unset} \${ENV:-unset}" >>"$TEST_TMPDIR/jq-env"
-exec "$real_jq" "\$@"
+exec "$real_py" "\$@"
 STUB
-  chmod +x "$STUB_BIN/jq"
+  chmod +x "$STUB_BIN/py-spy"
+  export SHUNT_PYTHON="$STUB_BIN/py-spy"
   echo '{"version":1,"providers":{"p":{"transport":"http","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"
   BASH_ENV=/dev/null ENV=/dev/null run "$REPO_ROOT/scripts/shunt-models" key status p
   [ -s "$TEST_TMPDIR/jq-env" ]

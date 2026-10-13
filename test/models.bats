@@ -1,4 +1,5 @@
 load 'test_helper'
+bats_require_minimum_version 1.5.0
 
 setup() {
   shunt_test_setup
@@ -374,7 +375,7 @@ JSON
   assert_line --partial "falling back to priority order"
 }
 
-@test "shunt_models_candidates reads the registry with a single jq call" {
+@test "shunt_models_candidates reads the registry without spawning jq" {
   cat >"$SHUNT_MODELS_FILE" <<'JSON'
 {"version":1,"active":"p/second","models":[
   {"id":"p/first","agent":"a1"},
@@ -388,7 +389,7 @@ JSON
   chmod +x "$shim_dir/jq"
   PATH="$shim_dir:$PATH" run shunt_models_candidates code-write
   assert_success
-  [ "$(wc -l <"$TEST_TMPDIR/jq-calls" | tr -d ' ')" -eq 1 ]
+  [ ! -e "$TEST_TMPDIR/jq-calls" ]
 }
 
 @test "shunt_models_agent_for returns the registered agent name" {
@@ -400,72 +401,6 @@ JSON
   run shunt_models_agent_for "p/m"
   assert_success
   assert_output "shunt-bulk-reader-p-m"
-}
-
-@test "shunt_models_thinking_for returns the registered thinking flag" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":true,"thinking_options":null}
-]}
-JSON
-  run shunt_models_thinking_for "p/m"
-  assert_success
-  assert_output "true"
-}
-
-@test "shunt_models_thinking_off_options_for prints null when the field is missing" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null}
-]}
-JSON
-  run shunt_models_thinking_off_options_for "p/m"
-  assert_success
-  assert_output "null"
-}
-
-@test "shunt_models_thinking_off_options_for prints the stored object" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null,"thinking_off_options":{"reasoningEffort":"none"}}
-]}
-JSON
-  run shunt_models_thinking_off_options_for "p/m"
-  assert_success
-  assert_output '{"reasoningEffort":"none"}'
-}
-
-@test "the thinking block renders off options when thinking is off" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null,"thinking_off_options":{"reasoningEffort":"none"}}
-]}
-JSON
-  run _shunt_models_thinking_block "p/m"
-  assert_success
-  assert_output "reasoningEffort: none"
-}
-
-@test "the thinking block is empty when thinking is off and no off options are stored" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":false,"thinking_options":null}
-]}
-JSON
-  run _shunt_models_thinking_block "p/m"
-  assert_success
-  assert_output ""
-}
-
-@test "the thinking block ignores off options when thinking is on" {
-  cat >"$SHUNT_MODELS_FILE" <<'JSON'
-{"version":1,"active":null,"models":[
-  {"id":"p/m","agent":"a","thinking":true,"thinking_options":{"reasoningEffort":"high"},"thinking_off_options":{"reasoningEffort":"none"}}
-]}
-JSON
-  run _shunt_models_thinking_block "p/m"
-  assert_success
-  assert_output "reasoningEffort: high"
 }
 
 @test "shunt_models_materialize_agent writes off options into both agent files when thinking is off" {
@@ -480,18 +415,6 @@ JSON
   assert_output "1"
   run grep -c "^reasoningEffort: none$" "$SHUNT_AGENTS_DIR/shunt-code-writer-p-m.md"
   assert_output "1"
-}
-
-@test "shunt_models_slug lowercases and dashes a provider/model id" {
-  run shunt_models_slug "Spark/deepseek-ai/DeepSeek-V4-Flash-0731"
-  assert_success
-  assert_output "shunt-bulk-reader-spark-deepseek-ai-deepseek-v4-flash-0731"
-}
-
-@test "shunt_models_slug handles dots and consecutive separators" {
-  run shunt_models_slug "P.rovider/Model--Name"
-  assert_success
-  assert_output "shunt-bulk-reader-p-rovider-model-name"
 }
 
 @test "shunt_models_materialize_agent writes an OpenCode agent file with the model id" {
@@ -749,10 +672,25 @@ JSON
   assert_success
 }
 
-@test "shunt_models_validate allows a shared derived code-writer name when only one model has code-write" {
+@test "shunt_models_validate rejects a shared derived code-writer name even when only one model has code-write" {
   echo '{"version":1,"active":null,"models":[{"id":"p/a.b","agent":"x1","roles":["bulk-read"]},{"id":"p/a-b","agent":"x2"}]}' >"$SHUNT_MODELS_FILE"
   run shunt_models_validate
-  assert_success
+  assert_failure
+  assert_output --partial 'would share the agent name "shunt-code-writer-p-a-b"'
+}
+
+@test "shunt_models_validate rejects another model's agent that equals a roleless model's code-writer name" {
+  echo '{"version":1,"active":null,"models":[{"id":"a","roles":["bulk-read"]},{"id":"b","agent":"shunt-code-writer-a"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial 'would share the agent name "shunt-code-writer-a"'
+}
+
+@test "shunt_models_validate rejects a control character in a model id" {
+  jq -n '{version:1,active:null,models:[{id:"p/a\nmodel: evil"}]}' >"$SHUNT_MODELS_FILE"
+  run shunt_models_validate
+  assert_failure
+  assert_output --partial "control character"
 }
 
 @test "shunt_models_validate rejects a shared derived code-writer name when both have code-write" {
@@ -760,4 +698,47 @@ JSON
   run shunt_models_validate
   assert_failure
   assert_output --partial "shunt-code-writer-p-a-b"
+}
+
+@test "shunt_models_available warns on stderr and returns 1 when the interpreter is missing" {
+  echo '{"version":1,"active":null,"models":[]}' >"$SHUNT_MODELS_FILE"
+  export SHUNT_PYTHON="$TEST_TMPDIR/no-such-python"
+  run --separate-stderr shunt_models_available
+  assert_failure 1
+  assert_output ""
+  [[ "$stderr" == "shunt: the Python interpreter is unusable (exit 127)"* ]]
+  [ "$(printf '%s\n' "$stderr" | wc -l)" -eq 1 ]
+}
+
+@test "shunt_models_available stays silent for an invalid registry" {
+  echo 'not json' >"$SHUNT_MODELS_FILE"
+  run --separate-stderr shunt_models_available
+  assert_failure 1
+  assert_output ""
+  assert_equal "$stderr" ""
+}
+
+@test "shunt_models_require_prompts passes roles through after a double dash" {
+  mkdir -p "$TEST_TMPDIR/prompts"
+  echo p >"$TEST_TMPDIR/prompts/bulk-reader.md"
+  export SHUNT_PROMPTS_DIR="$TEST_TMPDIR/prompts"
+  run shunt_models_require_prompts code-write
+  assert_failure
+  assert_output --partial "$TEST_TMPDIR/prompts/code-writer.md"
+  run shunt_models_require_prompts
+  assert_success
+}
+
+@test "a raw SHUNT_PROMPTS_DIR is echoed unnormalised" {
+  export SHUNT_PROMPTS_DIR="./nope//x"
+  run shunt_models_require_prompts
+  assert_failure
+  assert_output --partial "./nope//x/bulk-reader.md"
+}
+
+@test "a raw SHUNT_MODELS_FILE is echoed unnormalised by validate" {
+  export SHUNT_MODELS_FILE="./nope//x.json"
+  run shunt_models_validate
+  assert_failure
+  assert_output "shunt: models registry not found at ./nope//x.json"
 }

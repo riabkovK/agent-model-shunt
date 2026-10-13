@@ -34,17 +34,24 @@ custom model of your choosing.
 3. That skill runs `scripts/bulk-read --question "..." --paths file...`,
    which sends the files and question to the delegated model and prints its
    answer. Each provider uses one of two transports:
-   - `http` (recommended, faster): one POST with `curl` to the provider's
-     OpenAI-compatible `/chat/completions` endpoint.
+   - `http` (recommended, faster): one POST (Python `http.client`, no
+     `curl`) to the provider's OpenAI-compatible `/chat/completions` endpoint.
    - `opencode` (the previous path, still supported): shells out to
      `opencode run --agent bulk-reader -f file... "question" --format json`.
 
    A provider with no `transport` set uses `opencode`, so existing setups keep
    working.
 
+The core is Python 3.11+ using only the standard library (package
+`scripts/py/shunt/`, entry point `scripts/py/shunt_main.py`). Each bulk-read,
+each code-write and each hook runs in one Python process. The files under
+`scripts/` and `hooks/` are thin bash launchers (a few bash helpers in
+`scripts/lib/` remain for the registry, provider and breaker config commands).
+
 ## Prerequisites
 
-- `bash`, `jq`, `curl`, GNU `coreutils` (`timeout`).
+- `bash` and `python3` 3.11 or newer (standard library only, nothing to
+  `pip install`). No `jq`, `curl` or GNU `coreutils` are needed at run time.
 - [OpenCode](https://opencode.ai) installed and on `PATH`, only for providers
   on the `opencode` transport. Those need a custom provider configured in
   `~/.config/opencode/opencode.json`.
@@ -157,7 +164,7 @@ explicit `tools: false` entries turn off every OpenCode built-in tool this
 agent doesn't need for a read-only bulk-read task.
 
 Every non-`read` tool listed above is on by default unless turned off
-explicitly, and `scripts/lib/opencode.sh` isolates each delegated call into
+explicitly, and the Python core (`scripts/py/shunt/opencode_cli.py`) isolates each delegated call into
 its own minimal `XDG_CONFIG_HOME` (see [Configuration](#configuration))
 containing only this agent and the one provider its `model:` references, so
 your regular OpenCode skills/commands/MCP servers never get attached to a
@@ -289,7 +296,8 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
   ever returns text under a fixed tag protocol
   (`<SHUNT-NOTES>`/`<SHUNT-CODE>`), which the script validates before
   writing anything. Path validation and a denylist (`.git`, `.claude`,
-  `.env*`, `CLAUDE.md`, and more) run before the model is ever called; see
+  `.env*`, `CLAUDE.md`, build and test entry points such as `setup.py` and
+  `package.json`, and more) run before the model is ever called; see
   [ADR 0017](docs/adr/0017-code-write-boundaries-and-toctou.md) for the full
   list and the accepted TOCTOU trade-off.
 - A model needs the `code-write` role to be a candidate for this script.

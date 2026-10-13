@@ -1,7 +1,7 @@
 # Runs the bats suite under bash 3.2 (the macOS system bash).
 FROM bash:3.2@sha256:0fd7cb8499c63a3c9345e7088a9cd83bb69f6e895e83833859aff838a0312091
 # bats-support v0.3.0 and bats-assert v2.2.4, pinned by commit.
-RUN apk add --no-cache parallel jq coreutils git curl nodejs python3 \
+RUN apk add --no-cache parallel jq coreutils git curl nodejs python3 py3-pytest \
     && git clone --depth 1 --branch v1.11.1 https://github.com/bats-core/bats-core /opt/bats-core \
     && /opt/bats-core/install.sh /usr/local \
     && git clone https://github.com/bats-core/bats-support /usr/lib/bats/bats-support \

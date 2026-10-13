@@ -1,4 +1,5 @@
 load 'test_helper'
+bats_require_minimum_version 1.5.0
 
 setup() {
   shunt_test_setup
@@ -102,4 +103,16 @@ run_hook() {
   jq -n '{active: "p/writer", models: [{id: "p/writer", agent: "a", roles: ["code-write"]}, {id: "p/reader", agent: "b"}]}' >"$SHUNT_MODELS_FILE"
   run run_hook "$f"
   assert_output --partial '"permissionDecision": "deny"'
+}
+
+@test "an unusable interpreter allows the read: stdout JSON, exit 0, warning only on stderr" {
+  local f="$TEST_TMPDIR/big.txt"
+  write_large_file "$f"
+  echo '{"version":1,"active":null,"models":[{"id":"p/m"}]}' >"$SHUNT_MODELS_FILE"
+  export SHUNT_PYTHON="$TEST_TMPDIR/no-such-python"
+  run --separate-stderr run_hook "$f"
+  assert_success
+  assert_output --partial '"permissionDecision": "allow"'
+  echo "$output" | jq -e . >/dev/null
+  [[ "$stderr" == "shunt: the Python interpreter is unusable"* ]]
 }
