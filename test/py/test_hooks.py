@@ -107,6 +107,18 @@ def test_read_allows_when_the_registry_has_no_delegate(tmp_path, monkeypatch):
     assert hooks.decide_read({"file_path": numbered(tmp_path / "b", 400)}, os.environ) == ALLOW
 
 
+@pytest.mark.parametrize(("models", "decision"), [
+    ([{"id": "p/off", "agent": "a", "enabled": False}, {"id": "p/on", "agent": "b", "enabled": True}], "deny"),
+    ([{"id": "p/m", "agent": "a", "roles": ["bulk-read"]}], "deny"),
+    ([{"id": "p/m", "agent": "a", "roles": ["code-write"]}], "allow"),
+    ([{"id": "p/writer", "agent": "a", "roles": ["code-write"]}, {"id": "p/reader", "agent": "b"}], "deny"),
+])
+def test_read_decision_follows_enabled_and_bulk_read_role(tmp_path, monkeypatch, models, decision):
+    registry(tmp_path, monkeypatch, models=models)
+    out = hooks.decide_read({"file_path": numbered(tmp_path / "b", 400)}, os.environ)
+    assert json.loads(out)["hookSpecificOutput"]["permissionDecision"] == decision
+
+
 def test_read_denies_when_the_registry_is_invalid(tmp_path, monkeypatch):
     registry(tmp_path, monkeypatch)
     (tmp_path / "models.json").write_text("{not json")

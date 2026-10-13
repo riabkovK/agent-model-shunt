@@ -158,6 +158,33 @@ def test_no_candidate_with_the_role_is_fatal_with_a_role_specific_hint(fo):
         fo.run(role="code-write", kind="writer")
 
 
+def test_a_disabled_model_is_skipped_and_the_next_one_answers(fo):
+    fo.registry(model("bad/m2", enabled=False), model("acme/m1"), active="bad/m2")
+    found = fo.run()
+    assert found.model_id == "acme/m1"
+    os.unlink(found.path)
+    assert "bad/m2" not in fo.breaker()
+
+
+def test_a_code_write_only_model_is_skipped_for_bulk_read(fo):
+    fo.registry(model("bad/m2", roles=["code-write"]), model("acme/m1"), active="bad/m2")
+    found = fo.run()
+    assert found.model_id == "acme/m1"
+    os.unlink(found.path)
+
+
+def test_no_enabled_model_at_all_is_fatal_for_bulk_read(fo):
+    fo.registry(model("acme/m1", enabled=False))
+    with pytest.raises(failover.Fatal, match="no enabled delegate models"):
+        fo.run()
+
+
+def test_no_bulk_read_model_is_fatal_with_the_role_in_the_message(fo):
+    fo.registry(model("acme/m1", roles=["code-write"]))
+    with pytest.raises(failover.Fatal, match="with the bulk-read role"):
+        fo.run()
+
+
 def test_all_models_failing_is_fatal(fo):
     fo.registry(model("bad/m2"))
     with pytest.raises(failover.Fatal, match="all delegate models in the registry failed for this call."):

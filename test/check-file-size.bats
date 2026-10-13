@@ -34,14 +34,6 @@ run_hook() {
   assert_output --partial '"permissionDecision": "deny"'
 }
 
-@test "denies a large file when the registry has a closed (usable) candidate" {
-  local f="$TEST_TMPDIR/big.txt"
-  write_large_file "$f"
-  jq -n '{active: "p/m", models: [{id: "p/m", agent: "a"}]}' >"$SHUNT_MODELS_FILE"
-  run run_hook "$f"
-  assert_output --partial '"permissionDecision": "deny"'
-}
-
 @test "allows a large file when the registry has no models" {
   local f="$TEST_TMPDIR/big.txt"
   write_large_file "$f"
@@ -49,23 +41,6 @@ run_hook() {
   run run_hook "$f"
   assert_success
   assert_output --partial '"permissionDecision": "allow"'
-}
-
-@test "allows a large file when every registry model is disabled" {
-  local f="$TEST_TMPDIR/big.txt"
-  write_large_file "$f"
-  jq -n '{active: "p/m", models: [{id: "p/m", agent: "a", enabled: false}]}' >"$SHUNT_MODELS_FILE"
-  run run_hook "$f"
-  assert_success
-  assert_output --partial '"permissionDecision": "allow"'
-}
-
-@test "denies a large file when a disabled model sits beside an enabled usable one" {
-  local f="$TEST_TMPDIR/big.txt"
-  write_large_file "$f"
-  jq -n '{active: null, models: [{id: "p/off", agent: "a", enabled: false}, {id: "p/on", agent: "b", enabled: true}]}' >"$SHUNT_MODELS_FILE"
-  run run_hook "$f"
-  assert_output --partial '"permissionDecision": "deny"'
 }
 
 @test "allows a large file when every registry candidate's breaker is open" {
@@ -78,31 +53,6 @@ run_hook() {
   run run_hook "$f"
   assert_success
   assert_output --partial '"permissionDecision": "allow"'
-}
-
-@test "denies a large file when the only enabled model is restricted to the bulk-read role" {
-  local f="$TEST_TMPDIR/big.txt"
-  write_large_file "$f"
-  jq -n '{active: "p/m", models: [{id: "p/m", agent: "a", roles: ["bulk-read"]}]}' >"$SHUNT_MODELS_FILE"
-  run run_hook "$f"
-  assert_output --partial '"permissionDecision": "deny"'
-}
-
-@test "allows a large file when the only enabled model lacks the bulk-read role" {
-  local f="$TEST_TMPDIR/big.txt"
-  write_large_file "$f"
-  jq -n '{active: "p/m", models: [{id: "p/m", agent: "a", roles: ["code-write"]}]}' >"$SHUNT_MODELS_FILE"
-  run run_hook "$f"
-  assert_success
-  assert_output --partial '"permissionDecision": "allow"'
-}
-
-@test "denies a large file when the active model lacks bulk-read but another enabled model has it" {
-  local f="$TEST_TMPDIR/big.txt"
-  write_large_file "$f"
-  jq -n '{active: "p/writer", models: [{id: "p/writer", agent: "a", roles: ["code-write"]}, {id: "p/reader", agent: "b"}]}' >"$SHUNT_MODELS_FILE"
-  run run_hook "$f"
-  assert_output --partial '"permissionDecision": "deny"'
 }
 
 @test "an unusable interpreter allows the read: stdout JSON, exit 0, warning only on stderr" {
