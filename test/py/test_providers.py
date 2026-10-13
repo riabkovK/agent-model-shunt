@@ -414,12 +414,10 @@ def test_bearer_key_strips_trailing_newlines_like_command_substitution(prov):
 
 # ---------------------------------------------------------------- bash twin constants
 
-def test_lists_match_the_bash_variables():
+def test_name_regex_matches_the_bash_variable():
     text = (REPO_ROOT / "scripts" / "lib" / "providers.sh").read_text()
-    transports = re.search(r'^SHUNT_PROVIDER_TRANSPORTS="(.*?)"', text, re.M).group(1).split()
-    key_types = re.search(r'^SHUNT_PROVIDER_KEY_TYPES="(.*?)"', text, re.M).group(1).split()
-    assert tuple(transports) == providers.TRANSPORTS
-    assert tuple(key_types) == providers.KEY_TYPES
+    regex = re.search(r"^SHUNT_PROVIDER_NAME_REGEX='(.*?)'", text, re.M).group(1)
+    assert regex == "^" + providers._NAME_RE.pattern + "$"
 
 
 @pytest.mark.parametrize("text,expected", [

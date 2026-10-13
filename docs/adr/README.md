@@ -30,6 +30,6 @@ rather than duplicating it here.
 | [0017](0017-code-write-boundaries-and-toctou.md) | `code-write` write boundaries, and the residual TOCTOU risk accepted for v1 | Accepted | Yes (`scripts/lib/codewrite.sh` path validation, denylist, atomic publish) |
 | [0018](0018-direct-http-transport-alongside-opencode.md) | Direct HTTP transport alongside the OpenCode CLI, chosen per provider | Accepted | Yes (`scripts/lib/transport.sh`, `scripts/lib/transport-http.sh`, `scripts/lib/providers.sh`) |
 | [0019](0019-api-key-storage.md) | API key storage: keyring, env var, plaintext or none, never in argv | Accepted | Yes (`scripts/lib/providers.sh`, `scripts/shunt-models key`) |
-| [0020](0020-context-window-and-oversize-handling.md) | Context window from detection or the user, and `map_reduce` or `fail` for oversize input | Accepted | Yes (`scripts/lib/context-detect.sh`, `scripts/lib/transport-http.sh`) |
+| [0020](0020-context-window-and-oversize-handling.md) | Context window from detection or the user, and `map_reduce` or `fail` for oversize input | Accepted | Yes (`scripts/py/shunt/context_detect.py`, `scripts/lib/transport-http.sh`) |
 | [0021](0021-thinking-options-apply-to-both-transports.md) | Thinking options apply to both transports | Accepted | Yes (`scripts/lib/transport-http.sh` request body merge) |
 | [0022](0022-python-core-port.md) | Port the core from bash and jq to Python | Accepted | Yes (`scripts/py/shunt/`, bridge `scripts/lib/py.sh`). Supersedes ADR 0004 |

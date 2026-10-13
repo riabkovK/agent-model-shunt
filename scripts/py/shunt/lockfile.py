@@ -1,6 +1,6 @@
 """Exclusive inter-process lock on <file>.lock using fcntl.flock.
 
-Mirrors shunt_providers_lock in scripts/lib/providers.sh: the lock file is
+Mirrors the former shunt_providers_lock of scripts/lib/providers.sh: the lock file is
 opened for append (created 0666 minus umask), polled with a non-blocking
 lock every 0.1 s until the timeout, and nested use in one process only counts
 depth. There is no mkdir fallback: fcntl is present on Linux and macOS.

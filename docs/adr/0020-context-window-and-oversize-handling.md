@@ -15,7 +15,7 @@ silently.
 ## Decision
 
 - `context_tokens` is a per-model registry field. It comes from auto-detection
-  (`scripts/lib/context-detect.sh`, asks the provider, e.g. Ollama `/api/show`
+  (`scripts/py/shunt/context_detect.py`, asks the provider, e.g. Ollama `/api/show`
   or a `max_model_len` style field) or from `shunt-models set-context`. It is
   never guessed. A model without it is only trusted with small requests, and a
   larger one is a config failure: nothing is sent, the message names the fix,

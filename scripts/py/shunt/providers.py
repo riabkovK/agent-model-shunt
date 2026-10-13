@@ -27,8 +27,8 @@ from typing import Any
 from . import env
 from .jsonio import JsonReadError, read_json
 
-TRANSPORTS: tuple[str, ...] = ("http", "opencode")  # keep in sync with SHUNT_PROVIDER_TRANSPORTS in providers.sh
-KEY_TYPES: tuple[str, ...] = ("keyring", "env", "plaintext", "none")  # and SHUNT_PROVIDER_KEY_TYPES
+TRANSPORTS: tuple[str, ...] = ("http", "opencode")
+KEY_TYPES: tuple[str, ...] = ("keyring", "env", "plaintext", "none")
 KEYRING_SERVICE = "agent-model-shunt"
 KWALLET_WALLET = "kdewallet"
 BACKENDS: tuple[str, ...] = ("secret-tool", "security", "kwallet-query")
