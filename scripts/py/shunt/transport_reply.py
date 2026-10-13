@@ -18,6 +18,7 @@ from typing import Any
 # SHUNT_TRY_INVOKE_* constants of transport.sh are gone), test_transport_http.py pins them.
 TIMEOUT, ERROR, EMPTY, AUTH, DEADLINE, OVERSIZE, CONFIG = 124, 2, 3, 4, 5, 6, 7
 UNREACHABLE = 8  # no connection within SHUNT_CONNECT_TIMEOUT (Python only, the bash twin never sees it)
+SKIPPED = 9  # not tried: the healthcheck cache still marks the model unhealthy (no connection was attempted)
 NEEDS_CHUNKING = 90  # internal: the size guard says map_reduce
 
 FAILED = 1  # a chunk could not be cut or the reply file not written (not a SHUNT_TRY_INVOKE_* code)

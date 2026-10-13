@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import socket
 import stat
 import subprocess
@@ -154,7 +155,10 @@ def test_a_fresh_unhealthy_status_fails_over_at_once(hc, capsys):
     found = hc.run()
     assert time.monotonic() - started < 2
     assert found.model_id == "acme/m1"
-    assert "shunt: bad/m2 healthcheck failed: unhealthy at the last check" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert re.search(r"shunt: bad/m2 skipped: unhealthy at the last healthcheck, next check in \d+ s\n", err)
+    assert "shunt: bad/m2 failed: skipped by the healthcheck (unhealthy at the last check)\n" in err
+    assert "unreachable" not in err
     assert not [r for r in hc.server.requests if r.path.startswith("/bad")]
     assert ("bad", "m2") not in hc.launched
     assert "bad/m2" not in hc.breaker()  # the healthcheck status replaces the breaker pause
@@ -229,7 +233,7 @@ def test_the_child_gets_no_key_in_argv(hc, monkeypatch):
 def test_the_gate_runs_once_for_a_chunked_attempt(hc, monkeypatch):
     from shunt import models, transport_http
     calls = []
-    monkeypatch.setattr(healthcheck_bg, "gate", lambda *a: calls.append(a) or False)
+    monkeypatch.setattr(healthcheck_bg, "gate", lambda *a: calls.append(a) or None)
     attempt = transport_http._Attempt(transport_http._setup(models.slug("acme/m1"), hc.environ, None), hc.environ,
                                       transport_http.Deadline(hc.environ))
     attempt.ask(b"one")

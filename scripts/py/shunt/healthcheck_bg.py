@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 import sys
 import threading
@@ -110,8 +111,8 @@ def spawn_many(environ: Mapping[str, str], items: list[tuple[str, str, str]]) ->
             _release(lock)
 
 
-def gate(environ: Mapping[str, str], provider: str, base_url: str, model: str) -> bool:
-    """True when the request must fail over now. Starts a background probe when the status is
+def gate(environ: Mapping[str, str], provider: str, base_url: str, model: str) -> int | None:
+    """Seconds until the next check (at least 1) when the request must fail over now, else None. Starts a background probe when the status is
     missing or stale. Raises env.EnvError for an invalid SHUNT_HEALTHCHECK_TTL or _RETRY."""
     ttl, retry = env.healthcheck_ttl(environ), env.healthcheck_retry(environ)
     base = healthcheck.normalize_base(base_url)
@@ -119,7 +120,9 @@ def gate(environ: Mapping[str, str], provider: str, base_url: str, model: str) -
     blocked, probe = healthcheck.verdict(found, ttl, retry)
     if probe:
         spawn(environ, provider, base, model)
-    return blocked
+    if not blocked or found is None:
+        return None
+    return max(1, math.ceil(retry - found[1]))
 
 
 

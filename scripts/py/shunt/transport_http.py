@@ -20,6 +20,7 @@ Status mapping (the SHUNT_TRY_INVOKE_* codes of transport.sh, see transport_repl
   input over the context budget        OVERSIZE (map_reduce: chunked in process for a bulk-reader)
   missing key, bad base_url, request_body, oversize policy, no context_tokens,
   missing role prompt                  CONFIG (nothing sent)
+  fresh unhealthy healthcheck status   SKIPPED (nothing sent, the failover skips the breaker)
 
 Secret rules: the key lives only in this process: it is put into the
 Authorization header of the one request and into the scrubber of the error
@@ -44,7 +45,7 @@ from typing import Any, NoReturn
 from . import chunking, env, healthcheck_bg, httpclient, models, providers
 from . import transport_reply as reply
 from .deadline import Deadline, DeadlineError
-from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT, UNREACHABLE
+from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, SKIPPED, TIMEOUT, UNREACHABLE
 
 BYTES_PER_TOKEN = 3
 CONTEXT_BUDGET_PERCENT = 60
@@ -399,7 +400,7 @@ class _Attempt:
 
     def _healthcheck(self) -> None:
         """The status gate of a provider that asks for a healthcheck, once per attempt. It only reads
-        the status cache: a fresh unhealthy status ends the attempt as unreachable at once, anything
+        the status cache: a fresh unhealthy status ends the attempt as skipped at once, anything
         else goes on with the real call. A probe, when one is due, runs in the background."""
         setup = self.setup
         if self._checked or not setup.healthcheck:
@@ -408,12 +409,11 @@ class _Attempt:
         try:
             if env.healthcheck_timeout(self.environ) <= 0:
                 return
-            blocked = healthcheck_bg.gate(self.environ, setup.provider, setup.base_url, self._model())
+            wait = healthcheck_bg.gate(self.environ, setup.provider, setup.base_url, self._model())
         except env.EnvError as exc:
             _fail(CONFIG, str(exc))
-        if blocked:
-            _fail(UNREACHABLE, f"{setup.model_id} healthcheck failed: unhealthy at the last check, "
-                               "tried again after SHUNT_HEALTHCHECK_RETRY seconds")
+        if wait is not None:
+            _fail(SKIPPED, f"{setup.model_id} skipped: unhealthy at the last healthcheck, next check in {wait} s")
 
     def _model(self) -> str:
         return self.setup.model_id.split("/", 1)[-1]
