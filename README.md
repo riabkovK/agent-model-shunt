@@ -601,7 +601,8 @@ repo to view it rendered).
 |---|---|---|
 | `SHUNT_BASELINE_MODEL` | `sonnet` | Model alias passed to `claude -p --model` for the baseline side of `evals/baseline-benchmark.sh`. |
 | `SHUNT_BASELINE_TIMEOUT` | `300` | Timeout (seconds) for each baseline `claude -p` call. |
-| `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 2` (no-resume + resume). |
+| `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 3` (no-resume + resume + shunt-live). |
+| `BASELINE_KINDS` | all four | Space-separated subset of `no-resume resume shunt shunt-live` to run. `no-resume` and `resume` do not touch the delegate, so comparing a second delegate model needs only `shunt shunt-live`. |
 
 ### Fidelity: does delegating lose information or hallucinate?
 
