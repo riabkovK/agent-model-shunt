@@ -13,49 +13,17 @@
 #   shunt-codewrite-config set self-fix-retries <non-negative integer>
 #   shunt-codewrite-config reset
 
-set -euo pipefail
+# One process: scripts/py/shunt/codewrite_config_cli.py runs every subcommand. This launcher
+# only starts it, with no other process in between. The arguments go through raw.
 
-SCRIPT_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/opencode.sh
-source "$SCRIPT_DIR/lib/opencode.sh"
-# shellcheck source=lib/selffix.sh
-source "$SCRIPT_DIR/lib/selffix.sh"
+# No child may source a caller's startup file (it could turn on xtrace or log a key).
+unset BASH_ENV ENV
 
-cmd_show() {
-  echo "self_fix_retries=$SHUNT_CODE_WRITE_SELF_FIX_RETRIES (default: 1)"
-}
-
-cmd_set_self_fix_retries() {
-  local value="${1:-}"
-  case "$value" in
-    ''|*[!0-9]*) shunt_report_error "self-fix-retries must be a non-negative integer." ;;
-  esac
-
-  # Read, change and atomic replace happen in one Python call (selffix.py).
-  shunt_py selffix set-retries -- "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE" "$value" || exit 1
-  echo "shunt: self-fix retry count set to $value."
-}
-
-cmd_set() {
-  local field="${1:-}" value="${2:-}"
-  case "$field" in
-    self-fix-retries) cmd_set_self_fix_retries "$value" ;;
-    *) shunt_report_error "usage: shunt-codewrite-config set self-fix-retries <value>" ;;
-  esac
-}
-
-cmd_reset() {
-  rm -f "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE"
-  echo "shunt: self-fix config reset to hardcoded defaults."
-}
-
-subcommand="${1:-}"
-[ -n "$subcommand" ] || shunt_report_error "usage: shunt-codewrite-config <show|set|reset> [args...]"
-shift
-
-case "$subcommand" in
-  show) cmd_show "$@" ;;
-  set) cmd_set "$@" ;;
-  reset) cmd_reset "$@" ;;
-  *) shunt_report_error "unknown subcommand: $subcommand" ;;
+case "${BASH_SOURCE[0]}" in
+  */*) SCRIPT_DIR="${BASH_SOURCE[0]%/*}" ;;
+  *) SCRIPT_DIR=. ;;
 esac
+# shellcheck source=lib/py.sh
+source "$SCRIPT_DIR/lib/py.sh"
+
+exec "${SHUNT_PYTHON:-python3}" -I -B "$SHUNT_PY_MAIN" shunt-codewrite-config -- "$@"

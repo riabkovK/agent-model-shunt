@@ -73,8 +73,8 @@ run_hook() {
   write_large_file "$f"
   jq -n '{active: "p/m", models: [{id: "p/m", agent: "a"}]}' >"$SHUNT_MODELS_FILE"
   export SHUNT_BREAKER_THRESHOLD=1
-  source "$REPO_ROOT/scripts/lib/breaker.sh"
-  shunt_breaker_record_failure "p/m"
+  source "$REPO_ROOT/scripts/lib/py.sh"
+  shunt_py breaker record-failure -- "p/m"
   run run_hook "$f"
   assert_success
   assert_output --partial '"permissionDecision": "allow"'

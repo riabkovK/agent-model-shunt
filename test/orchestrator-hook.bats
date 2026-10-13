@@ -6,7 +6,7 @@ HOOK="$REPO_ROOT/hooks/session-start-orchestrator"
 setup() {
   shunt_test_setup
   source "$REPO_ROOT/scripts/lib/models.sh"
-  source "$REPO_ROOT/scripts/lib/breaker.sh"
+  source "$REPO_ROOT/scripts/lib/py.sh"
 }
 
 teardown() {
@@ -70,8 +70,8 @@ registry_bulk_only() {
 @test "hook: all candidates breaker-open" {
   registry_all
   export SHUNT_BREAKER_THRESHOLD=1
-  source "$REPO_ROOT/scripts/lib/breaker.sh"
-  shunt_breaker_record_failure "p/m"
+  source "$REPO_ROOT/scripts/lib/py.sh"
+  shunt_py breaker record-failure -- "p/m"
   run ctx
   assert_output --partial 'bulk-read: breaker open'
 }

@@ -108,7 +108,7 @@ configured number of retries is Claude's to fix by hand, exactly as if the
 loop did not exist. There is no attempt to classify "the same error" vs. "a
 different error" — a hard retry cap makes that distinction unnecessary.
 
-**The circuit breaker is untouched by any of this.** `scripts/lib/breaker.sh`
+**The circuit breaker is untouched by any of this.** The breaker (`shunt/breaker.py`)
 tracks protocol failures (errors, timeouts), never response quality. A
 build/test failure here is a successful, on-protocol response that happens
 to be substantively wrong — a different failure class the breaker

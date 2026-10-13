@@ -4,8 +4,8 @@
 # targets user-configured OpenCode providers/agents instead of Spotify AiKA
 # modes.
 #
-# Meant to be sourced by scripts/shunt-models, shunt-breaker-config and
-# shunt-codewrite-config for the path defaults below and shunt_report_error.
+# Meant to be sourced by the evals and tests for the path defaults below and
+# shunt_report_error. The shunt-* config scripts are Python launchers now.
 # scripts/bulk-read and scripts/code-write are Python launchers and do not
 # source it. The delegation itself (failover, transports, usage log) lives in
 # scripts/py/shunt.
@@ -21,8 +21,6 @@ SHUNT_DEBUG_LOG_PATH="${SHUNT_DEBUG_LOG_PATH:-$HOME/.cache/agent-model-shunt/usa
 _SHUNT_OPENCODE_LIB_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=models.sh
 source "$_SHUNT_OPENCODE_LIB_DIR/models.sh"
-# shellcheck source=breaker.sh
-source "$_SHUNT_OPENCODE_LIB_DIR/breaker.sh"
 # shellcheck source=transport.sh
 source "$_SHUNT_OPENCODE_LIB_DIR/transport.sh"
 unset _SHUNT_OPENCODE_LIB_DIR

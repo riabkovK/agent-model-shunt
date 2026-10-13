@@ -10,7 +10,7 @@
 # candidate. The no-registry legacy path stays free: shunt_models_available
 # checks for the file in bash before spawning anything.
 #
-# Meant to be sourced by scripts/shunt-breaker-config and scripts/lib/opencode.sh. Requires scripts/lib/opencode.sh's
+# Meant to be sourced by scripts/lib/opencode.sh. Requires scripts/lib/opencode.sh's
 # shunt_report_error to already be sourced (or define your own).
 #
 # Compatibility: when no registry file exists at SHUNT_MODELS_FILE, every

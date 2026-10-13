@@ -300,3 +300,15 @@ def test_cli_never_prints_environment_values(bk):
     assert result.returncode == 1
     assert "Traceback" not in result.stderr
     assert "SECRET-bad" not in result.stderr + result.stdout
+
+
+def test_a_failed_write_leaves_a_broken_state_file_as_it_was(bk):
+    # A symlink in place of the lock file is refused, so the write fails before it touches the state file.
+    state, _, environ = bk
+    state.parent.mkdir(parents=True)
+    state.write_text("not json {")
+    os.symlink("/dev/null", str(state) + ".lock")
+    result = run_cli(environ, "record-failure", "--", "p/m")
+    assert result.returncode == 1
+    assert state.read_text() == "not json {"
+    assert sorted(p.name for p in state.parent.iterdir()) == [state.name, state.name + ".lock"]

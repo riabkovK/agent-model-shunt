@@ -125,8 +125,16 @@ command -v python3 >/dev/null 2>&1 || { echo "live-eval-benchmark: 'python3' not
 
 # shellcheck source=../scripts/lib/opencode.sh
 source "$REPO_ROOT/scripts/lib/opencode.sh"
-# shellcheck source=../scripts/lib/selffix.sh
-source "$REPO_ROOT/scripts/lib/selffix.sh"
+# Self-fix retry count (default, config file, env override), resolved by scripts/py/shunt/selffix.py.
+# A dead interpreter or an answer that is not a plain count gives the default of 1.
+SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE="${SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE:-$HOME/.config/agent-model-shunt/code-write-self-fix-config.json}"
+_self_fix_retries=$(shunt_py selffix retries -- "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE" "${SHUNT_CODE_WRITE_SELF_FIX_RETRIES:-}" 2>/dev/null) || _self_fix_retries=""
+case "$_self_fix_retries" in
+  ''|*[!0-9]*) _self_fix_retries=1 ;;
+  *) [ "${#_self_fix_retries}" -le 15 ] || _self_fix_retries=1 ;;
+esac
+SHUNT_CODE_WRITE_SELF_FIX_RETRIES=$((10#$_self_fix_retries))
+unset _self_fix_retries
 case " $LIVE_EVAL_KINDS " in *" shunt "*) source "$REPO_ROOT/evals/preflight.sh"; evals_preflight ;; esac
 
 mkdir -p "$RESULTS_DIR" "$GOTEST_DIR/runs"
@@ -479,7 +487,7 @@ $instruction"
 # from skills/code-writer/SKILL.md itself (this harness has no Claude in the
 # loop to do it): delete the failed target, re-call code-write with the raw
 # go vet/go test failure output appended to --spec, up to
-# SHUNT_CODE_WRITE_SELF_FIX_RETRIES times (scripts/lib/selffix.sh, same config as
+# SHUNT_CODE_WRITE_SELF_FIX_RETRIES times (scripts/py/shunt/selffix.py, same config as
 # scripts/shunt-codewrite-config). Records self_fix_attempted/
 # self_fix_succeeded/self_fix_retries_used alongside the usual fields so a
 # before/after cost comparison is possible once this is run live.

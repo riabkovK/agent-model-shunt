@@ -540,7 +540,7 @@ FAKE
   export SHUNT_BREAKER_THRESHOLD=1
   add_models p/one
   source "$REPO_ROOT/scripts/lib/opencode.sh"
-  shunt_breaker_record_failure p/one#code-write
+  shunt_py breaker record-failure -- p/one#code-write
   run_cw_test
   assert_failure
   assert_output --partial "paused"
@@ -802,8 +802,8 @@ package src
 @test "a deliberate refusal is not a failure: no failover, breaker reset, notes shown, nothing written" {
   add_models p/one p/two
   source "$REPO_ROOT/scripts/lib/opencode.sh"
-  shunt_breaker_record_failure p/one#code-write
-  shunt_breaker_record_failure p/one#code-write
+  shunt_py breaker record-failure -- p/one#code-write
+  shunt_py breaker record-failure -- p/one#code-write
   [ "$(breaker_failures p/one)" = "2" ]
   set_resp p/one "$(response "the expected behavior is not clear from the source" "")"
   run "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target brand/out.go
