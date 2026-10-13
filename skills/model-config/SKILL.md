@@ -63,7 +63,7 @@ while, and how long before it tries that model again".
 3. Render compact tables, in the user's language:
    - Providers: name, transport, base_url, key type, key present, healthcheck (on/off).
    - Models, one row each, every model: enabled, active, roles, thinking
-     (on/off, explicit off set or not), context window, oversize policy,
+     (on/off, per role when `thinking_roles=` is present, explicit off set or not), context window, oversize policy,
      transport.
    - Breaker: threshold and cooldown, each with its default, then per-model
      state for bulk-read and code-write. With `registry: missing` say the
@@ -89,7 +89,7 @@ pick among options. Candidates, with the reference.md section to read:
 | Migrate from OpenCode | Migrating providers from OpenCode |
 | Change roles, order or the active model | Editing the model registry; Roles, per model |
 | Enable, disable or remove a model | Editing the model registry |
-| Thinking on/off, off options | Thinking/extended-reasoning |
+| Thinking on/off, off options, per role | Thinking/extended-reasoning; Thinking per role |
 | Extra request fields | Extra request fields |
 | Context window, oversize policy | Context window and oversize policy |
 | Breaker settings | Editing retry/failover behavior |

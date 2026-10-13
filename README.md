@@ -216,6 +216,8 @@ hand-editing the files below:
   via `scripts/shunt-models thinking <provider/model> on '<options-json>'`
   (see the `/model-config` skill). It applies to both transports
   ([ADR 0021](docs/adr/0021-thinking-options-apply-to-both-transports.md)).
+  Add `--role bulk-read` or `--role code-write` to set it for one role only
+  ([ADR 0023](docs/adr/0023-thinking-per-role.md)).
 
 If no registry file exists, shunt stays in the legacy single-agent mode
 described in [Setup](#setup) above. See [Management skills](#management-skills)

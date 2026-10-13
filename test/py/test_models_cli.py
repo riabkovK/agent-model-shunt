@@ -332,6 +332,11 @@ def test_request_body_refusals_change_nothing(cli, args, message):
 
 # ---------------------------------------------------------------- thinking
 
+USAGE_THINKING = ("shunt: usage: shunt-models thinking <provider/model> <on|off> [--role <bulk-read|code-write>] "
+                  "[options-json]\n"
+                  "       shunt-models thinking <provider/model> --role <bulk-read|code-write> --clear\n")
+
+
 def test_thinking_on_sets_the_flag_and_renders_options_into_both_agent_files(cli):
     cli.add("p/m")
     out = cli.ok("thinking", "p/m", "on", '{"reasoningEffort":"high"}')
@@ -395,7 +400,7 @@ def test_thinking_off_works_on_an_entry_without_the_off_options_field(cli):
     (("p/m", "off", '"none"'), "JSON object"),
     (("p/m", "off", "null"), "JSON object"),
     (("p/unknown", "on"), "shunt: model 'p/unknown' is not in the registry.\n"),
-    (("p/m",), "shunt: usage: shunt-models thinking <provider/model> <on|off> [options-json]\n"),
+    (("p/m",), USAGE_THINKING),
 ])
 def test_thinking_refusals_leave_the_registry_alone(cli, args, message):
     cli.add("p/m")
@@ -919,3 +924,66 @@ def test_a_corrupt_registry_reads_as_an_explained_legacy_mode(cli):
     cli.models.write_text("{")
     assert cli.ok("list").startswith("shunt: models registry at ")
     assert "is not a valid models registry" in cli.fail("roles", "p/x", "bulk-read")
+
+
+# ---------------------------------------------------------------- thinking --role
+
+def _thinking_model(cli):
+    cli.add("p/m")
+    cli.ok("thinking", "p/m", "on", '{"reasoningEffort":"high"}')
+    cli.ok("thinking", "p/m", "off", '{"reasoningEffort":"none"}')
+
+
+def test_thinking_role_sets_only_that_role_and_rerenders_the_agent_files(cli):
+    _thinking_model(cli)
+    out = cli.ok("thinking", "p/m", "on", "--role", "code-write")
+    assert out == "shunt: thinking for 'p/m' (role code-write) set to on.\n"
+    entry = cli.entry()
+    assert entry["role_thinking"] == {"code-write": True} and entry["thinking"] is False
+    assert entry["thinking_off_options"] == {"reasoningEffort": "none"}
+    assert "reasoningEffort: none" in cli.agent_text("shunt-bulk-reader-p-m")
+    assert "reasoningEffort: none" not in cli.agent_text("shunt-code-writer-p-m")
+
+
+def test_thinking_role_stores_options_given_with_it_for_the_matching_state(cli):
+    cli.add("p/m")
+    cli.ok("thinking", "p/m", "on", "--role", "code-write", '{"reasoningEffort":"high"}')
+    assert cli.entry()["role_thinking"] == {"code-write": True}
+    assert cli.entry()["thinking_options"] == {"reasoningEffort": "high"}
+    assert "reasoningEffort: high" in cli.agent_text("shunt-code-writer-p-m")
+
+
+def test_thinking_role_clear_removes_the_key_and_drops_the_empty_field(cli):
+    _thinking_model(cli)
+    cli.ok("thinking", "p/m", "on", "--role", "code-write")
+    cli.ok("thinking", "p/m", "off", "--role", "bulk-read")
+    assert cli.entry()["role_thinking"] == {"code-write": True, "bulk-read": False}
+    out = cli.ok("thinking", "p/m", "--role", "bulk-read", "--clear")
+    assert out == "shunt: thinking for 'p/m' (role bulk-read) cleared.\n"
+    assert cli.entry()["role_thinking"] == {"code-write": True}
+    cli.ok("thinking", "p/m", "--role", "code-write", "--clear")
+    assert "role_thinking" not in cli.entry()
+    assert "reasoningEffort: none" in cli.agent_text("shunt-code-writer-p-m")
+
+
+def test_thinking_without_role_leaves_role_thinking_alone(cli):
+    cli.add("p/m")
+    cli.ok("thinking", "p/m", "on", "--role", "code-write")
+    cli.ok("thinking", "p/m", "on", '{"reasoningEffort":"high"}')
+    cli.ok("thinking", "p/m", "off")
+    assert cli.entry()["role_thinking"] == {"code-write": True} and cli.entry()["thinking"] is False
+
+
+@pytest.mark.parametrize("args,message", [
+    (("p/m", "on", "--role", "thinker"), "shunt: unknown role 'thinker' (roles: bulk-read code-write).\n"),
+    (("p/m", "on", "--role"), USAGE_THINKING),
+    (("p/m", "--clear"), USAGE_THINKING),
+    (("p/m", "--role", "bulk-read"), USAGE_THINKING),
+    (("p/m", "on", "--role", "bulk-read", "--clear"), USAGE_THINKING),
+    (("p/m", "bogus", "--role", "bulk-read"), "shunt: thinking state must be 'on' or 'off'.\n"),
+])
+def test_thinking_role_refusals_change_nothing(cli, args, message):
+    cli.add("p/m")
+    before = cli.models.read_text()
+    assert cli.fail("thinking", *args) == message
+    assert cli.models.read_text() == before

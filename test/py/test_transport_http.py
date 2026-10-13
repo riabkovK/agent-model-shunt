@@ -395,3 +395,21 @@ def test_lookup_model_finds_an_entry_without_an_agent_by_its_code_writer_name_an
     assert (model["id"], model["context_tokens"], model["oversize_policy"]) == ("acme/m1", 1000, "fail")
     assert transport_http.lookup_model("shunt-code-writer-nobody", str(registry)) is None
     assert transport_http.lookup_model(WRITER, str(tmp_path / "missing.json")) is None
+
+
+def test_role_thinking_picks_the_options_per_call_role(world):
+    world.registry(thinking=False, thinking_options={"reasoningEffort": "high"},
+                   thinking_off_options={"reasoningEffort": "none"}, role_thinking={"code-write": True})
+    world.call()
+    assert world.sent()["reasoning_effort"] == "none"
+    world.call(agent=WRITER)
+    assert world.sent()["reasoning_effort"] == "high"
+
+
+def test_role_thinking_can_turn_a_thinking_model_off_for_one_role(world):
+    world.registry(thinking=True, thinking_options={"reasoningEffort": "high"},
+                   thinking_off_options={"reasoningEffort": "none"}, role_thinking={"bulk-read": False})
+    world.call()
+    assert world.sent()["reasoning_effort"] == "none"
+    world.call(agent=WRITER)
+    assert world.sent()["reasoning_effort"] == "high"

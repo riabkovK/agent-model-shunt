@@ -154,8 +154,15 @@ def set_enabled(path: str, model_id: str, value: bool) -> None:
     _update(path, model_id, lambda m: {**m, "enabled": value})
 
 
-def thinking(path: str, model_id: str, state: str, options: str) -> None:
-    """thinking on stores options (any JSON but null and false), off stores an object, {} clears it."""
+def thinking(path: str, model_id: str, state: str, options: str, role: str = "") -> None:
+    """thinking on stores options (any JSON but null and false), off stores an object, {} clears it.
+
+    With a role, only role_thinking[role] changes (state CLEAR removes it, the field goes when empty).
+    Options given with a role are stored as the model's on or off options, the other state's stay.
+    """
+    if role:
+        _role_thinking(path, model_id, state, options, role)
+        return
     if state == "on":
         value = None
         if options:
@@ -171,6 +178,34 @@ def thinking(path: str, model_id: str, state: str, options: str) -> None:
             raise ShuntError(f"thinking off options must be a JSON object: {options}")
         changes["thinking_off_options"] = parsed or None
     _update(path, model_id, lambda m: {**m, **changes})
+
+
+def _role_thinking(path: str, model_id: str, state: str, options: str, role: str) -> None:
+    changes: dict[str, Any] = {}
+    if options and state == "on":
+        value = _parse_options(options)
+        if value is None or value is False:
+            raise ShuntError(f"thinking options must be valid JSON: {options}")
+        changes["thinking_options"] = value
+    elif options and state == "off":
+        parsed = _parse_options(options)
+        if not isinstance(parsed, dict):
+            raise ShuntError(f"thinking off options must be a JSON object: {options}")
+        changes["thinking_off_options"] = parsed or None
+
+    def apply(model: dict[str, Any]) -> dict[str, Any]:
+        current = model.get("role_thinking")
+        if current is None or current is False:
+            current = {}
+        if not isinstance(current, dict):
+            raise ShuntError(f"could not update the registry entry for '{model_id}'.")
+        merged = {k: v for k, v in current.items() if k != role}
+        if state != CLEAR:
+            merged = {**current, role: state == "on"}
+        rest = {k: v for k, v in {**model, **changes}.items() if k != "role_thinking"}
+        return {**rest, "role_thinking": merged} if merged else rest
+
+    _update(path, model_id, apply)
 
 
 def _parse_options(options: str) -> Any:
@@ -260,7 +295,7 @@ def _run_locked(args: argparse.Namespace, path: str) -> None:
     elif cmd == "set-enabled":
         set_enabled(path, args.id, args.value == "true")
     elif cmd == "thinking":
-        thinking(path, args.id, args.state, args.options)
+        thinking(path, args.id, args.state, args.options, args.role)
     elif cmd == "request-body":
         sys.stdout.write(request_body(path, args.id, args.role, args.value) + "\n")
     elif cmd == "roles":
@@ -305,6 +340,7 @@ def register(subparsers: Any) -> None:
         parser = sub.add_parser(name)
         for arg_name in arg_names:
             parser.add_argument(arg_name)
+    sub.choices["thinking"].add_argument("--role", default="", choices=("", *ROLES))
     enabled = sub.add_parser("set-enabled")
     enabled.add_argument("value", choices=("true", "false"))
     enabled.add_argument("id")

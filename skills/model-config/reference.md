@@ -38,9 +38,11 @@ Line format (one record per line, space separated, never a key value):
   `key_present` only says whether a key resolves. It is `yes` for key type
   `none`, and `unknown` while `providers.json` is invalid.
 - `provider <name> invalid`: that entry is broken. `provider list` names why.
-- `model <id> enabled= active= roles= thinking=on|off thinking_off=set|none context_tokens=<n|unset> oversize_policy=<policy> provider_transport=<t>`.
+- `model <id> enabled= active= roles= thinking=on|off [thinking_roles=bulk-read:on|off,code-write:on|off] thinking_off=set|none context_tokens=<n|unset> oversize_policy=<policy> provider_transport=<t>`.
   `oversize_policy=map_reduce(default)` means unset. `thinking_off=set` is an
-  explicit stored off setting, `none` is just the unset default.
+  explicit stored off setting, `none` is just the unset default. `thinking=` is
+  the model default. `thinking_roles=` appears only when the model has a
+  per-role override and then shows the effective state of each role.
 - `breaker threshold=<n> default=3 cooldown_seconds=<n> default=300 status=enabled|disabled`.
 - `breaker_state <id> bulk-read|code-write failures=<n> open=true|false`, one
   line per role the model has. `open=true` means the model is paused for that
@@ -239,10 +241,10 @@ On Ollama's `/v1` endpoint, thinking off is `{"reasoning_effort":"none"}`.
 Measured for bulk-read: same recall, 16s instead of 45s. To turn thinking off
 for every role of a model, use `thinking <id> off '{"reasoningEffort":"none"}'`:
 it works for both transports, and the HTTP transport sends it as
-`reasoning_effort`. To turn it off for bulk-read only, which is what to offer
-for an Ollama model, use
-`request-body <id> --role bulk-read '{"reasoning_effort":"none"}'`. Code-write
-thinking is not measured, so do not change its default.
+`reasoning_effort`. To turn it off for bulk-read only, use
+`thinking <id> off --role bulk-read '{"reasoningEffort":"none"}'` (see
+"Thinking per role"). Code-write thinking is not measured, so do not change
+its default.
 
 ## Providers and keys (HTTP transport)
 
@@ -451,6 +453,30 @@ scripts/shunt-models thinking <provider/model> off '{"reasoningEffort":"none"}'
   `thinking_off=set` or `thinking_off=none` per model.
 - Only set this when the user asks for it or when a model is measurably slow
   because it reasons. It is opt-in per model, never a global default.
+
+### Thinking per role
+
+One model can think for one role and not the other, e.g. off for bulk-read
+(summarizing gains nothing from it) and on for code-write:
+
+```bash
+scripts/shunt-models thinking <provider/model> on --role code-write '<options-json>'
+scripts/shunt-models thinking <provider/model> off --role bulk-read
+scripts/shunt-models thinking <provider/model> --role code-write --clear
+```
+
+- This stores `role_thinking: {"<role>": true|false}` on the model. For a
+  call in that role it wins over the model's `thinking`. Without an entry
+  for a role, the role follows `thinking`. `--clear` removes the role's entry.
+- The options are still per model: `on` with JSON stores it in the model's
+  on-options, `off` with JSON in its off options, shared by both roles.
+- It applies to both transports. For opencode, the bulk-reader and the
+  code-writer agent files each get their own role's state.
+- Same rule as above: ask a yes/no question per model and role before
+  turning thinking on, never on unprompted.
+- Without `--role`, `thinking` keeps setting the model default and leaves
+  the per-role entries alone. Say so when a role override exists, since the
+  overridden role will not follow the new default.
 
 ## Editing retry/failover behavior (circuit breaker)
 

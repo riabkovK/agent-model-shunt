@@ -166,7 +166,7 @@ def _request_body(model: Mapping[str, Any], role: str, model_id: str) -> dict[st
     base = {} if base is None or base is False else base
     role_bodies = model.get("role_request_body")
     role_bodies = {} if role_bodies is None or role_bodies is False else role_bodies
-    field = "thinking_options" if model.get("thinking") is True else "thinking_off_options"
+    field = "thinking_options" if models.effective_thinking(model, _KEY_ROLE[role]) else "thinking_off_options"
     think = model.get(field)
     if not isinstance(base, dict):
         _fail(CONFIG, f"model '{model_id}': request_body must be a JSON object.")

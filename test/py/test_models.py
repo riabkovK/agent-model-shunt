@@ -501,3 +501,48 @@ def test_candidates_warn_about_an_unknown_active_model_even_when_no_model_has_th
 def test_candidates_skip_an_active_model_lacking_the_role_without_a_warning(reg):
     reg.write([{"id": "p/first"}, {"id": "p/reader", "roles": ["bulk-read"]}, {"id": "p/third"}], active="p/reader")
     assert _ids(reg, "code-write") == ("", ["p/first", "p/third"])
+
+
+# ---- role_thinking
+
+def _validate_role_thinking(reg, value):
+    reg.write([{"id": "p/m", "role_thinking": value}])
+    return models.validate(reg.file)
+
+
+@pytest.mark.parametrize("value,fragment", [
+    ([True], "invalid role_thinking: must be a JSON object"),
+    ("on", "invalid role_thinking: must be a JSON object"),
+    ({"thinker": True}, 'unknown role "thinker"'),
+    ({"code-write": "on"}, "must be true or false"),
+    ({"bulk-read": None}, "must be true or false"),
+])
+def test_validate_rejects_a_bad_role_thinking(reg, value, fragment):
+    reason = _validate_role_thinking(reg, value)
+    assert reason is not None and 'model "p/m"' in reason and fragment in reason
+
+
+def test_validate_accepts_a_good_role_thinking(reg):
+    assert _validate_role_thinking(reg, {"bulk-read": False, "code-write": True}) is None
+    assert _validate_role_thinking(reg, {}) is None
+
+
+def test_role_thinking_renders_a_different_block_per_agent_file(reg):
+    reg.write([{"id": "p/m", "agent": "bulk-m", "thinking": False,
+                "thinking_options": {"effort": "high"}, "thinking_off_options": {"effort": "none"},
+                "role_thinking": {"code-write": True}}])
+    assert models.thinking_block(reg.file, "p/m") == "effort: none"
+    assert models.thinking_block(reg.file, "p/m", "bulk-read") == "effort: none"
+    assert models.thinking_block(reg.file, "p/m", "code-write") == "effort: high"
+    models.materialize_agent(reg.file, reg.agents, reg.prompts, "p/m")
+    assert "\neffort: none\n" in (reg.agents / "bulk-m.md").read_text()
+    assert "\neffort: high\n" in (reg.agents / "shunt-code-writer-p-m.md").read_text()
+
+
+def test_thinking_for_is_role_aware(reg):
+    reg.write([{"id": "p/m", "thinking": False, "role_thinking": {"code-write": True}}])
+    assert models.thinking_for(reg.file, "p/m") == ["false"]
+    assert models.thinking_for(reg.file, "p/m", "bulk-read") == ["false"]
+    assert models.thinking_for(reg.file, "p/m", "code-write") == ["true"]
+    assert reg.cli("thinking-for", "p/m", "code-write").stdout == "true\n"
+    assert reg.cli("thinking-for", "p/m").stdout == "false\n"
