@@ -554,16 +554,6 @@ big_question() {
   refute_output --partial "chunk"
 }
 
-@test "resolve: an entry without an agent keeps its later columns" {
-  jq -n '{version:1,models:[{id:"acme/m1",enabled:true,context_tokens:1000,
-    request_body:{reasoning_effort:"low"},oversize_policy:"fail"}]}' >"$SHUNT_MODELS_FILE"
-  _shunt_http_resolve "shunt-code-writer-acme-m1"
-  [ "$_SHUNT_HTTP_ID" = "acme/m1" ]
-  [ "$_SHUNT_HTTP_ROLE" = code-writer ]
-  [ "$_SHUNT_HTTP_CONTEXT_TOKENS" = 1000 ]
-  [ "$_SHUNT_HTTP_OVERSIZE_POLICY" = fail ]
-}
-
 @test "guard: a question that alone exceeds the budget fails without chunking (map_reduce)" {
   write_sized_registry 1000 '"map_reduce"'
   run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
@@ -1321,12 +1311,4 @@ assert (usage.tokens_in, usage.tokens_out) == (0, 0)'
   assert_success
   [ "$(jq -r '.someCamelKey' "$FAKE_CURL_SENT")" = "1" ]
   [ "$(jq -r '.Nested.innerKey' "$FAKE_CURL_SENT")" = "2" ]
-}
-
-@test "shunt_http_budget_tokens takes the budget percent of the context, rounded down" {
-  [ "$(shunt_http_budget_tokens 100000)" = 60000 ]
-  [ "$(shunt_http_budget_tokens 1)" = 0 ]
-  [ "$(shunt_http_budget_tokens 0)" = 0 ]
-  [ "$(shunt_http_budget_tokens 7)" = 4 ]
-  [ "$(shunt_http_budget_tokens 999999999999)" = 599999999999 ]
 }

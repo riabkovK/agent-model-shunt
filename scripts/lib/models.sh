@@ -36,13 +36,6 @@ SHUNT_PROMPTS_DIR="${SHUNT_PROMPTS_DIR:-${BASH_SOURCE[0]%/*}/../../prompts}"
 SHUNT_MODELS_ROLES=(bulk-read code-write)
 SHUNT_MODELS_ROLES_JSON='["bulk-read","code-write"]'
 
-# jq definitions of the agent names, still used by scripts/lib/transport-http.sh
-# for the per-row names in _shunt_http_resolve until that file is ported. The
-# Python twin is slug_core in scripts/py/shunt/models.py.
-SHUNT_MODELS_SLUG_JQ='def slug: ascii_downcase | gsub("[^a-z0-9]+"; "-") | sub("^-+"; "") | sub("-+$"; "");
-  def bulk_agent: if (.agent // "") == "" then "shunt-bulk-reader-" + (.id | slug) else .agent end;
-  def writer_agent: "shunt-code-writer-" + (.id | slug);'
-
 # _shunt_models_py <subcommand> [args...]
 # Runs a models subcommand with the paths this file resolved, exported only for
 # the call (the variables may be unexported shell defaults).

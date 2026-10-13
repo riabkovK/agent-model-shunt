@@ -53,8 +53,8 @@ SHUNT_TRY_INVOKE_CONFIG=7
 _SHUNT_TRANSPORT_LIB_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 # shellcheck source=providers.sh
 source "$_SHUNT_TRANSPORT_LIB_DIR/providers.sh"
-# shellcheck source=transport-http.sh
-source "$_SHUNT_TRANSPORT_LIB_DIR/transport-http.sh"
+# shellcheck source=py.sh
+source "$_SHUNT_TRANSPORT_LIB_DIR/py.sh"
 unset _SHUNT_TRANSPORT_LIB_DIR
 
 # _shunt_oc_py <group> <command> [args...]

@@ -180,7 +180,7 @@ def invoke_legacy(agent: str, question: str, files: Sequence[str], environ: Mapp
 
 # ---------------------------------------------------------------- command line
 
-def _guarded(call: Any) -> int:
+def guarded(call: Any) -> int:
     try:
         return call()
     except Fatal as exc:
@@ -207,28 +207,32 @@ def _run(args: argparse.Namespace) -> int:
         else:
             sys.stdout.write(f"{found.path}\n{found.model_id}\n")
         return 0
-    return _guarded(call)
+    return guarded(call)
+
+
+def select_bulk(legacy_agent: str, question: str, files: Sequence[str],
+                environ: Mapping[str, str]) -> tuple[str, str]:
+    """shunt_invoke_with_failover: the legacy agent without a registry, else the bulk-read role.
+    Returns (reply file, agent or model id). Raises Fatal, reply.Abort or models.RegistryUnreadable."""
+    if not models.available(env.models_file_text(environ)):
+        return invoke_legacy(legacy_agent, question, files, environ), legacy_agent
+    found = run_role("bulk-read", "bulk", question, files, environ, warn_active=True)
+    return found.path, found.model_id
 
 
 def _bulk(args: argparse.Namespace) -> int:
-    """shunt_invoke_with_failover: the legacy agent without a registry, else the bulk-read role."""
     def call() -> int:
-        environ = os.environ
-        if not models.available(env.models_file_text(environ)):
-            sys.stdout.write(f"{invoke_legacy(args.legacy_agent, args.question, args.files, environ)}\n"
-                             f"{args.legacy_agent}\n")
-            return 0
-        found = run_role("bulk-read", "bulk", args.question, args.files, environ, warn_active=True)
-        sys.stdout.write(f"{found.path}\n{found.model_id}\n")
+        path, used = select_bulk(args.legacy_agent, args.question, args.files, os.environ)
+        sys.stdout.write(f"{path}\n{used}\n")
         return 0
-    return _guarded(call)
+    return guarded(call)
 
 
 def _legacy(args: argparse.Namespace) -> int:
     def call() -> int:
         sys.stdout.write(invoke_legacy(args.agent, args.question, args.files, os.environ) + "\n")
         return 0
-    return _guarded(call)
+    return guarded(call)
 
 
 def _note(args: argparse.Namespace) -> int:

@@ -171,6 +171,6 @@ FAKE
 @test "sourcing the libs by a relative path ignores CDPATH" {
   mkdir -p "$TEST_TMPDIR/cdp/scripts/lib"
   cd "$REPO_ROOT"
-  run env CDPATH="$TEST_TMPDIR/cdp" bash -c 'source scripts/lib/opencode.sh && source scripts/lib/transport.sh && type shunt_transport_invoke >/dev/null && type _shunt_http_resolve >/dev/null'
+  run env CDPATH="$TEST_TMPDIR/cdp" bash -c 'source scripts/lib/opencode.sh && source scripts/lib/transport.sh && type shunt_transport_invoke >/dev/null && type _shunt_oc_py >/dev/null'
   assert_success
 }

@@ -386,3 +386,15 @@ def test_invalid_utf8_is_replaced_not_fatal(world, tmp_path):
     attached.write_bytes(b"ok \xff\xfe end")
     world.call("q", [str(attached)])
     assert "ok �� end" in world.sent()["messages"][1]["content"]
+
+
+def test_lookup_model_finds_an_entry_without_an_agent_by_its_code_writer_name_and_keeps_its_fields(tmp_path):
+    registry = tmp_path / "models.json"
+    registry.write_text(json.dumps({"version": 1, "models": [
+        {"id": "acme/m1", "enabled": True, "context_tokens": 1000, "request_body": {"reasoning_effort": "low"},
+         "oversize_policy": "fail"}]}))
+    model, role = transport_http.lookup_model(WRITER, str(registry))
+    assert role == "code-writer"
+    assert (model["id"], model["context_tokens"], model["oversize_policy"]) == ("acme/m1", 1000, "fail")
+    assert transport_http.lookup_model("shunt-code-writer-nobody", str(registry)) is None
+    assert transport_http.lookup_model(WRITER, str(tmp_path / "missing.json")) is None

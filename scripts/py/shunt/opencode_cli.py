@@ -42,7 +42,8 @@ BYTES_PER_TOKEN = 3
 CONTEXT_BUDGET_PERCENT = 60
 MAX_CONTEXT_DIGITS = 12
 _CONTEXT_RE = re.compile(r"[1-9][0-9]*")
-_TIMEOUT_RE = re.compile(r"(\d+(?:\.\d*)?|\.\d+)([smhd]?)")
+_TIMEOUT_RE = re.compile(r"([0-9]+(?:\.[0-9]*)?|\.[0-9]+)([smhd]?)", re.ASCII)
+MAX_TIMEOUT = 10.0**9  # seconds, past this there is no practical limit
 _WS = re.compile(r"[ \t\r\n]*")
 _UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 # Environment names the bash wrapper sets only for this process. Empty, they are not passed on.
@@ -260,7 +261,7 @@ def parse_timeout(raw: str) -> float | None:
     if not match:
         raise ValueError(raw)
     seconds = float(match.group(1)) * _UNITS[match.group(2)]
-    return seconds if seconds > 0 else None
+    return min(seconds, MAX_TIMEOUT) if seconds > 0 else None
 
 
 def _child_env(environ: Mapping[str, str], config_root: str) -> dict[str, str]:
@@ -277,10 +278,13 @@ def _kill_group(proc: subprocess.Popen[bytes]) -> None:
         except (ProcessLookupError, PermissionError):
             pass
         try:
-            proc.wait(timeout=wait)
-            return
+            proc.wait(timeout=wait or TERM_GRACE_SECONDS)  # bounded, a child in D state cannot hang us
         except subprocess.TimeoutExpired:
             continue
+    try:
+        os.killpg(proc.pid, signal.SIGKILL)  # whatever of the group outlived its leader
+    except (ProcessLookupError, PermissionError):
+        pass
 
 
 @contextmanager
@@ -299,20 +303,21 @@ def _dies_with_us() -> Any:
 def run_with_timeout(argv: list[str], environ: Mapping[str, str], stdout_fd: int, seconds: float | None) -> int:
     """Run argv with stdin and stderr on /dev/null and stdout on stdout_fd. 124 when the time ran out
     (the whole process group gets SIGTERM, then SIGKILL after a grace period), else its exit status."""
+    proc = None
     try:
-        proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout_fd, stderr=subprocess.DEVNULL,
-                                env=dict(environ), start_new_session=True, close_fds=True)
-    except (OSError, ValueError):
-        return 127
-    try:
-        with _dies_with_us():
+        with _dies_with_us():  # installed before the start, so no signal can orphan the child
+            try:
+                proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout_fd, stderr=subprocess.DEVNULL,
+                                        env=dict(environ), start_new_session=True, close_fds=True)
+            except (OSError, ValueError):
+                return 127
             try:
                 code = proc.wait(timeout=seconds)
             except subprocess.TimeoutExpired:
                 _kill_group(proc)
                 return TIMEOUT
     finally:
-        if proc.poll() is None:
+        if proc is not None and proc.poll() is None:
             _kill_group(proc)
     return code if code >= 0 else 128 - code
 
@@ -359,11 +364,25 @@ def invoke(agent: str, question: str, files: Sequence[str], model_id: str, conte
         normalized = normalize_file(raw)
     finally:
         _unlink(raw)
+    return _write_reply(tmp, normalized)
+
+
+def _write_reply(directory: str, normalized: dict[str, Any]) -> str:
+    """Write the normalized reply to a new 0600 file and return its path. On any failure the
+    descriptor is closed and the file removed, and the call ends as ERROR."""
+    out = ""
+    fd = -1
     try:
-        fd, out = tempfile.mkstemp(prefix=OUT_PREFIX, dir=tmp)
-        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+        fd, out = tempfile.mkstemp(prefix=OUT_PREFIX, dir=directory)
+        handle = os.fdopen(fd, "w", encoding="utf-8")
+        fd = -1  # the file object owns it now
+        with handle:
             handle.write(reply.dump(normalized))
     except OSError:
+        if fd >= 0:
+            os.close(fd)
+        if out:
+            _unlink(out)
         sys.stderr.write("shunt: cannot create a temp file for the opencode reply.\n")
         raise reply.Abort(ERROR) from None
     return out

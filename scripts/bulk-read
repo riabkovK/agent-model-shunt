@@ -1,65 +1,21 @@
 #!/bin/bash
-# Delegate a read-only question about one or more files to a custom model via OpenCode.
-# Analogous to shunt's scripts/bulk-read, routed through scripts/lib/opencode.sh
-# instead of the Portal CLI.
+# Delegate a read-only question about one or more files to a custom model via
+# OpenCode or an HTTP provider. Analogous to shunt's scripts/bulk-read, routed
+# through the Python core instead of the Portal CLI.
 #
 # Usage:
 #   bulk-read --question "..." --paths file1 [file2 ...]
+#
+# The whole call (arguments, failover over the candidate models, the answer, the
+# usage line, the debug log) is one process: scripts/py/shunt/bulk_read.py. This
+# launcher only starts it, with no other process in between (no dirname, no
+# sourced library that spawns one).
 
-set -euo pipefail
+case "${BASH_SOURCE[0]}" in
+  */*) SCRIPT_DIR="${BASH_SOURCE[0]%/*}" ;;
+  *) SCRIPT_DIR=. ;;
+esac
+# shellcheck source=lib/py.sh
+source "$SCRIPT_DIR/lib/py.sh"
 
-SCRIPT_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/opencode.sh
-source "$SCRIPT_DIR/lib/opencode.sh"
-
-question=""
-paths=()
-
-while [ $# -gt 0 ]; do
-  case "$1" in
-    --question)
-      [ $# -ge 2 ] || shunt_report_error "--question requires a value."
-      question="$2"
-      shift 2
-      ;;
-    --paths)
-      shift
-      while [ $# -gt 0 ] && [[ "$1" != --* ]]; do
-        paths+=("$1")
-        shift
-      done
-      ;;
-    *)
-      shunt_report_error "unknown argument: $1"
-      ;;
-  esac
-done
-
-[ -n "$question" ] || shunt_report_error "--question is required."
-[ "${#paths[@]}" -gt 0 ] || shunt_report_error "--paths requires at least one file."
-
-for p in "${paths[@]}"; do
-  [ -f "$p" ] || shunt_report_error "file not found: $p"
-  [ -r "$p" ] || shunt_report_error "file not readable: $p"
-done
-
-shunt_preflight
-
-shunt_invoke_with_failover "$question" "${paths[@]}"
-out_file="$SHUNT_INVOKE_OUT_FILE"
-used_agent="$SHUNT_INVOKE_AGENT_USED"
-
-answer=$(shunt_extract_text "$out_file")
-usage=$(shunt_extract_usage "$out_file")
-
-echo "$answer"
-
-if [ -n "$usage" ]; then
-  echo "shunt: bulk-read usage: $usage" >&2
-fi
-
-if shunt_debug_log_enabled; then
-  shunt_log_usage "$used_agent" "$out_file" "$question" "${paths[@]}"
-fi
-
-rm -f "$out_file"
+exec "${SHUNT_PYTHON:-python3}" -I -B "$SHUNT_PY_MAIN" bulk-read -- "$@"

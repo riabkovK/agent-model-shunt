@@ -178,3 +178,92 @@ def test_invoke_maps_failure_empty_output_timeout_and_a_bad_timeout_setting(tmp_
     assert status("sleep 30\n", SHUNT_TIMEOUT_SECONDS="0.2") == reply.TIMEOUT
     assert status("echo x\n", SHUNT_TIMEOUT_SECONDS="soon") == reply.ERROR
     assert list(tmp.iterdir()) == []  # no temp file is left behind
+
+
+def test_a_failed_reply_write_closes_the_descriptor_and_removes_the_temp_file(tmp_path, monkeypatch):
+    agents = tmp_path / "agents"
+    agents.mkdir()
+    (agents / "a.md").write_text("model: p/m\n")
+    tmp = tmp_path / "scratch"
+    tmp.mkdir()
+    environ = {"SHUNT_AGENTS_DIR": str(agents), "SHUNT_OPENCODE_CONFIG_HOME": str(tmp_path / "ocfg"),
+               "SHUNT_ISOLATED_CONFIG_DIR": str(tmp_path / "iso"), "TMPDIR": str(tmp), "PATH": os.environ["PATH"],
+               "SHUNT_OPENCODE_BIN": _script(tmp_path, "echo '{\"type\":\"text\",\"part\":{\"text\":\"x\"}}'\n")}
+    opened = []
+    real_fdopen = os.fdopen
+
+    def failing_fdopen(fd, *args, **kwargs):
+        if kwargs.get("encoding") != "utf-8":
+            return real_fdopen(fd, *args, **kwargs)
+        opened.append(fd)
+        raise OSError(12, "Cannot allocate memory")
+
+    monkeypatch.setattr(os, "fdopen", failing_fdopen)
+    with pytest.raises(reply.Abort) as info:
+        opencode_cli.invoke("a", "q", [], "", "", environ)
+    assert info.value.status == reply.ERROR
+    assert list(tmp.iterdir()) == []  # neither the raw output nor the reply file is left
+    with pytest.raises(OSError):
+        os.fstat(opened[-1])  # the descriptor was closed
+
+
+def test_a_failed_reply_write_removes_the_temp_file(tmp_path, monkeypatch):
+    def failing_dump(_value):
+        raise OSError(28, "No space left on device")
+
+    scratch = tmp_path / "scratch"
+    scratch.mkdir()
+    monkeypatch.setattr(reply, "dump", failing_dump)
+    with pytest.raises(reply.Abort) as info:
+        opencode_cli._write_reply(str(scratch), {"text": "x"})
+    assert info.value.status == reply.ERROR
+    assert list(scratch.iterdir()) == []
+
+
+def test_a_timeout_kills_a_group_member_even_when_the_leader_dies_on_sigterm(tmp_path):
+    marker = tmp_path / "survivor"
+    pids = tmp_path / "pids"
+    # The leader exits on SIGTERM, its child ignores it and would touch the marker later.
+    tool = _script(tmp_path, f"(trap '' TERM; sleep 2; touch {marker}) &\necho $! >{pids}\nsleep 30\n")
+    with open(os.devnull, "wb") as sink:
+        assert opencode_cli.run_with_timeout([tool], dict(os.environ), sink.fileno(), 0.3) == 124
+    time.sleep(2.5)
+    assert not marker.exists()
+
+
+def test_the_signal_handlers_are_in_place_before_the_child_starts(tmp_path, monkeypatch):
+    import signal
+    import subprocess
+    seen = {}
+    real_popen = subprocess.Popen
+
+    def spying_popen(*args, **kwargs):
+        seen["term"] = signal.getsignal(signal.SIGTERM)
+        seen["hup"] = signal.getsignal(signal.SIGHUP)
+        return real_popen(*args, **kwargs)
+
+    before = signal.getsignal(signal.SIGTERM)
+    monkeypatch.setattr(subprocess, "Popen", spying_popen)
+    with open(os.devnull, "wb") as sink:
+        assert opencode_cli.run_with_timeout([_script(tmp_path, "exit 0\n")], dict(os.environ), sink.fileno(), 5) == 0
+    assert callable(seen["term"]) and seen["term"] is not before
+    assert callable(seen["hup"])
+    assert signal.getsignal(signal.SIGTERM) is before  # restored afterwards
+
+
+def test_a_sigterm_while_the_child_runs_ends_us_and_kills_the_child(tmp_path):
+    import signal
+    import subprocess
+    import sys
+    marker = tmp_path / "survivor"
+    tool = _script(tmp_path, f"(sleep 2; touch {marker}) &\nsleep 30\n")
+    code = ("import os, sys; sys.path.insert(0, sys.argv[1]); from shunt import opencode_cli\n"
+            "sink = open(os.devnull, 'wb')\n"
+            "opencode_cli.run_with_timeout([sys.argv[2]], dict(os.environ), sink.fileno(), None)\n")
+    proc = subprocess.Popen([sys.executable, "-I", "-B", "-c", code, str(opencode_cli.__file__.rsplit("/shunt/", 1)[0]),
+                             tool])
+    time.sleep(0.8)
+    proc.send_signal(signal.SIGTERM)
+    assert proc.wait(timeout=10) == 128 + signal.SIGTERM
+    time.sleep(2.3)
+    assert not marker.exists()
