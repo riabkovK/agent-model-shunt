@@ -1,6 +1,7 @@
 """Behaviours of the removed bash suite (codewrite.bats) that had no pytest twin."""
 
 import os
+import shutil
 import stat
 import subprocess
 
@@ -59,6 +60,7 @@ def test_project_root_prefers_claude_project_dir_and_ignores_a_non_directory(tmp
         os.chdir(old)
 
 
+@pytest.mark.skipif(shutil.which("git") is None, reason="needs git")
 def test_project_root_uses_the_git_top_level_when_the_variable_is_unset(tmp_path):
     top = tmp_path / "top"
     (top / "sub").mkdir(parents=True)
