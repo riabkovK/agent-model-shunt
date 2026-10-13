@@ -244,3 +244,9 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 - The four scripts now source `evals/preflight.sh` and call `evals_preflight`. It checks `SHUNT_OPENCODE_BIN` (default `opencode`), `jq` and `python3`, with the old message wording. The `timeout` check is gone because the Python core enforces timeouts itself. `live-eval-benchmark.sh` calls it only when the `shunt` kind is selected, as before.
 - Output formats of the scripts and result files are unchanged, so `evals/aggregate-*.py` need no change.
 - `test/py/test_evals_functions.py` statically fails when any `evals/*.sh` calls a `shunt_*` function that is not defined in `scripts/lib/*.sh` (or in the script itself).
+
+## Live benchmark run
+
+- 2026-10-13. The mac/qwen36 leg of the live benchmark is not reported. Its first call timed out after 300 s, the circuit breaker opened, and the remaining calls were refused. The breaker state is the user's runtime state, so it was left as is and no mac numbers were invented. The benchmark driver and its leftover processes were stopped, and the v0.5.0 scratch worktree was removed.
+- 2026-10-13. Live timings are reported as medians over 2 to 3 repetitions, because single runs vary by up to 5 times (one Python run took 293 s). The report is in `docs/benchmarks/python-port.md`. It is not committed yet, because the user has not asked for a commit.
+- 2026-10-13. Fidelity recall (1.00 for both) and code-write syntax checks (6/6 for both) come from the benchmark agent's own summary, not from the raw rows.
