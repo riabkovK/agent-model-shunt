@@ -70,6 +70,10 @@ def _fail(status: int, message: str = "") -> NoReturn:
     raise _Stop(status)
 
 
+class _ConnectFailed(reply.Abort):
+    """UNREACHABLE because no connection could be made (not a broken model route)."""
+
+
 @dataclass(frozen=True)
 class _Setup:
     model_id: str
@@ -310,10 +314,12 @@ def _transport_failure(setup: _Setup, err: httpclient.HttpError, environ: Mappin
     if err.kind == "timeout":
         raise _Stop(TIMEOUT)
     if err.kind == "unreachable":
-        _fail(UNREACHABLE, f"{setup.model_id} unreachable: no connection within "
-                           f"{_seconds_text(env.connect_timeout(environ))}s (or no route to the host)")
+        sys.stderr.write(f"shunt: {setup.model_id} unreachable: no connection within "
+                         f"{_seconds_text(env.connect_timeout(environ))}s (or no route to the host)\n")
+        raise _ConnectFailed(UNREACHABLE)
     if setup.healthcheck and err.kind in ("connect", "dns"):  # e.g. a model behind a VPN that is down
-        _fail(UNREACHABLE, f"{setup.model_id} unreachable: {err}")
+        sys.stderr.write(f"shunt: {setup.model_id} unreachable: {err}\n")
+        raise _ConnectFailed(UNREACHABLE)
     # An auth or rate limit status says more than the size of its body.
     if err.kind == "too_large" and err.status in _STATUS_BEATS_SIZE:
         _check_status(setup, httpclient.Response(err.status, {}, b""), key)
@@ -423,6 +429,14 @@ class _Attempt:
         if self.setup.healthcheck:
             healthcheck_bg.note_call(self.environ, self.setup.provider, self.setup.base_url, self._model(), healthy)
 
+    def _note_unreachable(self, connect_failed: bool) -> None:
+        """A connect failure only starts a probe, which sets the status. A broken route marks unhealthy."""
+        if not connect_failed:
+            self._note(False)
+        elif self.setup.healthcheck:
+            healthcheck_bg.note_connect_failure(self.environ, self.setup.provider, self.setup.base_url,
+                                                self._model())
+
     def ask(self, prompt: bytes) -> dict[str, Any]:
         """One request within the time left of the total deadline. DEADLINE when none is left, or
         when the request ran out of the time it was cut to."""
@@ -435,7 +449,7 @@ class _Attempt:
             result = _send(self.setup, prompt, self.environ, self.key(), window.max_time)
         except _Stop as stop:
             if stop.status == UNREACHABLE:
-                self._note(False)
+                self._note_unreachable(isinstance(stop, _ConnectFailed))
             if stop.status == TIMEOUT and window.capped:
                 self.deadline.note(self.setup.model_id)
                 raise _Stop(DEADLINE) from None

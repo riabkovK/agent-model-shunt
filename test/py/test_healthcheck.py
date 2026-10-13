@@ -283,11 +283,35 @@ def test_a_real_success_marks_an_unhealthy_model_healthy(hc):
     assert status_of() == ["healthy"]
 
 
-def test_a_connect_failure_marks_unhealthy_without_a_breaker_pause(hc):
+def point_acme_at_closed_port(hc):
     doc = json.loads((hc.path / "providers.json").read_text())
     url = closed_port_url()
     doc["providers"]["acme"]["base_url"] = url
     (hc.path / "providers.json").write_text(json.dumps(doc))
+    return url
+
+
+def test_a_real_call_connect_failure_leaves_the_status_and_starts_a_probe(hc):
+    point_acme_at_closed_port(hc)
+    hc.environ["SHUNT_BREAKER_THRESHOLD"] = "1"
+    assert failover_status(hc)[0] == reply.UNREACHABLE
+    assert not cache_file().exists()  # the probe, not the real call, sets the status
+    assert hc.launched == [("acme", "m1")]  # one probe: the gate's, which holds the lock
+
+
+def test_a_connect_failure_starts_a_probe_even_when_the_status_is_fresh(hc):
+    url = point_acme_at_closed_port(hc)
+    cache_file().parent.mkdir(parents=True, exist_ok=True)
+    cache_file().write_text(json.dumps({"version": 1, "entries": [
+        {"provider": "acme", "base_url": url, "model": "m1", "at": 1000, "status": "healthy"}]}))
+    assert failover_status(hc)[0] == reply.UNREACHABLE
+    assert hc.launched == [("acme", "m1")]
+    assert status_of() == ["healthy"]
+
+
+def test_a_connect_failure_with_the_probe_inline_ends_unhealthy_without_a_breaker_pause(hc):
+    url = point_acme_at_closed_port(hc)
+    hc.environ["SHUNT_HEALTHCHECK_INLINE"] = "1"
     hc.environ["SHUNT_BREAKER_THRESHOLD"] = "1"
     assert failover_status(hc)[0] == reply.UNREACHABLE
     assert entries()[0]["status"] == "unhealthy" and entries()[0]["base_url"] == url
@@ -383,6 +407,69 @@ def test_a_good_probe_marks_healthy(hc):
     assert [r.path for r in gets(hc.server)] == [MODELS]
     assert gets(hc.server)[0].headers["authorization"] == f"Bearer {KEY}"
     assert len(probes(hc.server)) == 1 and not posts(hc.server)
+
+
+def flaky_get(monkeypatch, failures, kind="unreachable"):
+    """httpclient.get fails `failures` times as a connect failure, then works. Returns the call counter."""
+    real, calls = healthcheck.httpclient.get, []
+
+    def get(*args, **kwargs):
+        calls.append(1)
+        if len(calls) <= failures:
+            raise healthcheck.httpclient.HttpError(kind)
+        return real(*args, **kwargs)
+    monkeypatch.setattr(healthcheck.httpclient, "get", get)
+    return calls
+
+
+def test_a_probe_connects_on_the_third_attempt_and_is_healthy(hc, monkeypatch):
+    calls = flaky_get(monkeypatch, 2)
+    probe_now(hc)
+    assert len(calls) == 3 and status_of() == ["healthy"]
+
+
+def test_a_probe_with_three_connect_failures_is_unhealthy(hc, monkeypatch):
+    calls = flaky_get(monkeypatch, 3)
+    probe_now(hc)
+    assert len(calls) == healthcheck.PROBE_CONNECT_RETRIES + 1 == 3
+    assert status_of() == ["unhealthy"]
+
+
+def test_a_probe_retries_a_refused_connection(hc, monkeypatch):
+    calls = flaky_get(monkeypatch, 2, kind="connect")
+    probe_now(hc)
+    assert len(calls) == 3 and status_of() == ["healthy"]
+
+
+def test_a_probe_does_not_retry_a_timeout(hc, monkeypatch):
+    calls = flaky_get(monkeypatch, 1, kind="timeout")
+    probe_now(hc)
+    assert len(calls) == 1 and status_of() == ["unhealthy"]
+
+
+def test_a_probe_does_not_retry_a_401(hc):
+    hc.server.script(MODELS, status=401, body={"error": "no"})
+    probe_now(hc)
+    assert len(gets(hc.server)) == 1
+
+
+def test_the_completion_step_retries_a_connect_failure_too(hc, monkeypatch):
+    real, calls = healthcheck.httpclient.post_json, []
+
+    def post(*args, **kwargs):
+        calls.append(1)
+        if len(calls) <= 2:
+            raise healthcheck.httpclient.HttpError("unreachable")
+        return real(*args, **kwargs)
+    monkeypatch.setattr(healthcheck.httpclient, "post_json", post)
+    probe_now(hc)
+    assert len(calls) == 3 and status_of() == ["healthy"]
+
+
+def test_the_time_cap_fits_three_connects_in_each_step(hc):
+    environ = {"SHUNT_HEALTHCHECK_TIMEOUT": "4", "SHUNT_HEALTHCHECK_MODEL_TIMEOUT": "10",
+               "SHUNT_CONNECT_TIMEOUT": "5"}
+    assert healthcheck_bg.time_cap(environ) == 4 + 10 + 2 * (1 + healthcheck.PROBE_CONNECT_RETRIES) * 5 + healthcheck_bg.CAP_GRACE_SECONDS
 
 
 def test_a_503_marks_unhealthy(hc):
