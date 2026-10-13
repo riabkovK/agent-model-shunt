@@ -96,11 +96,12 @@ footer a { color: var(--muted); }
   <h1>Fidelity Ledger</h1>
   <p class="lede">Does delegating a read to <code>scripts/bulk-read</code> lose information or introduce hallucination, compared to Claude reading the same file directly?</p>
   <div class="chips">
-    <span class="chip"><b>n = 1</b> iteration per question</span>
+    <span class="chip"><b>n = 3</b> iterations per question</span>
     <span class="chip">fixtures: real Go source, <a href="https://github.com/labstack/echo" target="_blank" rel="noopener">labstack/echo</a> v5.3.1</span>
     <span class="chip">baseline model: <b>claude -p --model sonnet</b></span>
-    <span class="chip">delegate model: <b>Spark/deepseek-ai/DeepSeek-V4-Flash-0731</b> (custom OpenAI-compatible provider)</span>
-    <span class="chip">real spend this run: <b>$1.82</b></span>
+    <span class="chip">delegate model: <b>Spark/deepseek-v4.1-flash</b> (HTTP transport, custom delegate provider)</span>
+    <span class="chip">real spend this run: <b>$0.80</b></span>
+    <span class="chip">run date <b>2026-10-13</b></span>
   </div>
 </header>
 
@@ -109,22 +110,22 @@ footer a { color: var(--muted); }
   <p>Five questions in <a href="../evals/fidelity-questions.json">evals/fidelity-questions.json</a>, each with a <code>ground_truth.must_mention</code> list of exact identifiers extracted mechanically (<code>grep</code>) from the real fixture source, not written from memory. Three of the five are marked adversarial: picked because a summarizing delegate is likely to drop or flatten at least one item.</p>
   <dl>
     <dt>direct</dt><dd>Claude reads the file content inlined in the prompt and answers. The no-delegation baseline.</dd>
-    <dt>delegate</dt><dd><code>scripts/bulk-read</code>'s own raw answer — the delegate model's output, never seen by Claude.</dd>
+    <dt>delegate</dt><dd><code>scripts/bulk-read</code>'s own raw answer, the delegate model's output, never seen by Claude.</dd>
     <dt>final</dt><dd>Claude answers the same question using <em>only</em> the delegate's raw answer above (not the file). This is what a real user actually sees once the <code>PreToolUse</code> hook blocks a direct read and Claude falls back to <code>bulk-read</code>.</dd>
   </dl>
-  <p style="margin-top:14px;">Scoring is exact/structured, not LLM-judged: <b>recall</b> is the fraction of <code>must_mention</code> items found as a case-insensitive substring of the answer. An item counts as an <b>unsupported claim</b> (a hallucination signal) if it appears in <code>final</code> but not in <code>delegate</code>'s own raw text — the only source <code>final</code> had. This is a heuristic, not proof of fabrication: Claude can paraphrase a delegate claim in different wording and trip a false positive, so unsupported claims are a signal to inspect, not a final verdict — see the <code>hallucination_check</code> note in <code>fidelity-questions.json</code>.</p>
+  <p style="margin-top:14px;">Scoring is exact/structured, not LLM-judged: <b>recall</b> is the fraction of <code>must_mention</code> items found as a case-insensitive substring of the answer. An item counts as an <b>unsupported claim</b> (a hallucination signal) if it appears in <code>final</code> but not in <code>delegate</code>'s own raw text (the only source <code>final</code> had). This is a heuristic, not proof of fabrication: Claude can paraphrase a delegate claim in different wording and trip a false positive, so unsupported claims are a signal to inspect, not a final verdict, see the <code>hallucination_check</code> note in <code>fidelity-questions.json</code>.</p>
 </section>
 
 <section>
   <h2>Results</h2>
   <table>
-    <thead><tr><th>question</th><th>fixture(s)</th><th>items</th><th>direct recall</th><th>delegate recall</th><th>unsupported claims</th></tr></thead>
+    <thead><tr><th>question</th><th>fixture(s)</th><th>items</th><th>direct recall (mean)</th><th>delegate recall (mean)</th><th>final recall (mean)</th><th>unsupported claims</th></tr></thead>
     <tbody>
-      <tr class="adversarial"><td>echo-http-methods</td><td><code>echo.go</code></td><td class="num">10</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
-      <tr><td>echo-wrap-functions</td><td><code>echo.go</code></td><td class="num">2</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
-      <tr><td>cors-config-fields</td><td><code>cors.go</code> + <code>cors_test.go</code></td><td class="num">8</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
-      <tr class="adversarial"><td>cors-test-function-names</td><td><code>cors.go</code> + <code>cors_test.go</code></td><td class="num">6</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
-      <tr class="adversarial"><td>cross-file-exported-types</td><td><code>context.go</code> + <code>router.go</code> + <code>group.go</code></td><td class="num">9</td><td class="num">100%</td><td class="num">100%</td><td>-</td></tr>
+      <tr class="adversarial"><td>echo-http-methods</td><td><code>echo.go</code></td><td class="num">10</td><td class="num">100%</td><td class="num">100%</td><td class="num">100%</td><td>none</td></tr>
+      <tr><td>echo-wrap-functions</td><td><code>echo.go</code></td><td class="num">2</td><td class="num">100%</td><td class="num">100%</td><td class="num">100%</td><td>none</td></tr>
+      <tr><td>cors-config-fields</td><td><code>cors.go</code> + <code>cors_test.go</code></td><td class="num">8</td><td class="num">100%</td><td class="num">100%</td><td class="num">100%</td><td>none</td></tr>
+      <tr class="adversarial"><td>cors-test-function-names</td><td><code>cors.go</code> + <code>cors_test.go</code></td><td class="num">6</td><td class="num">100%</td><td class="num">100%</td><td class="num">100%</td><td>none</td></tr>
+      <tr class="adversarial"><td>cross-file-exported-types</td><td><code>context.go</code> + <code>router.go</code> + <code>group.go</code></td><td class="num">9</td><td class="num">100%</td><td class="num">96%</td><td class="num">96%</td><td>none</td></tr>
     </tbody>
   </table>
   <p style="margin-top:10px;color:var(--muted);font-size:12.5px;">* adversarial: at least one ground-truth item is chosen because a summarizing delegate is likely to drop or flatten it. See <code>evals/fidelity-questions.json</code> for exact <code>adversarial</code> flags and reasons.</p>
@@ -132,15 +133,15 @@ footer a { color: var(--muted); }
 
 <section>
   <div class="callout">
-    <span class="k">On this run: no measurable fidelity loss, no hallucination.</span>
-    <p>All 5 questions (including all 3 adversarial ones, picked specifically because a summarizer is likely to drop an item) scored 100% recall on both the direct-read and delegated-read paths, and zero unsupported claims turned up in any final answer. The delegated (<code>final</code>) answers were also consistently cheaper on the Claude side: mean $0.138 vs. $0.227 for direct reads, because the delegate's already-condensed answer is far shorter than the raw file content Claude would otherwise have inlined.</p>
-    <p style="margin-top:10px;"><b>Caveat: this is n = 1.</b> A single pass per question is not enough to rule out an occasional dropped item or hallucination on a differently-phrased question, a larger file, or a different delegate model - it shows the mechanism works cleanly on these 5 specific questions, not that it's guaranteed to. Re-run with <code>ITERATIONS&gt;1</code> for statistical confidence before treating "delegation is lossless" as a settled conclusion; each iteration costs real money (~$1.8 for this 5-question set) so it wasn't run in a loop by default.</p>
-    <p style="margin-top:10px;"><b>On speed:</b> this run's wall-clock timings depend on the specific OpenCode provider and model used - a different provider/model can be dramatically faster or slower for the same call. Treat any timing figures here as a personal observation from one setup, not a guarantee that will hold for your own flow.</p>
+    <span class="k">On this run: the delegate occasionally drops one list item, and Claude does not always catch it.</span>
+    <p>Direct recall was 1.0 on all 15 question runs (5 questions, 3 iterations each). The delegate dropped one item once: iteration 3 of <code>cross-file-exported-types</code> omitted <code>AddRouteError</code> (1 of 9 items), and the final Claude answer built on it did not recover the item (final recall 0.89 on that row, 0.96 mean for that question). The other four questions scored 1.0 on both the delegate and final paths in every iteration, and zero unsupported claims turned up in any final answer.</p>
+    <p style="margin-top:10px;"><b>What n = 3 changed.</b> The earlier n = 1 run showed 100% recall everywhere. With three iterations the picture is more honest: delegation is not strictly lossless, a list-style answer over several files can lose an item, and the final answer inherits the loss because Claude only sees the delegate's text. The cost advantage held: mean Claude cost per final answer was $0.018 vs. $0.036 for direct reads, because the delegate's condensed answer is far shorter than the raw file content Claude would otherwise have inlined. Three iterations is still a small sample, so treat the single drop as a rate signal, not a measured failure rate.</p>
+    <p style="margin-top:10px;"><b>On speed:</b> this run's wall-clock timings depend on the specific delegate provider and model used. A different provider or model can be dramatically faster or slower for the same call. Treat any timing figures here as a personal observation from one setup, not a guarantee that will hold for your own flow.</p>
   </div>
 </section>
 
 <footer>
-  Reproduce: <code>ITERATIONS=1 evals/fidelity-benchmark.sh</code> from the repo root (needs a reachable OpenCode provider and a logged-in <code>claude</code> CLI; spends real money on your Claude account). Fixture provenance: <a href="../evals/fixtures/echo/NOTICE.md">evals/fixtures/echo/NOTICE.md</a>. Ground truth: <a href="../evals/fidelity-questions.json">evals/fidelity-questions.json</a>. Raw data: <a href="../evals/results/fidelity-benchmark-summary.json">evals/results/fidelity-benchmark-summary.json</a>.
+  Reproduce: <code>ITERATIONS=3 evals/fidelity-benchmark.sh</code> from the repo root (needs a reachable delegate provider and a logged-in <code>claude</code> CLI; spends real money on your Claude account). Fixture provenance: <a href="../evals/fixtures/echo/NOTICE.md">evals/fixtures/echo/NOTICE.md</a>. Ground truth: <a href="../evals/fidelity-questions.json">evals/fidelity-questions.json</a>. Raw data: <a href="../evals/results/fidelity-benchmark-summary.json">evals/results/fidelity-benchmark-summary.json</a>.
 </footer>
 
 </div>

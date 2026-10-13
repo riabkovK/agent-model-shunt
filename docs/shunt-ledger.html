@@ -83,13 +83,14 @@ section { margin-bottom: 40px; }
 .bar-fill { height: 100%; border-radius: 6px; }
 .bar-fill.no-resume, .bar-fill.resume { background: var(--accent-cost); opacity: .85; }
 .bar-fill.shunt { background: var(--accent-save); }
+.bar-fill.shunt-live { background: var(--accent-save); opacity: .55; }
 .bar-val { font-size: 12.5px; text-align: right; color: var(--text); }
 
 table { width: 100%; border-collapse: collapse; font-size: 13px; }
 th, td { text-align: right; padding: 7px 8px; border-bottom: 1px solid var(--border); }
 th:first-child, td:first-child { text-align: left; }
 th { color: var(--muted); font-weight: 600; font-size: 12px; text-transform: uppercase; letter-spacing: .02em; }
-tr.shunt td { color: var(--accent-save); font-weight: 600; }
+tr.shunt td, tr.shunt-live td { color: var(--accent-save); font-weight: 600; }
 
 .deltas { display: flex; gap: 10px; margin-top: 14px; flex-wrap: wrap; }
 .delta {
@@ -136,19 +137,22 @@ footer a { color: var(--muted); }
     <span class="chip"><b>n = 3</b> iterations per scenario</span>
     <span class="chip">fixtures: real Go source, <a href="https://github.com/labstack/echo" target="_blank" rel="noopener">labstack/echo</a> v5.3.1</span>
     <span class="chip">baseline model: <b>claude -p --model sonnet</b></span>
-    <span class="chip">real spend this run: <b>$3.80</b></span>
+    <span class="chip">real spend this run: <b>$4.83</b></span>
+    <span class="chip">delegate: <b>Spark/deepseek-v4.1-flash</b> over HTTP</span>
+    <span class="chip">run date <b>2026-10-13</b></span>
   </div>
 </header>
 
 <section class="method card">
   <h2>How this was measured</h2>
-  <p>Three scenarios, each run three ways, over the same question and the same file(s):</p>
+  <p>Three scenarios, each run four ways, over the same question and the same file(s):</p>
   <dl>
     <dt>no-resume</dt><dd>Claude reads the file(s) directly, in a brand-new <code>claude -p</code> session. The cost of a one-off question with no prior context.</dd>
     <dt>resume</dt><dd>Same question, chained into the same Claude session as the previous scenario via <code>--resume</code>. The cost of reading one more file in a session that's already open.</dd>
-    <dt>shunt</dt><dd><code>scripts/bulk-read</code> delegates the question and file(s) to a separate model over OpenCode; only its answer lands in Claude's context.</dd>
+    <dt>shunt</dt><dd><code>scripts/bulk-read</code> delegates the question and file(s) to a separate model (<code>Spark/deepseek-v4.1-flash</code>) over the HTTP transport; only its answer lands in Claude's context. This kind has no Claude cost, only the delegate call.</dd>
+    <dt>shunt-live</dt><dd>A real <code>claude -p</code> session that calls <code>scripts/bulk-read</code> through Bash and answers from the result. This is the end-to-end cost a user actually pays for the shunt path.</dd>
   </dl>
-  <p style="margin-top:14px;">Reported <b>tokens</b> for no-resume/resume are Claude's real <code>input + cache_read + cache_creation</code> usage; for shunt they're a chars/4 estimate of just the delegate's answer text (a best case - it excludes the tokens a live session spends emitting the tool call that routes to it). <b>Cost</b> is real dollars billed by the Claude API, which is a more honest comparison than raw token counts: a large, roughly constant share of every token count here (tens of thousands of tokens) is this project's own Claude Code system prompt and tool/skill/hook definitions, not the fixture file - that overhead is repriced far down once it's served from prompt cache (see <code>resume</code> below charging less than <code>no-resume</code> for a similar token count), so cost tracks reality better than tokens do.</p>
+  <p style="margin-top:14px;">Every number is the mean of 3 iterations (36 rows, all succeeded). Reported <b>tokens</b> for no-resume/resume/shunt-live are Claude's real <code>input + cache_read + cache_creation</code> usage summed over every turn of the session. For shunt they're a chars/4 estimate of just the delegate's answer text (a best case: it excludes the tokens a live session spends emitting the tool call that routes to it, which is what shunt-live measures). <b>Read cost, not tokens.</b> A large, roughly constant share of every Claude token count here (tens of thousands of tokens) is this project's own Claude Code system prompt and tool/skill/hook definitions, not the fixture file. That overhead is repriced far down once it's served from prompt cache. This is why shunt-live shows <i>more</i> context tokens (about 115k) than no-resume (about 65k): the live session takes several turns, and about 100k of its total is cache reads of the system prompt, with only 6 fresh input tokens per call. Its real cost is still 1.3x to 5x lower than no-resume/resume, so cost tracks reality better than tokens do.</p>
 </section>
 
 <section>
@@ -162,23 +166,27 @@ footer a { color: var(--muted); }
     <p class="scenario-desc">What are all the exported types and functions/methods in this file, and what does each one do?</p>
 
     <div class="bars">
-      <div class="bar-row"><span class="bar-label">no-resume</span><div class="bar-track"><div class="bar-fill no-resume" style="width:100%"></div></div><span class="bar-val num">69,676</span></div>
-      <div class="bar-row"><span class="bar-label">resume</span><div class="bar-track"><div class="bar-fill resume" style="width:99.3%"></div></div><span class="bar-val num">69,208</span></div>
-      <div class="bar-row"><span class="bar-label">shunt</span><div class="bar-track"><div class="bar-fill shunt" style="width:2.5%"></div></div><span class="bar-val num">1,716</span></div>
+      <div class="bar-row"><span class="bar-label">no-resume</span><div class="bar-track"><div class="bar-fill no-resume" style="width:55.6%"></div></div><span class="bar-val num">64,915</span></div>
+      <div class="bar-row"><span class="bar-label">resume</span><div class="bar-track"><div class="bar-fill resume" style="width:55.4%"></div></div><span class="bar-val num">64,694</span></div>
+      <div class="bar-row"><span class="bar-label">shunt</span><div class="bar-track"><div class="bar-fill shunt" style="width:1.2%"></div></div><span class="bar-val num">1,428</span></div>
+      <div class="bar-row"><span class="bar-label">shunt-live</span><div class="bar-track"><div class="bar-fill shunt-live" style="width:100%"></div></div><span class="bar-val num">116,845</span></div>
     </div>
 
     <table>
       <thead><tr><th>variant</th><th>tokens</th><th>cost</th><th>time</th></tr></thead>
       <tbody>
-        <tr><td>no-resume</td><td class="num">69,676</td><td class="num">$0.2457</td><td class="num">25.4s</td></tr>
-        <tr><td>resume</td><td class="num">69,208</td><td class="num">$0.2399</td><td class="num">26.9s</td></tr>
-        <tr class="shunt"><td>shunt</td><td class="num">1,716</td><td class="num">—</td><td class="num">114.7s <span style="color:var(--muted);font-weight:400;">(86-162s)</span></td></tr>
+        <tr><td>no-resume</td><td class="num">64,915</td><td class="num">$0.1762</td><td class="num">20.5s <span style="color:var(--muted);font-weight:400;">(19.8-21.2s)</span></td></tr>
+        <tr><td>resume</td><td class="num">64,694</td><td class="num">$0.1394</td><td class="num">20.4s <span style="color:var(--muted);font-weight:400;">(19.8-21.3s)</span></td></tr>
+        <tr class="shunt"><td>shunt</td><td class="num">1,428</td><td class="num">n/a</td><td class="num">16.5s <span style="color:var(--muted);font-weight:400;">(13.6-21.7s)</span></td></tr>
+        <tr class="shunt-live"><td>shunt-live</td><td class="num">116,845</td><td class="num">$0.1065</td><td class="num">35.4s <span style="color:var(--muted);font-weight:400;">(30.9-43.5s)</span></td></tr>
       </tbody>
     </table>
 
     <div class="deltas">
-      <div class="delta save"><div class="k">tokens saved vs no-resume</div><div class="v">-97.5%</div></div>
-      <div class="delta cost"><div class="k">latency added vs no-resume</div><div class="v">+89.3s</div></div>
+      <div class="delta save"><div class="k">shunt tokens saved vs no-resume</div><div class="v">-97.8%</div></div>
+      <div class="delta save"><div class="k">shunt time vs no-resume</div><div class="v">-4.0s</div></div>
+      <div class="delta cost"><div class="k">shunt-live cost vs no-resume</div><div class="v">1.7x lower</div></div>
+      <div class="delta cost"><div class="k">shunt-live time vs no-resume</div><div class="v">+14.9s (1.7x)</div></div>
     </div>
   </div>
 
@@ -190,23 +198,27 @@ footer a { color: var(--muted); }
     <p class="scenario-desc">What configuration options does the CORS middleware in the first file support, and which of them are exercised by the tests in the second file?</p>
 
     <div class="bars">
-      <div class="bar-row"><span class="bar-label">no-resume</span><div class="bar-track"><div class="bar-fill no-resume" style="width:77.8%"></div></div><span class="bar-val num">67,817</span></div>
-      <div class="bar-row"><span class="bar-label">resume</span><div class="bar-track"><div class="bar-fill resume" style="width:100%"></div></div><span class="bar-val num">87,143</span></div>
-      <div class="bar-row"><span class="bar-label">shunt</span><div class="bar-track"><div class="bar-fill shunt" style="width:0.6%"></div></div><span class="bar-val num">547</span></div>
+      <div class="bar-row"><span class="bar-label">no-resume</span><div class="bar-track"><div class="bar-fill no-resume" style="width:54.9%"></div></div><span class="bar-val num">63,304</span></div>
+      <div class="bar-row"><span class="bar-label">resume</span><div class="bar-track"><div class="bar-fill resume" style="width:71.9%"></div></div><span class="bar-val num">82,929</span></div>
+      <div class="bar-row"><span class="bar-label">shunt</span><div class="bar-track"><div class="bar-fill shunt" style="width:0.3%"></div></div><span class="bar-val num">297</span></div>
+      <div class="bar-row"><span class="bar-label">shunt-live</span><div class="bar-track"><div class="bar-fill shunt-live" style="width:100%"></div></div><span class="bar-val num">115,265</span></div>
     </div>
 
     <table>
       <thead><tr><th>variant</th><th>tokens</th><th>cost</th><th>time</th></tr></thead>
       <tbody>
-        <tr><td>no-resume</td><td class="num">67,817</td><td class="num">$0.2135</td><td class="num">14.0s</td></tr>
-        <tr><td>resume</td><td class="num">87,143</td><td class="num">$0.1008</td><td class="num">13.7s</td></tr>
-        <tr class="shunt"><td>shunt</td><td class="num">547</td><td class="num">—</td><td class="num">53.7s <span style="color:var(--muted);font-weight:400;">(41-60s)</span></td></tr>
+        <tr><td>no-resume</td><td class="num">63,304</td><td class="num">$0.1560</td><td class="num">12.8s <span style="color:var(--muted);font-weight:400;">(10.3-15.4s)</span></td></tr>
+        <tr><td>resume</td><td class="num">82,929</td><td class="num">$0.2699</td><td class="num">13.3s <span style="color:var(--muted);font-weight:400;">(9.4-16.6s)</span></td></tr>
+        <tr class="shunt"><td>shunt</td><td class="num">297</td><td class="num">n/a</td><td class="num">4.8s <span style="color:var(--muted);font-weight:400;">(4.6-4.8s)</span></td></tr>
+        <tr class="shunt-live"><td>shunt-live</td><td class="num">115,265</td><td class="num">$0.0543</td><td class="num">17.5s <span style="color:var(--muted);font-weight:400;">(16.2-19.9s)</span></td></tr>
       </tbody>
     </table>
 
     <div class="deltas">
-      <div class="delta save"><div class="k">tokens saved vs resume</div><div class="v">-99.4%</div></div>
-      <div class="delta cost"><div class="k">latency added vs resume</div><div class="v">+40.0s</div></div>
+      <div class="delta save"><div class="k">shunt tokens saved vs resume</div><div class="v">-99.6%</div></div>
+      <div class="delta save"><div class="k">shunt time vs resume</div><div class="v">-8.5s</div></div>
+      <div class="delta cost"><div class="k">shunt-live cost vs resume</div><div class="v">5.0x lower</div></div>
+      <div class="delta cost"><div class="k">shunt-live time vs resume</div><div class="v">+4.3s (1.3x)</div></div>
     </div>
   </div>
 
@@ -218,23 +230,27 @@ footer a { color: var(--muted); }
     <p class="scenario-desc">Which exported types are defined across these files, and roughly how many exported methods does each one have?</p>
 
     <div class="bars">
-      <div class="bar-row"><span class="bar-label">no-resume</span><div class="bar-track"><div class="bar-fill no-resume" style="width:70.2%"></div></div><span class="bar-val num">83,089</span></div>
-      <div class="bar-row"><span class="bar-label">resume</span><div class="bar-track"><div class="bar-fill resume" style="width:100%"></div></div><span class="bar-val num">118,375</span></div>
-      <div class="bar-row"><span class="bar-label">shunt</span><div class="bar-track"><div class="bar-fill shunt" style="width:0.4%"></div></div><span class="bar-val num">502</span></div>
+      <div class="bar-row"><span class="bar-label">no-resume</span><div class="bar-track"><div class="bar-fill no-resume" style="width:68.9%"></div></div><span class="bar-val num">78,842</span></div>
+      <div class="bar-row"><span class="bar-label">resume</span><div class="bar-track"><div class="bar-fill resume" style="width:100%"></div></div><span class="bar-val num">114,476</span></div>
+      <div class="bar-row"><span class="bar-label">shunt</span><div class="bar-track"><div class="bar-fill shunt" style="width:0.3%"></div></div><span class="bar-val num">358</span></div>
+      <div class="bar-row"><span class="bar-label">shunt-live</span><div class="bar-track"><div class="bar-fill shunt-live" style="width:98.9%"></div></div><span class="bar-val num">113,257</span></div>
     </div>
 
     <table>
       <thead><tr><th>variant</th><th>tokens</th><th>cost</th><th>time</th></tr></thead>
       <tbody>
-        <tr><td>no-resume</td><td class="num">83,089</td><td class="num">$0.2965</td><td class="num">20.1s</td></tr>
-        <tr><td>resume</td><td class="num">118,375</td><td class="num">$0.1711</td><td class="num">21.7s</td></tr>
-        <tr class="shunt"><td>shunt</td><td class="num">502</td><td class="num">—</td><td class="num">74.8s <span style="color:var(--muted);font-weight:400;">(57-84s)</span></td></tr>
+        <tr><td>no-resume</td><td class="num">78,842</td><td class="num">$0.1803</td><td class="num">12.6s <span style="color:var(--muted);font-weight:400;">(10.1-13.8s)</span></td></tr>
+        <tr><td>resume</td><td class="num">114,476</td><td class="num">$0.4273</td><td class="num">13.4s <span style="color:var(--muted);font-weight:400;">(9.0-16.2s)</span></td></tr>
+        <tr class="shunt"><td>shunt</td><td class="num">358</td><td class="num">n/a</td><td class="num">6.1s <span style="color:var(--muted);font-weight:400;">(4.4-8.7s)</span></td></tr>
+        <tr class="shunt-live"><td>shunt-live</td><td class="num">113,257</td><td class="num">$0.0994</td><td class="num">17.2s <span style="color:var(--muted);font-weight:400;">(15.2-20.4s)</span></td></tr>
       </tbody>
     </table>
 
     <div class="deltas">
-      <div class="delta save"><div class="k">tokens saved vs resume</div><div class="v">-99.6%</div></div>
-      <div class="delta cost"><div class="k">latency added vs resume</div><div class="v">+53.1s</div></div>
+      <div class="delta save"><div class="k">shunt tokens saved vs resume</div><div class="v">-99.7%</div></div>
+      <div class="delta save"><div class="k">shunt time vs resume</div><div class="v">-7.3s</div></div>
+      <div class="delta cost"><div class="k">shunt-live cost vs resume</div><div class="v">4.3x lower</div></div>
+      <div class="delta cost"><div class="k">shunt-live time vs resume</div><div class="v">+3.8s (1.3x)</div></div>
     </div>
   </div>
 </section>
@@ -242,27 +258,31 @@ footer a { color: var(--muted); }
 <section>
   <h2>Averaged across the three scenarios</h2>
   <div class="summary-tiles">
-    <div class="tile save"><div class="k">context tokens saved vs no-resume</div><div class="v">-98.7%</div></div>
-    <div class="tile save"><div class="k">context tokens saved vs resume</div><div class="v">-98.8%</div></div>
-    <div class="tile cost"><div class="k">latency added vs no-resume</div><div class="v">+61.2s</div></div>
-    <div class="tile cost"><div class="k">latency added vs resume</div><div class="v">+60.3s</div></div>
+    <div class="tile save"><div class="k">shunt context tokens saved vs no-resume</div><div class="v">-99.0%</div></div>
+    <div class="tile save"><div class="k">shunt context tokens saved vs resume</div><div class="v">-99.0%</div></div>
+    <div class="tile save"><div class="k">shunt time vs no-resume</div><div class="v">-6.2s</div></div>
+    <div class="tile save"><div class="k">shunt time vs resume</div><div class="v">-6.6s</div></div>
+    <div class="tile save"><div class="k">shunt-live mean cost vs no-resume ($0.087 vs $0.171)</div><div class="v">2.0x lower</div></div>
+    <div class="tile save"><div class="k">shunt-live mean cost vs resume ($0.087 vs $0.279)</div><div class="v">3.2x lower</div></div>
+    <div class="tile cost"><div class="k">shunt-live time added vs no-resume</div><div class="v">+8.1s</div></div>
+    <div class="tile cost"><div class="k">shunt-live context tokens vs no-resume</div><div class="v">+68.6%</div></div>
   </div>
 </section>
 
 <section>
   <h2>Operating notes</h2>
   <div class="callout">
-    <span class="k">Shunt is much slower on real code than the token savings alone suggest.</span>
-    <p>All three scenarios here use real, unmodified files from a production Go codebase (150-960+ lines each) rather than short synthetic snippets. Against files that size, the delegate model routinely took 40-160+ seconds per call - roughly 3-4x longer, in absolute terms, than the entire <code>no-resume</code> Claude call it's replacing. This is why <code>SHUNT_TIMEOUT_SECONDS</code> now defaults to 300s: at the old 120s default, 5 of the first 9 shunt calls in this run timed out outright, and every scenario needed a re-run before reaching n=3. Even at 300s, expect the latency trade-off on files this size to be measured in tens of seconds to minutes, not the single-digit seconds a short-file demo might suggest.</p>
+    <span class="k">Do not read shunt-live context tokens as a regression.</span>
+    <p>Shunt-live reports about 115k context tokens against about 65k for no-resume, but that figure sums every turn of the session, and about 100k of it is cache reads of the Claude Code system prompt (fresh input is about 6 tokens per call). Those cache reads are billed at a fraction of the fresh rate, so the real bill is lower: shunt-live costs 1.3x to 5x less than no-resume/resume depending on scenario, in exchange for being about 1.3x to 1.7x slower than no-resume end to end. The plain <code>shunt</code> row measures only the delegate call and has no Claude cost.</p>
   </div>
   <div class="callout" style="margin-top:14px;">
     <span class="k">Speed depends on your provider, not on shunt itself.</span>
-    <p>The <code>shunt</code> timings above were measured against one specific OpenCode provider and model. Different providers/models can be dramatically faster or slower for the same call, and gateway load varies over time. These numbers are a personal observation from one setup at one point in time, not a guaranteed baseline - run <code>evals/baseline-benchmark.sh</code> against your own provider before trusting these figures to describe your own flow.</p>
+    <p>The <code>shunt</code> timings above were measured against one delegate provider and model (<code>Spark/deepseek-v4.1-flash</code> over the HTTP transport). Different providers and models can be dramatically faster or slower for the same call, and gateway load varies over time. These numbers are a personal observation from one setup at one point in time, not a guaranteed baseline. Run <code>evals/baseline-benchmark.sh</code> against your own provider before trusting these figures to describe your own flow.</p>
   </div>
 </section>
 
 <footer>
-  Reproduce: <code>ITERATIONS=3 evals/baseline-benchmark.sh</code> from the repo root (needs a reachable OpenCode provider and a logged-in <code>claude</code> CLI; spends real money on your Claude account). Fixture provenance: <a href="../evals/fixtures/echo/NOTICE.md">evals/fixtures/echo/NOTICE.md</a>. Raw data: <a href="../evals/results/baseline-benchmark-summary.json">evals/results/baseline-benchmark-summary.json</a>.
+  Reproduce: <code>ITERATIONS=3 evals/baseline-benchmark.sh</code> from the repo root (needs a reachable delegate provider and a logged-in <code>claude</code> CLI, spends real money on your Claude account). Fixture provenance: <a href="../evals/fixtures/echo/NOTICE.md">evals/fixtures/echo/NOTICE.md</a>. Raw data: <a href="../evals/results/baseline-benchmark-summary.json">evals/results/baseline-benchmark-summary.json</a>.
 </footer>
 
 </div>

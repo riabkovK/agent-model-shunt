@@ -3,312 +3,312 @@
     "multi-file-cross-read": {
       "no-resume": {
         "context_tokens": {
-          "mean": 85301,
-          "min": 85301,
-          "max": 85301,
-          "n": 1
+          "mean": 78842,
+          "min": 78842,
+          "max": 78842,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 7458,
-          "min": 7458,
-          "max": 7458,
-          "n": 1
+          "mean": 12570.666666666666,
+          "min": 10134,
+          "max": 13809,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.2659648,
-          "min": 0.2659648,
-          "max": 0.2659648,
-          "n": 1
+          "mean": 0.18034916666666667,
+          "min": 0.12399800000000001,
+          "max": 0.2861315,
+          "n": 3
         }
       },
       "resume": {
         "context_tokens": {
-          "mean": 120534,
-          "min": 120534,
-          "max": 120534,
-          "n": 1
+          "mean": 114476,
+          "min": 114071,
+          "max": 115081,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 20234,
-          "min": 20234,
-          "max": 20234,
-          "n": 1
+          "mean": 13416.333333333334,
+          "min": 9002,
+          "max": 16193,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.5063284,
-          "min": 0.5063284,
-          "max": 0.5063284,
-          "n": 1
+          "mean": 0.4272546666666666,
+          "min": 0.39538399999999996,
+          "max": 0.4788048,
+          "n": 3
         }
       },
       "shunt": {
         "context_tokens": {
-          "mean": 495,
-          "min": 495,
-          "max": 495,
-          "n": 1
+          "mean": 358,
+          "min": 338,
+          "max": 389,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 202655,
-          "min": 202655,
-          "max": 202655,
-          "n": 1
+          "mean": 6118.333333333333,
+          "min": 4401,
+          "max": 8700,
+          "n": 3
         }
       },
       "shunt-live": {
         "context_tokens": {
-          "mean": 115376,
-          "min": 115376,
-          "max": 115376,
-          "n": 1
+          "mean": 113257.33333333333,
+          "min": 108670,
+          "max": 115552,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 169656,
-          "min": 169656,
-          "max": 169656,
-          "n": 1
+          "mean": 17170.333333333332,
+          "min": 15210,
+          "max": 20440,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.0900504,
-          "min": 0.0900504,
-          "max": 0.0900504,
-          "n": 1
+          "mean": 0.09943250000000001,
+          "min": 0.0387238,
+          "max": 0.17892400000000003,
+          "n": 3
         }
       },
       "shunt_vs": {
         "no-resume": {
-          "tokens_saved": 84806,
-          "tokens_saved_pct": 99.4197019964596,
-          "time_added_ms": 195197,
-          "time_added_pct": 2617.2834540091176
+          "tokens_saved": 78484,
+          "tokens_saved_pct": 99.54592729763324,
+          "time_added_ms": -6452.333333333333,
+          "time_added_pct": -51.328489605430626
         },
         "resume": {
-          "tokens_saved": 120039,
-          "tokens_saved_pct": 99.58932749265767,
-          "time_added_ms": 182421,
-          "time_added_pct": 901.5567856083819
+          "tokens_saved": 114118,
+          "tokens_saved_pct": 99.687270694294,
+          "time_added_ms": -7298.000000000001,
+          "time_added_pct": -54.39638251882035
         }
       },
       "shunt_live_vs": {
         "no-resume": {
-          "tokens_saved": -30075,
-          "tokens_saved_pct": -35.257499912076064,
-          "time_added_ms": 162198,
-          "time_added_pct": 2174.818986323411
+          "tokens_saved": -34415.33333333333,
+          "tokens_saved_pct": -43.65101511038955,
+          "time_added_ms": 4599.666666666666,
+          "time_added_pct": 36.59047518031395
         },
         "resume": {
-          "tokens_saved": 5158,
-          "tokens_saved_pct": 4.279290490649941,
-          "time_added_ms": 149422,
-          "time_added_pct": 738.4699021449046
+          "tokens_saved": 1218.6666666666715,
+          "tokens_saved_pct": 1.0645608395355108,
+          "time_added_ms": 3753.999999999998,
+          "time_added_pct": 27.98081939923972
         }
       }
     },
     "single-large-file": {
       "no-resume": {
         "context_tokens": {
-          "mean": 72445,
-          "min": 72445,
-          "max": 72445,
-          "n": 1
+          "mean": 64914.666666666664,
+          "min": 63517,
+          "max": 66194,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 23615,
-          "min": 23615,
-          "max": 23615,
-          "n": 1
+          "mean": 20461,
+          "min": 19773,
+          "max": 21228,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.2567316,
-          "min": 0.2567316,
-          "max": 0.2567316,
-          "n": 1
+          "mean": 0.17624883333333333,
+          "min": 0.1337504,
+          "max": 0.2528217,
+          "n": 3
         }
       },
       "resume": {
         "context_tokens": {
-          "mean": 71453,
-          "min": 71453,
-          "max": 71453,
-          "n": 1
+          "mean": 64693.666666666664,
+          "min": 64011,
+          "max": 65035,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 22354,
-          "min": 22354,
-          "max": 22354,
-          "n": 1
+          "mean": 20372,
+          "min": 19840,
+          "max": 21290,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.2307428,
-          "min": 0.2307428,
-          "max": 0.2307428,
-          "n": 1
+          "mean": 0.13937373333333333,
+          "min": 0.13551639999999998,
+          "max": 0.1428624,
+          "n": 3
         }
       },
       "shunt": {
         "context_tokens": {
-          "mean": 1946,
-          "min": 1946,
-          "max": 1946,
-          "n": 1
+          "mean": 1428,
+          "min": 1191,
+          "max": 1834,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 148611,
-          "min": 148611,
-          "max": 148611,
-          "n": 1
+          "mean": 16470.666666666668,
+          "min": 13617,
+          "max": 21669,
+          "n": 3
         }
       },
       "shunt-live": {
         "context_tokens": {
-          "mean": 113830,
-          "min": 113830,
-          "max": 113830,
-          "n": 1
+          "mean": 116845.33333333333,
+          "min": 116439,
+          "max": 117594,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 154696,
-          "min": 154696,
-          "max": 154696,
-          "n": 1
+          "mean": 35394.666666666664,
+          "min": 30887,
+          "max": 43537,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.19767639999999997,
-          "min": 0.19767639999999997,
-          "max": 0.19767639999999997,
-          "n": 1
+          "mean": 0.10648976666666667,
+          "min": 0.0577346,
+          "max": 0.2024714,
+          "n": 3
         }
       },
       "shunt_vs": {
         "no-resume": {
-          "tokens_saved": 70499,
-          "tokens_saved_pct": 97.31382428048865,
-          "time_added_ms": 124996,
-          "time_added_pct": 529.3076434469617
+          "tokens_saved": 63486.666666666664,
+          "tokens_saved_pct": 97.80018896602719,
+          "time_added_ms": -3990.333333333332,
+          "time_added_pct": -19.502142286952406
         },
         "resume": {
-          "tokens_saved": 69507,
-          "tokens_saved_pct": 97.27653142625222,
-          "time_added_ms": 126257,
-          "time_added_pct": 564.8071933434732
+          "tokens_saved": 63265.666666666664,
+          "tokens_saved_pct": 97.79267419273397,
+          "time_added_ms": -3901.333333333332,
+          "time_added_pct": -19.15046796256299
         }
       },
       "shunt_live_vs": {
         "no-resume": {
-          "tokens_saved": -41385,
-          "tokens_saved_pct": -57.126095658775625,
-          "time_added_ms": 131081,
-          "time_added_pct": 555.0751640906203
+          "tokens_saved": -51930.666666666664,
+          "tokens_saved_pct": -79.99835681715483,
+          "time_added_ms": 14933.666666666664,
+          "time_added_pct": 72.98600589739829
         },
         "resume": {
-          "tokens_saved": -42377,
-          "tokens_saved_pct": -59.3075168292444,
-          "time_added_ms": 132342,
-          "time_added_pct": 592.0282723449942
+          "tokens_saved": -52151.666666666664,
+          "tokens_saved_pct": -80.61324910733147,
+          "time_added_ms": 15022.666666666664,
+          "time_added_pct": 73.74173702467438
         }
       }
     },
     "source-plus-test": {
       "no-resume": {
         "context_tokens": {
-          "mean": 70104,
-          "min": 70104,
-          "max": 70104,
-          "n": 1
+          "mean": 63303.666666666664,
+          "min": 62621,
+          "max": 63645,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 11068,
-          "min": 11068,
-          "max": 11068,
-          "n": 1
+          "mean": 12833.666666666666,
+          "min": 10280,
+          "max": 15370,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.2062668,
-          "min": 0.2062668,
-          "max": 0.2062668,
-          "n": 1
+          "mean": 0.15597736666666667,
+          "min": 0.12253130000000001,
+          "max": 0.2174535,
+          "n": 3
         }
       },
       "resume": {
         "context_tokens": {
-          "mean": 88869,
-          "min": 88869,
-          "max": 88869,
-          "n": 1
+          "mean": 82928.66666666667,
+          "min": 82665,
+          "max": 83144,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 16709,
-          "min": 16709,
-          "max": 16709,
-          "n": 1
+          "mean": 13263.666666666666,
+          "min": 9437,
+          "max": 16597,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.334241,
-          "min": 0.334241,
-          "max": 0.334241,
-          "n": 1
+          "mean": 0.2699140666666666,
+          "min": 0.23591969999999998,
+          "max": 0.3286048,
+          "n": 3
         }
       },
       "shunt": {
         "context_tokens": {
-          "mean": 1037,
-          "min": 1037,
-          "max": 1037,
-          "n": 1
+          "mean": 297,
+          "min": 203,
+          "max": 362,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 147732,
-          "min": 147732,
-          "max": 147732,
-          "n": 1
+          "mean": 4751.333333333333,
+          "min": 4572,
+          "max": 4848,
+          "n": 3
         }
       },
       "shunt-live": {
         "context_tokens": {
-          "mean": 113794,
-          "min": 113794,
-          "max": 113794,
-          "n": 1
+          "mean": 115265.33333333333,
+          "min": 115122,
+          "max": 115500,
+          "n": 3
         },
         "duration_ms": {
-          "mean": 63526,
-          "min": 63526,
-          "max": 63526,
-          "n": 1
+          "mean": 17521,
+          "min": 16236,
+          "max": 19890,
+          "n": 3
         },
         "cost_usd": {
-          "mean": 0.0894486,
-          "min": 0.0894486,
-          "max": 0.0894486,
-          "n": 1
+          "mean": 0.054254333333333335,
+          "min": 0.039576,
+          "max": 0.083483,
+          "n": 3
         }
       },
       "shunt_vs": {
         "no-resume": {
-          "tokens_saved": 69067,
-          "tokens_saved_pct": 98.52076914298756,
-          "time_added_ms": 136664,
-          "time_added_pct": 1234.7668955547524
+          "tokens_saved": 63006.666666666664,
+          "tokens_saved_pct": 99.53083286381515,
+          "time_added_ms": -8082.333333333333,
+          "time_added_pct": -62.97758499779227
         },
         "resume": {
-          "tokens_saved": 87832,
-          "tokens_saved_pct": 98.8331139092372,
-          "time_added_ms": 131023,
-          "time_added_pct": 784.1462684780657
+          "tokens_saved": 82631.66666666667,
+          "tokens_saved_pct": 99.64186087641588,
+          "time_added_ms": -8512.333333333332,
+          "time_added_pct": -64.17782915734713
         }
       },
       "shunt_live_vs": {
         "no-resume": {
-          "tokens_saved": -43690,
-          "tokens_saved_pct": -62.321693483966676,
-          "time_added_ms": 52458,
-          "time_added_pct": 473.96096855800505
+          "tokens_saved": -51961.666666666664,
+          "tokens_saved_pct": -82.08318633465149,
+          "time_added_ms": 4687.333333333334,
+          "time_added_pct": 36.52372665645049
         },
         "resume": {
-          "tokens_saved": -24925,
-          "tokens_saved_pct": -28.046900493985525,
-          "time_added_ms": 46817,
-          "time_added_pct": 280.1903165958465
+          "tokens_saved": -32336.666666666657,
+          "tokens_saved_pct": -38.993351715932555,
+          "time_added_ms": 4257.333333333334,
+          "time_added_pct": 32.09771053755875
         }
       }
     }

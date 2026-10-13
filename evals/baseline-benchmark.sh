@@ -1,12 +1,12 @@
 #!/bin/bash
-# End-to-end usefulness benchmark: shunt (scripts/bulk-read, via OpenCode)
+# End-to-end usefulness benchmark: shunt (scripts/bulk-read)
 # versus the baseline of Claude reading the same files directly.
 #
-# evals/benchmark.sh already measures the *delegated* OpenCode round trip in
+# evals/benchmark.sh already measures the *delegated* round trip in
 # isolation. This script instead measures what actually matters for
 # deciding whether shunt is worth it: the real cost paid on the Claude side
 # (context tokens and $) and the real wall-clock time, against the same
-# question over the same fixture files, in three variants:
+# question over the same fixture files, in four variants:
 #
 #   no-resume  Each scenario is sent as a brand-new `claude -p` session (no
 #              prior turns). Represents the cost of Claude reading a file
