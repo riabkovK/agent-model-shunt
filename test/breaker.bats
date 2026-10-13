@@ -486,12 +486,11 @@ write_broken_state() {
 
 @test "a failed write leaves an existing broken state file as it was" {
   write_broken_state corrupt
-  # The real writer cannot be blocked without breaking the read, so make the
-  # atomic rename fail by shadowing mv.
-  mv() { return 1; }
+  # A symlink in place of the lock file is refused, so the write fails before
+  # it touches the state file (works for root too, unlike a read-only dir).
+  ln -s /dev/null "$SHUNT_BREAKER_STATE_FILE.lock"
   run shunt_breaker_record_failure "p/m"
   assert_failure
-  unset -f mv
   [ "$(cat "$SHUNT_BREAKER_STATE_FILE")" = 'not json {' ]
   run bash -c 'ls -A "$1"' _ "$(dirname "$SHUNT_BREAKER_STATE_FILE")"
   refute_output --partial ".breaker-state.json."
