@@ -98,7 +98,7 @@ opencode_calls() {
 
 @test "the opencode transport refuses a file over the line limit without calling opencode" {
   write_registry "[$OPENCODE_MODEL]"
-  make_file "$TEST_TMPDIR/big.txt" $(( SHUNT_OPENCODE_MAX_FILE_LINES + 1 ))
+  make_file "$TEST_TMPDIR/big.txt" 2001
   run shunt_transport_invoke shunt-bulk-reader-p-two "q" "$TEST_TMPDIR/big.txt"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "too large"
@@ -107,7 +107,7 @@ opencode_calls() {
 
 @test "the opencode transport refuses a file over the byte limit without calling opencode" {
   write_registry "[$OPENCODE_MODEL]"
-  head -c $(( SHUNT_OPENCODE_MAX_FILE_BYTES + 1 )) /dev/zero | tr '\0' 'x' | fold -w 100 >"$TEST_TMPDIR/big.txt"
+  head -c 51201 /dev/zero | tr '\0' 'x' | fold -w 100 >"$TEST_TMPDIR/big.txt"
   run shunt_transport_invoke shunt-bulk-reader-p-two "q" "$TEST_TMPDIR/big.txt"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   [ "$(opencode_calls)" = 0 ]
@@ -115,7 +115,7 @@ opencode_calls() {
 
 @test "the opencode transport refuses a line longer than opencode keeps" {
   write_registry "[$OPENCODE_MODEL]"
-  head -c $(( SHUNT_OPENCODE_MAX_LINE_CHARS + 1 )) /dev/zero | tr '\0' 'x' >"$TEST_TMPDIR/long.txt"
+  head -c 2001 /dev/zero | tr '\0' 'x' >"$TEST_TMPDIR/long.txt"
   echo >>"$TEST_TMPDIR/long.txt"
   run shunt_transport_invoke shunt-bulk-reader-p-two "q" "$TEST_TMPDIR/long.txt"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]

@@ -3,6 +3,8 @@
 Selected through SHUNT_PY_MAIN, so the production code has no test hooks. Before the
 real runner starts it patches, in this process only:
   - the deadline clock, when FAKE_CLOCK names a file holding the time in seconds,
+  - the registry reader, when FAKE_LOOKUPS names a file: one line is appended per read of the
+    models file (the lookups tests count them),
   - the request function, which per request (a) writes the scripted route from the
     FAKE_CURL_* knobs (FAKE_CURL_BODY, FAKE_CURL_CODE, FAKE_CURL_FAIL_AT/_CODE,
     FAKE_CURL_EXIT 28|7|52), (b) appends the time limit it was given to
@@ -45,12 +47,22 @@ def _sync_route(env) -> None:
 
 def _patch(env) -> None:
     sys.path.insert(0, str(ROOT / "scripts" / "py"))
-    from shunt import deadline, httpclient
+    from shunt import deadline, httpclient, models
 
     clock = env.get("FAKE_CLOCK")
     if clock:
         deadline.TICKS_PER_SECOND = 1
         deadline.now_ticks = lambda: int(Path(clock).read_text())
+    lookups = env.get("FAKE_LOOKUPS")
+    if lookups:
+        real_load = models._load
+
+        def counting_load(path):
+            with open(lookups, "a") as handle:
+                handle.write("x\n")
+            return real_load(path)
+
+        models._load = counting_load
     real_post = httpclient.post_json
 
     def post_json(url, payload, *, headers=None, timeout=None, max_bytes=0):

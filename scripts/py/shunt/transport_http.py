@@ -34,7 +34,7 @@ import re
 import signal
 import sys
 import tempfile
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
@@ -94,10 +94,11 @@ def _text(value: Any) -> str:
         return json.dumps(value)
 
 
-def _find_model(agent: str, path: str) -> tuple[dict[str, Any], str]:
-    """The registry entry whose bulk-reader or code-writer agent is `agent`, and the role."""
+def lookup_model(agent: str, path: str) -> tuple[dict[str, Any], str] | None:
+    """The registry entry whose bulk-reader or code-writer agent is `agent`, and the role.
+    None when there is no usable registry or no such model. Says nothing."""
     if not models.available(path):
-        _fail(CONFIG, f"no model in the registry for agent '{agent}'.")
+        return None
     for model in models._entries(models._load(path)):
         model_id = str(model.get("id"))
         named = model.get("agent")
@@ -106,7 +107,14 @@ def _find_model(agent: str, path: str) -> tuple[dict[str, Any], str]:
             return model, "bulk-reader"
         if agent == models.code_writer_agent_for(model_id):
             return model, "code-writer"
-    _fail(CONFIG, f"no model in the registry for agent '{agent}'.")
+    return None
+
+
+def _find_model(agent: str, path: str) -> tuple[dict[str, Any], str]:
+    found = lookup_model(agent, path)
+    if found is None:
+        _fail(CONFIG, f"no model in the registry for agent '{agent}'.")
+    return found
 
 
 def _check_base_url(provider: str, url: str) -> tuple[str, bool]:
@@ -177,8 +185,8 @@ def _system_prompt(role: str, environ: Mapping[str, str]) -> bytes:
     return data.replace(b"\0", b"").rstrip(b"\n")  # bash read it through $(<file)
 
 
-def _setup(agent: str, environ: Mapping[str, str]) -> _Setup:
-    model, role = _find_model(agent, str(env.models_file(environ)))
+def _setup(agent: str, environ: Mapping[str, str], found: tuple[dict[str, Any], str] | None = None) -> _Setup:
+    model, role = found or _find_model(agent, str(env.models_file(environ)))
     model_id = str(model.get("id"))
     provider = model_id.split("/", 1)[0]
     try:
@@ -402,14 +410,16 @@ def _needs_chunking(setup: _Setup, size: int) -> bool:
     return False
 
 
-def http_call(agent: str, question: str, files: Sequence[str], environ: Mapping[str, str]) -> str:
+def http_call(agent: str, question: str, files: Sequence[str], environ: Mapping[str, str],
+              found: tuple[dict[str, Any], str] | None = None) -> str:
     """The whole call: deadline, setup, prompt, size guard, then one request or, for an oversize
-    bulk-reader input, map_reduce. Returns the reply file."""
+    bulk-reader input, map_reduce. Returns the reply file. `found` is the registry entry the
+    dispatcher already looked up (see lookup_model), so a call reads the registry once."""
     try:
         deadline = Deadline(environ)
     except DeadlineError as exc:
         _fail(CONFIG, str(exc))
-    setup = _setup(agent, environ)
+    setup = _setup(agent, environ, found)
     chunk = _needs_chunking(setup, sent_size(setup.system) + prompt_size(question, files))
     prompt = b""
     if not chunk:  # sized from the file sizes above, so this read is bounded by what the guard accepts
@@ -425,34 +435,39 @@ def http_call(agent: str, question: str, files: Sequence[str], environ: Mapping[
     return _write_reply(result, environ)
 
 
-def run(args: argparse.Namespace) -> int:
-    environ = os.environ
+def call_status(call: Callable[[], str], label: str = "HTTP transport") -> tuple[int, str]:
+    """Run one transport call and map whatever it raises to a SHUNT_TRY_INVOKE_* status.
+    Returns (status, reply file), the file only for status 0. Messages never hold a key."""
     try:
-        path = http_call(args.agent, args.question, args.files, environ)
+        return 0, call()
     except _Stop as stop:
-        return stop.status
+        return stop.status, ""
     except BrokenPipeError:
         raise
     except KeyboardInterrupt:  # die of SIGINT, so the calling shell stops too, without a traceback
         signal.signal(signal.SIGINT, signal.SIG_DFL)
         os.kill(os.getpid(), signal.SIGINT)
-        return 130
+        return 130, ""
     except (OSError, models.RegistryUnreadable) as exc:  # paths and strerror text, never a key
         sys.stderr.write(f"shunt: {exc}\n")
-        return CONFIG
+        return CONFIG, ""
     except Exception as exc:  # a bug must not look like a chunk failure (exit 1)
-        sys.stderr.write(f"shunt: the HTTP transport failed unexpectedly ({type(exc).__name__}).\n")
-        return ERROR
+        sys.stderr.write(f"shunt: the {label} failed unexpectedly ({type(exc).__name__}).\n")
+        return ERROR, ""
+
+
+def run(args: argparse.Namespace) -> int:
+    status, path = call_status(lambda: http_call(args.agent, args.question, args.files, os.environ))
+    if status:
+        return status
     sys.stdout.write(path + "\n")
     return 0
 
 
-def register(subparsers: Any) -> None:
-    """Add the `transport` command group to the top-level subparsers."""
-    group = subparsers.add_parser("transport", help="send one request through the HTTP transport")
-    group.set_defaults(func=run)
-    sub = group.add_subparsers(dest="transport_command", required=True)
+def add_commands(sub: Any) -> None:
+    """Add `http-call` to the `transport` command group (see transport.register)."""
     call = sub.add_parser("http-call")
+    call.set_defaults(func=run)
     call.add_argument("agent")
     call.add_argument("question")
     call.add_argument("files", nargs="*")

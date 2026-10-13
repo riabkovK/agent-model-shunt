@@ -17,7 +17,7 @@
 # points the Python bridge at test/fake_shunt_main.py, which scripts the route of each
 # request from the knobs, records each request's time limit and moves the fake clock
 # (production code has no test hooks). The knobs may be unexported shell variables
-# in a test, the wrapper of _shunt_http_call exports them for the Python child.
+# in a test, the wrapper of _shunt_oc_py exports them for the Python child.
 fake_http_start() {
   FAKE_ROUTES="$TEST_TMPDIR/routes"
   FAKE_MAXTIMES="$TEST_TMPDIR/max-times"
@@ -27,8 +27,8 @@ fake_http_start() {
   FAKE_BASE="http://127.0.0.1:$HTTP_PORT/v1"
   export FAKE_HTTP_ROUTES="$FAKE_ROUTES" FAKE_HTTP_MAXTIMES="$FAKE_MAXTIMES" FAKE_HTTP_LOG="$HTTP_LOG"
   export SHUNT_PY_MAIN="$REPO_ROOT/test/fake_shunt_main.py"
-  eval "$(declare -f _shunt_http_call | sed '1s/^_shunt_http_call/_fake_orig_call/')"
-  _shunt_http_call() { _fake_export_knobs; _fake_orig_call "$@"; }
+  eval "$(declare -f _shunt_oc_py | sed '1s/^_shunt_oc_py/_fake_orig_call/')"
+  _shunt_oc_py() { _fake_export_knobs; _fake_orig_call "$@"; }
 }
 
 _fake_export_knobs() {

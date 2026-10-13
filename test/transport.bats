@@ -161,17 +161,6 @@ FAKE
   [ "$status" -eq "$SHUNT_TRY_INVOKE_EMPTY" ]
 }
 
-@test "shunt_run_with_timeout returns 124 when the command outlives the timeout" {
-  SHUNT_TIMEOUT_SECONDS=1 run shunt_run_with_timeout sleep 5
-  [ "$status" -eq 124 ]
-}
-
-@test "shunt_run_with_timeout passes the command status and output through" {
-  run shunt_run_with_timeout bash -c 'echo out; exit 3'
-  [ "$status" -eq 3 ]
-  assert_output "out"
-}
-
 @test "shunt_extract_usage prints nothing when the response has no usage" {
   echo '{"text":"x","finish_reason":""}' >"$TEST_TMPDIR/n.json"
   run shunt_extract_usage "$TEST_TMPDIR/n.json"

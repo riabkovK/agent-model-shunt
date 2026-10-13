@@ -485,8 +485,7 @@ write_registry_thinking() {
 count_registry_lookups() {
   LOOKUPS_FILE="$TEST_TMPDIR/lookups"
   : >"$LOOKUPS_FILE"
-  eval "_orig_$(declare -f shunt_models_available)"
-  shunt_models_available() { echo x >>"$LOOKUPS_FILE"; _orig_shunt_models_available "$@"; }
+  export FAKE_LOOKUPS="$LOOKUPS_FILE"
 }
 
 @test "one bulk-reader call looks the model up in the registry exactly once" {
@@ -612,6 +611,22 @@ try:
 except t._Stop as stop:
     sys.exit(stop.status)
 ' "$REPO_ROOT/scripts/py" "$1" "$2" "$3" "$4"
+}
+
+# opencode_guard <agent> <question>: the size guard of the opencode transport (opencode_cli.py)
+# on the registry entry of <agent>.
+opencode_guard() {
+  python3 -B -c '
+import os, sys
+sys.path.insert(0, sys.argv[1])
+from shunt import opencode_cli, transport
+from shunt import transport_reply as reply
+found = transport.resolve(sys.argv[2], os.environ)
+try:
+    opencode_cli.guard_size(sys.argv[2], sys.argv[3], [], found.model_id, found.context_tokens)
+except reply.Abort as stop:
+    sys.exit(stop.status)
+' "$REPO_ROOT/scripts/py" "$1" "$2"
 }
 
 @test "guard: an unknown oversize_policy at runtime is a config failure and sends nothing" {
@@ -1172,8 +1187,7 @@ assert (usage.tokens_in, usage.tokens_out) == (0, 0)'
   write_sized_registry 128000.0 null
   run shunt_models_validate
   assert_success
-  _shunt_http_resolve "$AGENT"
-  run --separate-stderr _shunt_opencode_guard_size "$AGENT" "q"
+  run --separate-stderr opencode_guard "$AGENT" "q"
   [[ "$stderr" != *"syntax error"* ]]
   [[ "$stderr" != *"invalid"* ]]
   assert_success
