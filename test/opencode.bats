@@ -265,15 +265,6 @@ FAKE
   export SHUNT_OPENCODE_BIN="$TEST_TMPDIR/bin/opencode"
 }
 
-# accept_only_p_two <out-file>: rejects everything except p/two's transcript.
-accept_only_p_two() {
-  grep -q 'p-two' "$1"
-}
-
-accept_abort() {
-  return 2
-}
-
 @test "shunt_extract_finish_reason prints the finish reason of a normalized response" {
   echo '{"text":"hi","finish_reason":"length","usage":{"input":1,"output":2}}' >"$TEST_TMPDIR/t.json"
   run shunt_extract_finish_reason "$TEST_TMPDIR/t.json"
@@ -307,36 +298,6 @@ accept_abort() {
   run shunt_invoke_role_with_failover code-write shunt_models_code_writer_agent_for "" "question"
   assert_failure
   assert_output --partial "with the code-write role"
-}
-
-@test "an accept function returning 1 sends the call to the next model and counts a failure" {
-  write_models_registry "p/one" "p/two"
-  write_shunt_agent "shunt-code-writer-p-one" "p/one"
-  write_shunt_agent "shunt-code-writer-p-two" "p/two"
-  write_role_fake_opencode
-  # accept_only_p_two wants 'p-two' in the transcript, the fake echoes the agent name.
-  shunt_invoke_role_with_failover code-write shunt_models_code_writer_agent_for accept_only_p_two "question"
-  [ "$SHUNT_INVOKE_AGENT_USED" = "p/two" ]
-  run shunt_breaker_status "p/one#code-write"
-  assert_output --partial "failures=1"
-  run shunt_breaker_status "p/two#code-write"
-  assert_output --partial "failures=0"
-  # The bulk-read counter of the same models is untouched.
-  run shunt_breaker_status "p/one"
-  assert_output --partial "failures=0"
-}
-
-@test "a code-write failure counts against the code-write key, not the bulk-read key" {
-  export SHUNT_BREAKER_THRESHOLD=1
-  write_models_registry "p/one"
-  write_shunt_agent "shunt-code-writer-p-one" "p/one"
-  write_role_fake_opencode
-  run shunt_invoke_role_with_failover code-write shunt_models_code_writer_agent_for accept_only_p_two "question"
-  assert_failure
-  run shunt_breaker_is_open "p/one#code-write"
-  assert_success
-  run shunt_breaker_is_open "p/one"
-  assert_failure
 }
 
 @test "an open bulk-read breaker does not pause the model for code-write" {
@@ -459,16 +420,6 @@ write_failing_opencode() {
   [ "$(echo "$output" | grep -c "falling back to priority order")" -eq 1 ]
 }
 
-@test "an accept function returning 2 aborts the call without touching the breaker" {
-  write_models_registry "p/one" "p/two"
-  write_shunt_agent "shunt-code-writer-p-one" "p/one"
-  write_shunt_agent "shunt-code-writer-p-two" "p/two"
-  write_role_fake_opencode
-  run shunt_invoke_role_with_failover code-write shunt_models_code_writer_agent_for accept_abort "question"
-  assert_failure
-  [ ! -f "$SHUNT_BREAKER_STATE_FILE" ]
-}
-
 @test "a corrupt breaker state file is healed by a successful call without a warning" {
   set -e
   write_models_registry "p/one"
@@ -482,31 +433,6 @@ write_failing_opencode() {
   [ -s "$SHUNT_INVOKE_OUT_FILE" ]
   ! grep -q "could not update the circuit breaker state" "$TEST_TMPDIR/err"
   jq -e '.models["p/one"] == {failures: 0, cooldown_until: 0}' "$SHUNT_BREAKER_STATE_FILE" >/dev/null
-}
-
-@test "a corrupt breaker state file does not stop the failover, it is healed and the failure counted" {
-  set -e
-  write_models_registry "p/one" "p/two"
-  write_shunt_agent "shunt-code-writer-p-one" "p/one"
-  write_shunt_agent "shunt-code-writer-p-two" "p/two"
-  write_role_fake_opencode
-  echo 'not json' >"$SHUNT_BREAKER_STATE_FILE"
-
-  shunt_invoke_role_with_failover code-write shunt_models_code_writer_agent_for accept_only_p_two "question" 2>"$TEST_TMPDIR/err"
-  [ "$SHUNT_INVOKE_AGENT_USED" = "p/two" ]
-  ! grep -q "could not update the circuit breaker state" "$TEST_TMPDIR/err"
-  jq -e '.models["p/one#code-write"].failures == 1 and .models["p/two#code-write"].failures == 0' "$SHUNT_BREAKER_STATE_FILE" >/dev/null
-}
-
-@test "a rejected transcript does not leave its output file behind" {
-  export TMPDIR="$TEST_TMPDIR/tmp"
-  mkdir -p "$TMPDIR"
-  write_models_registry "p/one"
-  write_shunt_agent "shunt-code-writer-p-one" "p/one"
-  write_role_fake_opencode
-  run shunt_invoke_role_with_failover code-write shunt_models_code_writer_agent_for accept_only_p_two "question"
-  assert_failure
-  [ -z "$(ls -A "$TMPDIR")" ]
 }
 
 @test "shunt_log_usage tags bulk-read entries and shunt_log_code_write tags code-write entries" {

@@ -3,7 +3,7 @@
 import argparse
 from collections.abc import Sequence
 
-from . import (breaker, bulk_read, context_detect, cw_cli, failover, migrate, models, models_write, opencode_cli, providers,
+from . import (breaker, bulk_read, code_write, context_detect, cw_cli, failover, migrate, models, models_write, opencode_cli, providers,
                providers_write, selffix, transport, usage_log)
 from .version import plugin_version
 
@@ -37,5 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     if argv and argv[0] == bulk_read.COMMAND:  # the script's own arguments, argparse must not see them
         return bulk_read.main(argv[1:])
+    if argv and argv[0] == code_write.COMMAND:  # same: --spec takes any word, even one starting with --
+        return code_write.main(argv[1:])
     args = build_parser().parse_args(argv)
     return args.func(args)

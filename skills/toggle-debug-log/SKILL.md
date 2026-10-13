@@ -15,7 +15,7 @@ written.
 
 ## How it works
 
-`shunt_debug_log_enabled()` in `scripts/lib/opencode.sh` checks the
+`debug_log_enabled()` in `${CLAUDE_PLUGIN_ROOT}/scripts/py/shunt/bulk_read.py` checks the
 `SHUNT_DEBUG_LOG` environment variable at the time each hook/script runs.
 That environment comes from Claude Code, which reads `.claude/settings.local.json`'s
 `env` block **at session start** — not on every tool call. So editing the

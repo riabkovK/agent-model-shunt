@@ -75,13 +75,15 @@ def _rmdir_all(paths: Sequence[bytes]) -> None:
             os.rmdir(path)
 
 
-def make_dirs(ancestor: bytes, missing: Sequence[bytes]) -> tuple[bytes, list[bytes]]:
+def make_dirs(ancestor: bytes, missing: Sequence[bytes],
+              created: list[bytes] | None = None) -> tuple[bytes, list[bytes]]:
     """Create missing[:-1] below ancestor (mode 0755 whatever the umask). Returns (deepest dir, created).
 
     A directory that appeared concurrently is used but never listed as ours. On any failure
-    or signal the directories created so far are removed again.
+    or signal the directories created so far are removed again. A caller that wants its own
+    record of the directories passes the list, which is filled as they are made.
     """
-    created: list[bytes] = []
+    created = [] if created is None else created
     path = ancestor
     held = -1
     try:

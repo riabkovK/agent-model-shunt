@@ -5,10 +5,10 @@ _shunt_breaker_record and _shunt_report_no_delegate of scripts/lib/opencode.sh. 
 from models.py, the circuit breaker is read and written in process (breaker.py), and each attempt is
 transport.invoke_status (HTTP in process, the OpenCode CLI as a child).
 
-A role whose answer must be judged by the caller (code-write) runs with --external-accept: the loop
-stops at the first reply it gets and prints it (reply file, model id, candidate index, refusals so far)
-without recording a breaker outcome. The caller judges the reply, records the outcome itself and runs
-the loop again with --start index+1 and --oversize <refusals>.
+A role whose answer must be judged by the caller (code-write) passes an `accept` callback. It gets
+the reply file and the model id: 0 accepts (breaker success), 1 rejects (a model failure: breaker
+failure, the reply file is removed, next model), anything else aborts the call with status 1 and
+leaves the breaker alone.
 
 Exit status 1 is a fatal `shunt:` line (every candidate failed or paused, no candidate, ...).
 """
@@ -19,7 +19,7 @@ import argparse
 import os
 import sys
 import unicodedata
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
@@ -39,8 +39,6 @@ class Fatal(Exception):
 class Reply:
     path: str
     model_id: str
-    index: int
-    oversize: int
 
 
 def _fatal(message: str) -> NoReturn:
@@ -107,9 +105,14 @@ def _agent_for(path: str, model_id: str, kind: str) -> str:
     return models.code_writer_agent_for(model_id) if kind == WRITER_KIND else models.agent_for(path, model_id)
 
 
+Accept = Callable[[str, str], int]
+ACCEPTED = 0
+REJECTED = 1
+
+
 def run_role(role: str, kind: str, question: str, files: Sequence[str], environ: Mapping[str, str], *,
-             start: int = 0, oversize: int = 0, external: bool = False, warn_active: bool = False) -> Reply:
-    """Try the candidates of `role` from index `start`, in order, until one answers.
+             accept: Accept | None = None, warn_active: bool = False) -> Reply:
+    """Try the candidates of `role` in order until one answers (and `accept`, when given, takes it).
 
     A model that fails to run gets a note and a breaker failure. One that refuses the input as too
     large (OVERSIZE), whose key is rejected (AUTH) or that has a config problem (CONFIG) is skipped
@@ -125,10 +128,9 @@ def run_role(role: str, kind: str, question: str, files: Sequence[str], environ:
         hint = (" Read the file directly instead, or add/enable a model with scripts/shunt-models."
                 if role == "bulk-read" else " Add or enable a model with that role using scripts/shunt-models.")
         _fatal(f"no enabled delegate models with the {role} role in the registry at {path}.{hint}")
-    tried_any = start > 0
-    for index, model_id in enumerate(ids):
-        if index < start:
-            continue
+    tried_any = False
+    oversize = 0
+    for model_id in ids:
         key = breaker_key(model_id, role)
         if _is_open(environ, key):
             continue
@@ -136,9 +138,15 @@ def run_role(role: str, kind: str, question: str, files: Sequence[str], environ:
         agent = _agent_for(path, model_id, kind)
         status, out = transport.invoke_status(agent, question, files, environ)
         if status == 0:
-            if not external:
+            verdict = ACCEPTED if accept is None else accept(out, model_id)
+            if verdict == ACCEPTED:
                 _record(environ, "success", key)
-            return Reply(out, model_id, index, oversize)
+                return Reply(out, model_id)
+            _unlink(out)
+            if verdict != REJECTED:
+                raise reply.Abort(1)
+            _record(environ, "failure", key)
+            continue
         note_failure(model_id, status, agent, environ)
         if status in (AUTH, CONFIG):
             continue
@@ -152,6 +160,13 @@ def run_role(role: str, kind: str, question: str, files: Sequence[str], environ:
     if oversize:
         _report_no_delegate(role, oversize)
     _fatal("all delegate models in the registry failed for this call.")
+
+
+def _unlink(path: str) -> None:
+    try:
+        os.unlink(path)
+    except OSError:
+        pass
 
 
 def invoke_legacy(agent: str, question: str, files: Sequence[str], environ: Mapping[str, str]) -> str:
@@ -200,12 +215,8 @@ def guarded(call: Any) -> int:
 
 def _run(args: argparse.Namespace) -> int:
     def call() -> int:
-        found = run_role(args.role, args.agent_kind, args.question, args.files, os.environ, start=args.start,
-                         oversize=args.oversize, external=args.external_accept)
-        if args.external_accept:
-            sys.stdout.write(f"{found.path}\n{found.model_id}\n{found.index}\n{found.oversize}\n")
-        else:
-            sys.stdout.write(f"{found.path}\n{found.model_id}\n")
+        found = run_role(args.role, args.agent_kind, args.question, args.files, os.environ)
+        sys.stdout.write(f"{found.path}\n{found.model_id}\n")
         return 0
     return guarded(call)
 
@@ -248,9 +259,6 @@ def register(subparsers: Any) -> None:
     run.set_defaults(func=_run)
     run.add_argument("--role", required=True)
     run.add_argument("--agent-kind", choices=("bulk", WRITER_KIND), default="bulk")
-    run.add_argument("--start", type=int, default=0)
-    run.add_argument("--oversize", type=int, default=0)
-    run.add_argument("--external-accept", action="store_true")
     bulk = sub.add_parser("bulk")
     bulk.set_defaults(func=_bulk)
     bulk.add_argument("--legacy-agent", required=True)

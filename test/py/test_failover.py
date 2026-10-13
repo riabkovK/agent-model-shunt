@@ -94,7 +94,7 @@ def reply_text(path):
 def test_first_good_http_model_answers_and_the_breaker_records_success(fo):
     fo.registry(model("acme/m1"))
     found = fo.run()
-    assert (found.model_id, found.index) == ("acme/m1", 0)
+    assert found.model_id == "acme/m1"
     assert reply_text(found.path) == "hello"
     assert fo.breaker()["acme/m1"]["failures"] == 0
     os.unlink(found.path)
@@ -173,19 +173,87 @@ def test_an_active_model_missing_from_the_registry_is_warned_about_once_when_ask
     assert "ghost/x" not in capsys.readouterr().err
 
 
-def test_external_accept_returns_the_reply_without_a_breaker_record_and_resumes_after_it(fo):
-    fo.registry(model("acme/m1"), model("acme/m2"))
-    first = fo.run(external=True)
-    assert (first.model_id, first.index, first.oversize) == ("acme/m1", 0, 0)
-    assert fo.breaker() == {}
-    second = fo.run(external=True, start=first.index + 1, oversize=4)
-    assert (second.model_id, second.index, second.oversize) == ("acme/m2", 1, 4)
+def writer(fo, accept, **options):
+    return fo.run(role="code-write", kind="writer", accept=accept, **options)
 
 
-def test_resuming_past_the_last_candidate_is_not_reported_as_paused(fo):
+def test_an_accept_callback_gets_the_reply_file_and_the_model_and_accepting_records_a_success(fo):
     fo.registry(model("acme/m1"))
-    with pytest.raises(failover.Fatal, match="all delegate models in the registry failed"):
-        fo.run(external=True, start=1)
+    seen = []
+
+    def accept(path, model_id):
+        seen.append((reply_text(path), model_id))
+        return 0
+
+    found = writer(fo, accept)
+    assert seen == [("hello", "acme/m1")]
+    assert os.path.exists(found.path)
+    assert fo.breaker()["acme/m1#code-write"]["failures"] == 0
+
+
+def test_a_rejecting_accept_callback_sends_the_call_to_the_next_model_and_counts_a_failure_for_the_role(fo):
+    fo.registry(model("acme/m1"), model("acme/m2"))
+    seen = []
+
+    def accept(path, model_id):
+        seen.append((path, model_id))
+        return 1 if model_id == "acme/m1" else 0
+
+    found = writer(fo, accept)
+    assert found.model_id == "acme/m2"
+    assert not os.path.exists(seen[0][0])  # a rejected reply file does not stay behind
+    state = fo.breaker()
+    assert state["acme/m1#code-write"]["failures"] == 1
+    assert state["acme/m2#code-write"]["failures"] == 0
+    assert "acme/m1" not in state  # the bulk-read key of the same model is untouched
+
+
+def test_every_model_rejected_is_fatal_and_a_threshold_of_one_pauses_the_role_only(fo):
+    fo.environ["SHUNT_BREAKER_THRESHOLD"] = "1"
+    fo.registry(model("acme/m1"))
+    with pytest.raises(failover.Fatal, match="all delegate models in the registry failed for this call."):
+        writer(fo, lambda path, model_id: 1)
+    state = fo.breaker()
+    assert state["acme/m1#code-write"]["cooldown_until"] > 0
+    assert "acme/m1" not in state
+
+
+def test_an_accept_callback_returning_2_aborts_without_touching_the_breaker(fo):
+    fo.registry(model("acme/m1"), model("acme/m2"))
+    calls = []
+
+    def accept(path, model_id):
+        calls.append(path)
+        return 2
+
+    with pytest.raises(reply.Abort) as stop:
+        writer(fo, accept)
+    assert stop.value.status == 1
+    assert len(calls) == 1  # the second model is not tried
+    assert not os.path.exists(calls[0])
+    assert fo.breaker() == {}
+
+
+def test_a_corrupt_breaker_state_does_not_stop_the_failover_and_is_healed_without_a_warning(fo, capsys):
+    fo.registry(model("acme/m1"), model("acme/m2"))
+    (fo.path / "breaker.json").write_text("not json")
+    found = writer(fo, lambda path, model_id: 0 if model_id == "acme/m2" else 1)
+    assert found.model_id == "acme/m2"
+    assert "could not update the circuit breaker state" not in capsys.readouterr().err
+    state = fo.breaker()
+    assert (state["acme/m1#code-write"]["failures"], state["acme/m2#code-write"]["failures"]) == (1, 0)
+
+
+def test_a_model_that_refuses_the_input_is_never_offered_to_the_accept_callback(fo):
+    fo.registry(model("acme/m1", context_tokens=1), model("acme/m2"))
+    offered = []
+
+    def accept(path, model_id):
+        offered.append(model_id)
+        return 0
+
+    found = writer(fo, accept, question="x" * 4000)
+    assert (found.model_id, offered) == ("acme/m2", ["acme/m2"])
 
 
 def test_an_opencode_model_runs_the_cli_with_an_explicit_argv_and_no_key(fo):

@@ -4,7 +4,8 @@
 # targets user-configured OpenCode providers/agents instead of Spotify AiKA
 # modes.
 #
-# Meant to be sourced by scripts/bulk-read and scripts/code-write.
+# Meant to be sourced by the bats tests and the libraries that still need these wrappers
+# (scripts/bulk-read and scripts/code-write are Python launchers now).
 #
 # Most of the work is Python now (scripts/py/shunt): failover.py runs the loop
 # over the candidate models in one process (candidates, circuit breaker,
@@ -33,15 +34,6 @@ unset _SHUNT_OPENCODE_LIB_DIR
 shunt_report_error() {
   echo "shunt: $1" >&2
   exit 1
-}
-
-shunt_preflight() {
-  command -v "$SHUNT_OPENCODE_BIN" >/dev/null 2>&1 \
-    || shunt_report_error "'$SHUNT_OPENCODE_BIN' not found in PATH. Install OpenCode (https://opencode.ai) or set SHUNT_OPENCODE_BIN."
-  command -v jq >/dev/null 2>&1 \
-    || shunt_report_error "'jq' not found in PATH. Install jq to parse OpenCode's JSON output."
-  command -v timeout >/dev/null 2>&1 \
-    || shunt_report_error "'timeout' not found in PATH (part of GNU coreutils)."
 }
 
 # shunt_prepare_isolated_config <agent>
@@ -92,19 +84,6 @@ shunt_invoke_with_failover() {
   SHUNT_INVOKE_AGENT_USED="${out#*$'\n'}"
 }
 
-# _shunt_breaker_record <success|failure> <key>
-# Records an attempt outcome in the circuit breaker, for the verdict of an
-# accept function. A breaker write failure (corrupt or unwritable state file)
-# is non-fatal: the breaker is only an optimisation, so it must not kill a call
-# whose paid generation already happened or skip the failover to the next
-# model. Prints one stderr warning with the state file path only.
-_shunt_breaker_record() {
-  local outcome="$1" key="$2"
-  if ! "shunt_breaker_record_$outcome" "$key"; then
-    echo "shunt: warning: could not update the circuit breaker state ($SHUNT_BREAKER_STATE_FILE)" >&2
-  fi
-}
-
 # shunt_invoke_role_with_failover <role> <agent-fn> <accept-fn|""> <question> [file...]
 # Delegates a call, trying the candidate models in the shunt-owned models.json
 # registry that have <role> (priority order, skipping any whose circuit
@@ -117,56 +96,21 @@ _shunt_breaker_record() {
 # refused as oversize, the call ends with "no delegate model can take this
 # input". <agent-fn> is shunt_models_agent_for (the default) or
 # shunt_models_code_writer_agent_for, which picks the agent run for a model id.
-# <accept-fn>, when non-empty, is called with the output file and the model id
-# and judges the answer, so a role can count an unusable answer as a model
-# failure:
-#   0  accept: the model succeeded (breaker success), the output is kept
-#   1  reject: a model failure (breaker failure), try the next model
-#   2  abort: an environment problem that is not the model's fault, the call
-#      ends fatally and the breaker is left alone
-# It runs in this shell, so it may set globals. Without one, the whole loop is
-# one Python process. With one, Python runs the loop up to the first answer and
-# this function judges it, then asks for the next candidate. Sets
-# SHUNT_INVOKE_OUT_FILE to the accepted output file path and
-# SHUNT_INVOKE_AGENT_USED to the model id. Both are globals, not stdout: call
-# it directly. Fatal only once every candidate has been tried and failed, or
-# every candidate's breaker is open, or there is no candidate with the role.
+# <accept-fn> must be empty: a role whose answers are judged by the caller
+# (code-write) runs in Python (failover.run_role with an accept callback, see
+# scripts/py/shunt/code_write.py). The whole loop is one Python process. Sets
+# SHUNT_INVOKE_OUT_FILE to the output file path and SHUNT_INVOKE_AGENT_USED to
+# the model id. Both are globals, not stdout: call it directly. Fatal only once
+# every candidate has been tried and failed, or every candidate's breaker is
+# open, or there is no candidate with the role.
 shunt_invoke_role_with_failover() {
-  local role="$1" agent_fn="$2" accept_fn="$3" question="$4"
+  local role="$1" agent_fn="$2" accept_fn="$3" question="$4" out kind=bulk
   shift 4
-  local kind=bulk out out_file id index key verdict start=0 oversize=0
+  [ -z "$accept_fn" ] || shunt_report_error "an accept function is not supported here (code-write runs in Python)."
   [ "$agent_fn" != shunt_models_code_writer_agent_for ] || kind=writer
-
-  if [ -z "$accept_fn" ]; then
-    out=$(_shunt_oc_py failover run --role "$role" --agent-kind "$kind" -- "$question" "$@") || exit
-    SHUNT_INVOKE_OUT_FILE="${out%%$'\n'*}"
-    SHUNT_INVOKE_AGENT_USED="${out#*$'\n'}"
-    return 0
-  fi
-
-  while :; do
-    out=$(_shunt_oc_py failover run --role "$role" --agent-kind "$kind" --external-accept \
-      --start "$start" --oversize "$oversize" -- "$question" "$@") || exit
-    { IFS= read -r out_file; IFS= read -r id; IFS= read -r index; IFS= read -r oversize; } <<<"$out"
-    key=$(shunt_breaker_key "$id" "$role")
-    verdict=0
-    "$accept_fn" "$out_file" "$id" || verdict=$?
-    case "$verdict" in
-      0)
-        _shunt_breaker_record success "$key"
-        SHUNT_INVOKE_AGENT_USED="$id"
-        SHUNT_INVOKE_OUT_FILE="$out_file"
-        return 0
-        ;;
-      1) rm -f "$out_file" ;;
-      *)
-        rm -f "$out_file"
-        exit 1
-        ;;
-    esac
-    _shunt_breaker_record failure "$key"
-    start=$((index + 1))
-  done
+  out=$(_shunt_oc_py failover run --role "$role" --agent-kind "$kind" -- "$question" "$@") || exit
+  SHUNT_INVOKE_OUT_FILE="${out%%$'\n'*}"
+  SHUNT_INVOKE_AGENT_USED="${out#*$'\n'}"
 }
 
 # shunt_extract_text <response-file>
@@ -189,16 +133,6 @@ shunt_extract_usage() {
 # caller that must know whether the answer is complete asks here.
 shunt_extract_finish_reason() {
   _shunt_oc_py usage finish-reason -- "$1" || true
-}
-
-# shunt_debug_log_enabled
-# Returns success (0) if SHUNT_DEBUG_LOG is truthy, matching the same
-# accepted values as SHUNT_HOOKS_DISABLED.
-shunt_debug_log_enabled() {
-  case "${SHUNT_DEBUG_LOG:-}" in
-    1|true|TRUE|yes|YES) return 0 ;;
-    *) return 1 ;;
-  esac
 }
 
 # shunt_log_usage <agent> <response-file> <question> <file...>
