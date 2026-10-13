@@ -236,8 +236,13 @@ def _finish(call: Call, root: str, target: str, found: failover.Reply) -> int:
     code_file = os.path.join(call.work, "parsed", "code")
     final = call.publication.publish(root, target, code_file)
     _log_call(call, found.path, found.model_id, os.path.getsize(code_file))
-    out(f"shunt: code-write: created {final} (generated content, review it before running or trusting it)")
-    print_notes(call)
+    # The file is on disk: a closed pipe or full stdout must not turn the exit status into a failure.
+    try:
+        out(f"shunt: code-write: created {final} (generated content, review it before running or trusting it)")
+        print_notes(call)
+    except OSError:
+        with contextlib.suppress(OSError):
+            os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())  # the exit flush must not fail
     return 0
 
 
@@ -273,6 +278,8 @@ def run(argv: Sequence[str], environ: Mapping[str, str]) -> int:
         if stop.message:
             err(stop.message)
         return stop.status
+    except BrokenPipeError:
+        raise  # shunt_main answers 141
     except OSError as exc:
         err(f"shunt: {exc}")
         return 1

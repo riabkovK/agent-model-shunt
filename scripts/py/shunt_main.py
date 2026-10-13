@@ -32,6 +32,8 @@ def run():
         return 2
     from shunt.cli import main
     # Bytes in, bytes out: ids and paths are not ASCII, and the locale must not matter.
+    if hasattr(sys.stdin, "reconfigure"):
+        sys.stdin.reconfigure(encoding="utf-8", errors="surrogateescape")
     sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")
     sys.stderr.reconfigure(encoding="utf-8", errors="surrogateescape")
     try:
@@ -46,6 +48,12 @@ def run():
         # final flush does not print "Exception ignored ... BrokenPipeError".
         os.dup2(os.open(os.devnull, os.O_WRONLY), sys.stdout.fileno())
         return BROKEN_PIPE_EXIT
+    except Exception as exc:  # no traceback for the user: one line with the type only
+        try:
+            sys.stderr.write("shunt: unexpected error (%s)\n" % type(exc).__name__)
+        except OSError:
+            pass
+        return 1
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ import argparse
 import json
 import os
 import re
+import stat
 import sys
 from collections.abc import Mapping, Sequence
 from datetime import datetime, timezone
@@ -137,8 +138,11 @@ def _append(agent: str, resp: str, question: str, entries: list[dict[str, Any]],
     }
     try:
         os.makedirs(os.path.dirname(log_path) or ".", exist_ok=True)
-        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o666)
+        fd = os.open(log_path, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NOFOLLOW | os.O_CLOEXEC, 0o600)
         try:
+            info = os.fstat(fd)
+            if not stat.S_ISREG(info.st_mode) or info.st_uid != os.getuid():
+                return  # logging is best effort: never write to a foreign or special file
             os.write(fd, reply.dump(entry).encode("utf-8"))
         finally:
             os.close(fd)

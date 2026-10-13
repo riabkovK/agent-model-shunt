@@ -139,7 +139,7 @@ def test_run_with_timeout_returns_124_and_kills_the_whole_group(tmp_path):
     tool = _script(tmp_path, f"(sleep 3; touch {marker}) &\nsleep 30\n")
     with open(os.devnull, "wb") as sink:
         started = time.monotonic()
-        assert opencode_cli.run_with_timeout([tool], dict(os.environ), sink.fileno(), 0.3) == 124
+        assert opencode_cli.run_with_timeout([tool], dict(os.environ), sink.fileno(), 0.3) == opencode_cli.TIMED_OUT
     assert time.monotonic() - started < 5
     time.sleep(3.2)
     assert not marker.exists()
@@ -226,7 +226,7 @@ def test_a_timeout_kills_a_group_member_even_when_the_leader_dies_on_sigterm(tmp
     # The leader exits on SIGTERM, its child ignores it and would touch the marker later.
     tool = _script(tmp_path, f"(trap '' TERM; sleep 2; touch {marker}) &\necho $! >{pids}\nsleep 30\n")
     with open(os.devnull, "wb") as sink:
-        assert opencode_cli.run_with_timeout([tool], dict(os.environ), sink.fileno(), 0.3) == 124
+        assert opencode_cli.run_with_timeout([tool], dict(os.environ), sink.fileno(), 0.3) == opencode_cli.TIMED_OUT
     time.sleep(2.5)
     assert not marker.exists()
 

@@ -165,7 +165,12 @@ def main(argv: Sequence[str], environ: Mapping[str, str] | None = None) -> int:
     except OSError as exc:
         sys.stderr.write(f"shunt: cannot read the usage log {path}: {exc.strerror}\n")
         return 1
-    sys.stdout.write(json.dumps(report, indent=2, ensure_ascii=False) + "\n")
+    text = json.dumps(report, indent=2, ensure_ascii=False)
+    try:
+        text.encode("utf-8", "surrogateescape")
+    except UnicodeEncodeError:  # a lone surrogate in a label: escape everything instead of failing
+        text = json.dumps(report, indent=2, ensure_ascii=True)
+    sys.stdout.write(text + "\n")
     sys.stdout.flush()
     sys.stderr.write("\n" + "\n".join(NOTES) + "\n")
     return 0

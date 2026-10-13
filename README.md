@@ -296,7 +296,8 @@ scripts/code-write --kind test|generic --spec "<what to generate>" \
   ever returns text under a fixed tag protocol
   (`<SHUNT-NOTES>`/`<SHUNT-CODE>`), which the script validates before
   writing anything. Path validation and a denylist (`.git`, `.claude`,
-  `.env*`, `CLAUDE.md`, and more) run before the model is ever called; see
+  `.env*`, `CLAUDE.md`, build and test entry points such as `setup.py` and
+  `package.json`, and more) run before the model is ever called; see
   [ADR 0017](docs/adr/0017-code-write-boundaries-and-toctou.md) for the full
   list and the accepted TOCTOU trade-off.
 - A model needs the `code-write` role to be a candidate for this script.

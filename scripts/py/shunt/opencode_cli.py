@@ -48,6 +48,7 @@ _WS = re.compile(r"[ \t\r\n]*")
 _UNITS = {"": 1, "s": 1, "m": 60, "h": 3600, "d": 86400}
 # Environment names the bash wrapper sets only for this process. Empty, they are not passed on.
 _WRAPPER_ONLY = ("TMPDIR", "SHUNT_TRANSPORT")
+TIMED_OUT = -1  # internal sentinel of run_with_timeout, no process exit status is negative
 _FALLBACK = {"text": "", "finish_reason": ""}
 
 
@@ -301,21 +302,25 @@ def _dies_with_us() -> Any:
 
 
 def run_with_timeout(argv: list[str], environ: Mapping[str, str], stdout_fd: int, seconds: float | None) -> int:
-    """Run argv with stdin and stderr on /dev/null and stdout on stdout_fd. 124 when the time ran out
-    (the whole process group gets SIGTERM, then SIGKILL after a grace period), else its exit status."""
+    """Run argv with stdin and stderr on /dev/null and stdout on stdout_fd. TIMED_OUT when the time ran
+    out (the whole process group gets SIGTERM, then SIGKILL after a grace period), else its exit
+    status. The sentinel is negative, so a child's own exit 124 is never taken for a timeout."""
     proc = None
     try:
         with _dies_with_us():  # installed before the start, so no signal can orphan the child
             try:
                 proc = subprocess.Popen(argv, stdin=subprocess.DEVNULL, stdout=stdout_fd, stderr=subprocess.DEVNULL,
                                         env=dict(environ), start_new_session=True, close_fds=True)
-            except (OSError, ValueError):
+            except (OSError, ValueError) as exc:
+                if isinstance(exc, OSError):
+                    sys.stderr.write(f"shunt: cannot run '{argv[0]}': {exc.strerror or exc}\n")
                 return 127
             try:
                 code = proc.wait(timeout=seconds)
             except subprocess.TimeoutExpired:
                 _kill_group(proc)
-                return TIMEOUT
+                return TIMED_OUT
+            _kill_group(proc)  # a leader that exited normally may have left background children
     finally:
         if proc is not None and proc.poll() is None:
             _kill_group(proc)
@@ -343,7 +348,9 @@ def invoke(agent: str, question: str, files: Sequence[str], model_id: str, conte
     except ValueError:
         raise reply.Abort(ERROR) from None  # GNU timeout refused the value, the call never ran
     binary = environ.get("SHUNT_OPENCODE_BIN") or "opencode"
-    argv = [binary, "run", "--agent", agent, question, *file_args, "--format", "json"]
+    # a question that starts with '-' would be parsed as an option
+    prompt = "Question: " + question if question.startswith("-") else question
+    argv = [binary, "run", "--agent", agent, prompt, *file_args, "--format", "json"]
     tmp = str(env.tmp_dir(environ))
     try:
         raw_fd, raw = tempfile.mkstemp(prefix=OUT_PREFIX, dir=tmp)
@@ -355,12 +362,13 @@ def invoke(agent: str, question: str, files: Sequence[str], model_id: str, conte
             status = run_with_timeout(argv, _child_env(environ, root), raw_fd, seconds)
         finally:
             os.close(raw_fd)
-        if status == TIMEOUT:
+        if status == TIMED_OUT:
             raise reply.Abort(TIMEOUT)
         if status != 0:
             raise reply.Abort(ERROR)
-        if os.path.getsize(raw) == 0:
-            raise reply.Abort(EMPTY)
+        size = os.path.getsize(raw)
+        if size == 0 or size > MAX_TRANSCRIPT_BYTES:
+            raise reply.Abort(EMPTY)  # an oversize transcript has no usable answer, let failover go on
         normalized = normalize_file(raw)
     finally:
         _unlink(raw)

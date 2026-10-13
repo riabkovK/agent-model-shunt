@@ -43,8 +43,10 @@ def threshold(environ: Mapping[str, str]) -> int:
     return int(text) if len(text.lstrip("0")) <= MAX_MIN_LINES_DIGITS else 10**MAX_MIN_LINES_DIGITS
 
 
-def count_lines(path: str) -> int | None:
-    """Newline count of a regular file (symlinks followed), None when it is not one or cannot be read."""
+def scan_lines(path: str, stop_after: int | None = None) -> tuple[int, bool] | None:
+    """(newline count, complete) of a regular file (symlinks followed), None when it is not one or
+    cannot be read. With `stop_after` the scan ends after the chunk that pushes the count past it,
+    and `complete` is False: the count is then only a lower bound."""
     try:
         fd = os.open(path, os.O_RDONLY | os.O_NONBLOCK | os.O_CLOEXEC)
     except (OSError, ValueError):
@@ -56,12 +58,25 @@ def count_lines(path: str) -> int | None:
         while True:
             chunk = os.read(fd, READ_CHUNK)
             if not chunk:
-                return total
+                return total, True
             total += chunk.count(b"\n")
+            if stop_after is not None and total > stop_after:
+                return total, len(chunk) < READ_CHUNK  # a short read of a regular file is its end
     except OSError:
         return None
     finally:
         os.close(fd)
+
+
+def count_lines(path: str) -> int | None:
+    """Newline count of a regular file (symlinks followed), None when it is not one or cannot be read."""
+    scanned = scan_lines(path)
+    return None if scanned is None else scanned[0]
+
+
+def _size_text(scanned: tuple[int, bool], limit: int) -> str:
+    lines, complete = scanned
+    return f"{lines} lines" if complete else f"over {limit} lines"
 
 
 def _no_constant(name: str) -> Any:
@@ -154,13 +169,13 @@ def decide_read(tool: Mapping[str, Any], environ: Mapping[str, str]) -> str:
     path = _text(tool.get("file_path"))
     if not path:
         return ALLOW
-    lines = count_lines(path)
     limit = threshold(environ)
-    if lines is None or lines <= limit:
+    scanned = scan_lines(path, limit)
+    if scanned is None or scanned[0] <= limit:
         return ALLOW
     if not _delegate_available():
         return ALLOW
-    return DENY % f"File is {lines} lines (threshold: {limit}). {READ_ADVICE}"
+    return DENY % f"File is {_size_text(scanned, limit)} (threshold: {limit}). {READ_ADVICE}"
 
 
 def file_argument(command: str) -> str:
@@ -189,11 +204,11 @@ def decide_bash(tool: Mapping[str, Any], environ: Mapping[str, str]) -> str:
     if not command or "|" in command or ">" in command:
         return ALLOW
     path = file_argument(command)
-    lines = count_lines(path) if path else None
     limit = threshold(environ)
-    if lines is None or lines <= limit:
+    scanned = scan_lines(path, limit) if path else None
+    if scanned is None or scanned[0] <= limit:
         return ALLOW
-    return DENY % f"File is {lines} lines (threshold: {limit}). {BASH_ADVICE}"
+    return DENY % f"File is {_size_text(scanned, limit)} (threshold: {limit}). {BASH_ADVICE}"
 
 
 def session_start(environ: Mapping[str, str]) -> str:
@@ -235,5 +250,13 @@ def main(argv: list[str], unusable: str | None = None) -> int:
             sys.stdout.buffer.write(out.encode("utf-8", errors="surrogateescape"))
             sys.stdout.buffer.flush()
     except OSError:
-        pass  # the reader went away
+        _silence_stdout()  # the reader went away
     return 0
+
+
+def _silence_stdout() -> None:
+    """Point fd 1 at /dev/null so the interpreter's exit flush cannot fail and change the exit code."""
+    try:
+        os.dup2(os.open(os.devnull, os.O_WRONLY), 1)
+    except OSError:
+        pass

@@ -11,6 +11,7 @@ directory for a symlink after the last check can still redirect a later write.
 
 import fnmatch
 import os
+import re
 from dataclasses import dataclass, field
 
 from .cw_text import has_unsafe_chars
@@ -19,7 +20,14 @@ MAX_TARGET_BYTES = 4096  # PATH_MAX, a longer target is refused before anything 
 _TRIM = b". "  # Windows treats '.git.' and '.git ' as '.git'
 _DENIED_NAMES = frozenset((
     b"claude.md", b"claude.local.md", b"agents.md", b"gemini.md", b"jenkinsfile", b"opencode.json",
-    b"makefile", b"gnumakefile", b"justfile", b"rakefile", b"vagrantfile", b"conftest.py"))
+    b"makefile", b"gnumakefile", b"justfile", b"rakefile", b"vagrantfile", b"conftest.py",
+    # build, test and tooling entry points that run on the next build, test run or interpreter start
+    b"setup.py", b"sitecustomize.py", b"usercustomize.py", b"build.rs", b"build.gradle", b"build.gradle.kts",
+    b"settings.gradle", b"settings.gradle.kts", b"pom.xml", b"cmakelists.txt", b"pytest.ini", b"tox.ini",
+    b"noxfile.py", b"setup.cfg", b"pyproject.toml", b"package.json", b"dockerfile", b"docker-compose.yml",
+    b"docker-compose.yaml", b"compose.yml", b"compose.yaml", b"gemfile"))
+_DENIED_EXTENSIONS = (b".pth",)
+_DENIED_CONFIG_RE = re.compile(rb"(vite|webpack|jest|babel|rollup|vitest|eslint)\.config\.(js|cjs|mjs|ts)")
 _DENIED_ROOT_NAMES = frozenset((
     b".git", b".claude", b".github", b".config", b".local", b".ssh", b".gnupg", b".aws", b".kube"))
 _SENSITIVE_GLOBS = tuple(pattern.encode() for pattern in (
@@ -38,7 +46,8 @@ _SENSITIVE_PAIRS = frozenset(pair.encode() for pair in (
 _SENSITIVE_TRIPLES = frozenset((b".local/share/opencode",))
 _DENIED_HINT = (
     "(dotted names such as .git, .github, .claude, .env* and .mcp.json, and CLAUDE.md, AGENTS.md, GEMINI.md, "
-    "opencode.json, Jenkinsfile and Makefile are off limits). A target like this must be written by Claude "
+    "opencode.json, Jenkinsfile, Makefile and other build, test and tooling entry points such as setup.py, "
+    "package.json, pyproject.toml, Dockerfile, *.config.js and *.pth files are off limits). A target like this must be written by Claude "
     "itself with the Write tool, which asks for permission, not by code-write")
 _UNSAFE_ROOT = "the project root path contains control characters or invisible Unicode characters"
 _UNSAFE_TARGET = "the target contains control characters or invisible Unicode characters"
@@ -100,7 +109,7 @@ def find_denied(path: bytes) -> bytes | None:
         trimmed = _trim(part)
         if not trimmed or trimmed.startswith(b"."):
             return trimmed or part
-        if trimmed in _DENIED_NAMES:
+        if trimmed in _DENIED_NAMES or trimmed.endswith(_DENIED_EXTENSIONS) or _DENIED_CONFIG_RE.fullmatch(trimmed):
             return trimmed
     return None
 
