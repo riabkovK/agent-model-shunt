@@ -4,7 +4,8 @@
 # enforces content limits and publishes the file without ever overwriting.
 #
 # Meant to be sourced by scripts/code-write. No top-level side effects. Needs
-# bash, coreutils, awk, grep and iconv (all present in the test image).
+# bash, coreutils and python3 (the checks, the response parser and the publish
+# stages run in scripts/py/shunt/cw_*.py, see py.sh).
 # Written to also run on the bash 3.2 that macOS ships: no associative
 # arrays, no case modification expansions, no negative array indexes.
 #
@@ -32,29 +33,16 @@
 # that wants to avoid that runs `trap shunt_cw_cleanup INT TERM HUP` around
 # shunt_cw_publish. The function is a no-op once a publish has finished.
 #
-# Residual risk, accepted and to be recorded in the ADR: TOCTOU. Every check
-# is a path check, and something running in parallel with this process that
-# swaps a directory for a symlink between the last check and the final link
-# call can still redirect the write. The window is kept small (the parent is
-# re-checked right before publish and the outcome of the link is verified)
-# but cannot be closed from bash.
-
-# Size caps. Overridable through the environment for tests. A value that is
-# not a plain integer of at most 15 digits is ignored.
-SHUNT_CW_DEFAULT_MAX_CODE_BYTES=262144
-SHUNT_CW_DEFAULT_MAX_NOTES_BYTES=32768
-# Allowance for tag lines, fence lines and CRLF on top of the two caps when
-# bounding the raw response size before it is split.
-SHUNT_CW_RESPONSE_SLACK_BYTES=4096
+# Residual risk, accepted and to be recorded in the ADR: TOCTOU between the
+# publish stages. Each stage works relative to a directory descriptor opened
+# with O_NOFOLLOW, and the final link refuses when the staged temp file is not
+# in the directory it opens, so a swapped-in symlink or directory cannot
+# redirect the write. A change of the directories ABOVE the one we hold is only
+# caught by the canonical path re-check of the staging step.
 
 # Exit codes of shunt_cw_parse.
 SHUNT_CW_EXIT_REFUSAL=10
 SHUNT_CW_EXIT_UNUSABLE=11
-
-SHUNT_CW_TAG_NOTES_OPEN='<SHUNT-NOTES>'
-SHUNT_CW_TAG_NOTES_CLOSE='</SHUNT-NOTES>'
-SHUNT_CW_TAG_CODE_OPEN='<SHUNT-CODE>'
-SHUNT_CW_TAG_CODE_CLOSE='</SHUNT-CODE>'
 
 # Scratch state shared between the internal helpers. Not part of the API.
 _SHUNT_CW_ERR=""
@@ -65,88 +53,6 @@ _SHUNT_CW_MISSING=()
 _SHUNT_CW_DIR=""
 _SHUNT_CW_TMP=""
 _SHUNT_CW_CREATED=()
-
-# Splits the response in one pass. Reads the four tag lines and the limits
-# from the environment, writes the notes and code files itself and prints one
-# reason token. Kept as data so that sourcing stays free of side effects. Byte
-# counts rely on the caller setting LC_ALL=C.
-#
-# The section variable follows the tags: 0 before the first tag, 1 inside the
-# notes, 2 between the sections, 3 inside the code, 4 after the closing code
-# tag. Text outside 1 and 3 must be blank, and is only judged once the tags
-# are known to be complete and in order.
-_SHUNT_CW_AWK_PROGRAM='
-function blank(s) { return s ~ /^[ \t\r]*$/ }
-BEGIN {
-  section = 0
-  t_notes_open = ENVIRON["CW_TAG_NOTES_OPEN"]
-  t_notes_close = ENVIRON["CW_TAG_NOTES_CLOSE"]
-  t_code_open = ENVIRON["CW_TAG_CODE_OPEN"]
-  t_code_close = ENVIRON["CW_TAG_CODE_CLOSE"]
-}
-{
-  line = $0
-  sub(/\r$/, "", line)
-  if (line == t_notes_open) { notes_open++; if (!notes_open_at) notes_open_at = NR; section = 1; next }
-  if (line == t_notes_close) { notes_close++; if (!notes_close_at) notes_close_at = NR; section = 2; next }
-  if (line == t_code_open) { code_open++; if (!code_open_at) code_open_at = NR; section = 3; next }
-  if (line == t_code_close) { code_close++; if (!code_close_at) code_close_at = NR; section = 4; next }
-  if (section == 1) { nn++; notes[nn] = $0; next }
-  if (section == 3) { nc++; code[nc] = $0; next }
-  if (!blank($0)) {
-    if (section == 0) pre_text = 1
-    else if (section == 2) mid_text = 1
-    else post_text = 1
-  }
-}
-END {
-  if (!notes_open) { print "missing-notes-delimiter"; exit }
-  if (!code_open) { print "missing-code-delimiter"; exit }
-  if (!notes_close || !code_close) { print "missing-closing-tag"; exit }
-  if (notes_open > 1) { print "duplicate-notes-delimiter"; exit }
-  if (code_open > 1) { print "duplicate-code-delimiter"; exit }
-  if (notes_close > 1 || code_close > 1) { print "duplicate-closing-tag"; exit }
-  if (!(notes_open_at < notes_close_at && notes_close_at < code_open_at && code_open_at < code_close_at)) { print "out-of-order"; exit }
-  if (pre_text) { print "text-before-delimiter"; exit }
-  if (mid_text) { print "text-between-sections"; exit }
-  if (post_text) { print "text-after-closing-tag"; exit }
-
-  # Strip ONLY an outer fence: the first non-blank line opens it (3 or more
-  # backticks, optional info string without backticks) and the last
-  # non-blank line closes it (backticks only, at least as many as the
-  # opening). Everything in between is kept verbatim, inner fences included.
-  first = 0; last = 0
-  for (i = 1; i <= nc; i++) if (!blank(code[i])) { first = i; break }
-  for (i = nc; i >= 1; i--) if (!blank(code[i])) { last = i; break }
-  from = 1; to = nc
-  if (first > 0 && last > first) {
-    fence_open = code[first]; sub(/[ \t\r]+$/, "", fence_open)
-    if (match(fence_open, /^`+/) && RLENGTH >= 3 && substr(fence_open, RLENGTH + 1) !~ /`/) {
-      width = RLENGTH
-      fence_close = code[last]; sub(/[ \t\r]+$/, "", fence_close)
-      if (fence_close ~ /^`+$/ && length(fence_close) >= width) { from = first + 1; to = last - 1 }
-    }
-  }
-
-  notes_bytes = 0; notes_empty = 1
-  for (i = 1; i <= nn; i++) { notes_bytes += length(notes[i]) + 1; if (!blank(notes[i])) notes_empty = 0 }
-  code_bytes = 0; code_empty = 1
-  for (i = from; i <= to; i++) { code_bytes += length(code[i]) + 1; if (!blank(code[i])) code_empty = 0 }
-
-  if (notes_bytes > ENVIRON["CW_MAX_NOTES"] + 0) { print "oversize"; exit }
-  if (code_empty && notes_empty) { print "empty-code"; exit }
-  if (code_bytes > ENVIRON["CW_MAX_CODE"] + 0) { print "oversize"; exit }
-
-  notes_out = ENVIRON["CW_NOTES_OUT"]; code_out = ENVIRON["CW_CODE_OUT"]
-  printf "" > notes_out
-  for (i = 1; i <= nn; i++) print notes[i] >> notes_out
-  close(notes_out)
-  printf "" > code_out
-  if (!code_empty) for (i = from; i <= to; i++) print code[i] >> code_out
-  close(code_out)
-  print (code_empty ? "deliberate-refusal" : "ok")
-}
-'
 
 # _shunt_cw_seam <name>
 # Test seam, a no-op in production. Called with "after-mkdir" and
@@ -357,40 +263,7 @@ shunt_cw_check_target() {
 # characters are printed unchanged, so shunt_cw_check_target refuses them as
 # before. Meant to run BEFORE shunt_cw_check_target, which stays strict.
 shunt_cw_normalize_path() {
-  local path="${1:-}" rest part acc="" is_abs=0
-  if _shunt_cw_has_unsafe_chars "$path"; then
-    printf '%s\n' "$path"
-    return 0
-  fi
-  case "$path" in
-    ""|*/) printf '%s\n' "$path"; return 0 ;;
-    /*) is_abs=1 ;;
-  esac
-  rest="$path"
-  while :; do
-    part="${rest%%/*}"
-    case "$part" in
-      ''|.) ;;
-      ..)
-        case "$acc" in
-          '') [ "$is_abs" -eq 1 ] || acc=".." ;;
-          ..|*/..) acc="$acc/.." ;;
-          */*) acc="${acc%/*}" ;;
-          *) acc="" ;;
-        esac
-        ;;
-      *) acc="${acc:+$acc/}$part" ;;
-    esac
-    case "$rest" in
-      */*) rest="${rest#*/}" ;;
-      *) break ;;
-    esac
-  done
-  if [ "$is_abs" -eq 1 ]; then
-    printf '/%s\n' "$acc"
-  else
-    printf '%s\n' "${acc:-.}"
-  fi
+  shunt_py codewrite normalize -- "${1:-}"
 }
 
 # shunt_cw_parse <response-file> <out-dir>
@@ -429,70 +302,25 @@ shunt_cw_normalize_path() {
 #       bidi-controls, invisible-characters, protocol-tag-in-code
 #   2   bad arguments or a missing tool, nothing about the response
 shunt_cw_parse() {
-  local response="${1:-}" out_dir="${2:-}"
-  local max_code max_notes size reason invisible status
+  local response="${1:-}" out_dir="${2:-}" reason status=0
 
   if [ "$#" -ne 2 ] || [ ! -f "$response" ] || [ ! -r "$response" ] \
       || [ ! -d "$out_dir" ] || [ ! -w "$out_dir" ]; then
     echo "shunt: usage: shunt_cw_parse <response-file> <writable-out-dir>" >&2
     return 2
   fi
-  command -v iconv >/dev/null 2>&1 || { echo "shunt: 'iconv' not found in PATH." >&2; return 2; }
-  command -v awk >/dev/null 2>&1 || { echo "shunt: 'awk' not found in PATH." >&2; return 2; }
-
-  rm -f -- "$out_dir/code" "$out_dir/notes"
-  max_code=$(_shunt_cw_limit SHUNT_CW_MAX_CODE_BYTES "$SHUNT_CW_DEFAULT_MAX_CODE_BYTES")
-  max_notes=$(_shunt_cw_limit SHUNT_CW_MAX_NOTES_BYTES "$SHUNT_CW_DEFAULT_MAX_NOTES_BYTES")
-
-  size=$(_shunt_cw_byte_count "$response")
-  if [ "$size" -eq 0 ]; then
-    echo "empty-response"
-    return "$SHUNT_CW_EXIT_UNUSABLE"
-  fi
-  if [ "$size" -gt $((max_code + max_notes + SHUNT_CW_RESPONSE_SLACK_BYTES)) ]; then
-    echo "oversize"
-    return "$SHUNT_CW_EXIT_UNUSABLE"
-  fi
-  if ! reason=$(_shunt_cw_check_text "$response"); then
-    echo "$reason"
-    return "$SHUNT_CW_EXIT_UNUSABLE"
-  fi
-
-  reason=$(LC_ALL=C \
-    CW_TAG_NOTES_OPEN="$SHUNT_CW_TAG_NOTES_OPEN" CW_TAG_NOTES_CLOSE="$SHUNT_CW_TAG_NOTES_CLOSE" \
-    CW_TAG_CODE_OPEN="$SHUNT_CW_TAG_CODE_OPEN" CW_TAG_CODE_CLOSE="$SHUNT_CW_TAG_CODE_CLOSE" \
-    CW_MAX_NOTES="$max_notes" CW_MAX_CODE="$max_code" \
-    CW_NOTES_OUT="$out_dir/notes" CW_CODE_OUT="$out_dir/code" \
-    awk "$_SHUNT_CW_AWK_PROGRAM" "$response") || reason=""
-
-  # Invisible characters, a lone CR, a form feed and a protocol tag line are
-  # refused in the code only, NOTES are stripped when printed. Nothing is left
-  # behind for a refused answer.
-  if [ "$reason" = "ok" ] \
-      && ! invisible=$(_shunt_cw_check_code_controls "$out_dir/code" \
-        && _shunt_cw_check_invisible "$out_dir/code" \
-        && _shunt_cw_check_protocol_tags "$out_dir/code"); then
-    rm -f -- "$out_dir/code" "$out_dir/notes"
-    echo "$invisible"
-    return "$SHUNT_CW_EXIT_UNUSABLE"
-  fi
-
-  case "$reason" in
-    ok) status=0 ;;
-    deliberate-refusal) status="$SHUNT_CW_EXIT_REFUSAL" ;;
-    missing-notes-delimiter|missing-code-delimiter|missing-closing-tag \
-    |duplicate-notes-delimiter|duplicate-code-delimiter|duplicate-closing-tag \
-    |out-of-order|text-before-delimiter|text-between-sections \
-    |text-after-closing-tag|empty-code|oversize)
-      status="$SHUNT_CW_EXIT_UNUSABLE" ;;
+  reason=$(shunt_py codewrite parse -- "$response" "$out_dir") || status=$?
+  case "$status" in
+    0|"$SHUNT_CW_EXIT_REFUSAL"|"$SHUNT_CW_EXIT_UNUSABLE")
+      echo "$reason"
+      return "$status"
+      ;;
     *)
       rm -f -- "$out_dir/code" "$out_dir/notes"
       echo "shunt: internal error while parsing the response." >&2
       return 2
       ;;
   esac
-  echo "$reason"
-  return "$status"
 }
 
 # shunt_cw_cleanup
@@ -525,115 +353,65 @@ _shunt_cw_fail() {
 
 # _shunt_cw_check_code_file <code-file>
 # Content gate for publish, the same limits the parser applies. Prints the
-# refusal message and fails, or succeeds silently.
+# refusal message and fails, or succeeds silently. Fails closed if Python dies.
 _shunt_cw_check_code_file() {
-  local size max reason
-  size=$(_shunt_cw_byte_count "$1")
-  max=$(_shunt_cw_limit SHUNT_CW_MAX_CODE_BYTES "$SHUNT_CW_DEFAULT_MAX_CODE_BYTES")
-  if [ "$size" -eq 0 ]; then
-    echo "shunt: refusing to write an empty file."
-    return 1
-  fi
-  if [ "$size" -gt "$max" ]; then
-    echo "shunt: refusing to write $size bytes, the cap is $max."
-    return 1
-  fi
-  if ! reason=$(_shunt_cw_check_text "$1" && _shunt_cw_check_code_controls "$1" \
-      && _shunt_cw_check_invisible "$1" && _shunt_cw_check_protocol_tags "$1"); then
-    echo "shunt: refusing to write the content: $reason."
-    return 1
-  fi
+  local out rc=0
+  out=$(shunt_py codewrite check-code-file -- "$1") || rc=$?
+  [ "$rc" -eq 0 ] && return 0
+  echo "${out:-shunt: refusing to write the content: internal error.}"
+  return 1
 }
+
+# The publish stages run in Python (scripts/py/shunt/cw_publish.py). Each one
+# rolls back what it created when it fails or gets a signal. Bash keeps the
+# order, the test seam between the stages and the rollback record
+# (_SHUNT_CW_TMP, _SHUNT_CW_CREATED) for shunt_cw_cleanup. A failed stage prints
+# its reason on stdout and exits non-zero (any non-zero status is a failure).
 
 # _shunt_cw_make_dirs
 # Creates the missing directories one by one (mode 0755) below the resolved
-# ancestor, recording each one this call created in _SHUNT_CW_CREATED so a
-# rollback removes exactly those. Leaves the deepest directory in
-# _SHUNT_CW_DIR. A directory that appeared concurrently is used but never
-# recorded as ours.
+# ancestor, recording each one this call created in _SHUNT_CW_CREATED. Leaves
+# the deepest directory in _SHUNT_CW_DIR. A directory that appeared
+# concurrently is used but never recorded as ours.
 _shunt_cw_make_dirs() {
-  local i n dir="$_SHUNT_CW_ANCESTOR"
-  n=${#_SHUNT_CW_MISSING[@]}
-  for ((i = 0; i < n - 1; i++)); do
-    dir="$dir/${_SHUNT_CW_MISSING[$i]}"
-    if mkdir -m 755 -- "$dir" 2>/dev/null; then
-      _SHUNT_CW_CREATED+=("$dir")
-    elif [ ! -d "$dir" ] || [ -L "$dir" ]; then
-      _shunt_cw_fail "cannot create the directory $dir."
-      return 1
-    fi
-  done
-  _SHUNT_CW_DIR="$dir"
+  local out line n=0 rc=0
+  out=$(shunt_py codewrite make-dirs -- "$_SHUNT_CW_ANCESTOR" "${_SHUNT_CW_MISSING[@]}") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _shunt_cw_fail "${out:-internal error while creating the directories.}"
+    return 1
+  fi
+  while IFS= read -r line; do
+    if [ "$n" -eq 0 ]; then _SHUNT_CW_DIR="$line"; else _SHUNT_CW_CREATED+=("$line"); fi
+    n=$((n + 1))
+  done <<<"$out"
 }
 
 # _shunt_cw_stage_tmp <code-file> <final-name>
-# Defense in depth, then the temp file. The final parent must resolve inside
-# the root and pass the target rule, and must still be exactly the canonical
-# directory we built (a swapped-in symlink to any other directory fails
-# here). The temp file lives in the target directory so the publish is a
-# same-filesystem link. It is created 0600 under umask 077 and made 0644,
-# never with an exec bit. Sets _SHUNT_CW_TMP.
+# Re-checks the final parent (inside the root, passes the target rule, still
+# exactly the directory we built), then writes the temp file 0600 and makes it
+# 0644 in the target directory. The name is chosen here, before the stage
+# runs, so a rollback knows it even when a signal lands in between. Sets
+# _SHUNT_CW_TMP.
 _shunt_cw_stage_tmp() {
-  local code_file="$1" final_name="$2" parent_real tmp
-  parent_real=$(_shunt_cw_canon_dir "$_SHUNT_CW_DIR") \
-    || { _shunt_cw_fail "the parent directory disappeared."; return 1; }
-  _shunt_cw_placement_error "$_SHUNT_CW_ROOT" "$parent_real" "$final_name" \
-    || { _shunt_cw_fail "$_SHUNT_CW_ERR."; return 1; }
-  [ "$parent_real" = "$_SHUNT_CW_DIR" ] \
-    || { _shunt_cw_fail "the parent directory changed while publishing."; return 1; }
-
-  tmp=$(umask 077; mktemp "$_SHUNT_CW_DIR/.shunt-cw.XXXXXX" 2>/dev/null) \
-    || { _shunt_cw_fail "cannot create a temporary file in $_SHUNT_CW_DIR."; return 1; }
-  _SHUNT_CW_TMP="$tmp"
-  cat -- "$code_file" >"$tmp" 2>/dev/null \
-    || { _shunt_cw_fail "cannot write the temporary file."; return 1; }
-  cmp -s -- "$code_file" "$tmp" \
-    || { _shunt_cw_fail "the temporary file does not match the content (disk full?)."; return 1; }
-  chmod 644 -- "$tmp" \
-    || { _shunt_cw_fail "cannot set the file mode."; return 1; }
-}
-
-# _shunt_cw_remove_stray <final> <temp-name> <code-file>
-# ln and mv put the file INSIDE the destination when it turned out to be a
-# directory (or a symlink to one), and report success. Removes that stray
-# copy, but only when it really is a byte-identical copy of our content.
-_shunt_cw_remove_stray() {
-  local stray="$1/$2"
-  if [ -d "$1" ] && [ -f "$stray" ] && cmp -s -- "$3" "$stray"; then
-    rm -f -- "$stray" 2>/dev/null || :
+  local out rc=0 name=".shunt-cw.$$.$RANDOM$RANDOM$RANDOM"
+  _SHUNT_CW_TMP="$_SHUNT_CW_DIR/$name"
+  out=$(shunt_py codewrite stage-tmp -- "$_SHUNT_CW_ROOT" "$_SHUNT_CW_DIR" "$2" "$1" "$name") || rc=$?
+  if [ "$rc" -ne 0 ]; then
+    _shunt_cw_fail "${out:-internal error while writing the temporary file.}"
+    return 1
   fi
 }
 
-# _shunt_cw_link_no_clobber <temp> <final> <code-file>
+# _shunt_cw_link_no_clobber <temp> <final>
 # Publishes the temp file under the final name without ever replacing
-# anything. The primary primitive is a hard link (link(2) fails if the name
-# exists, dangling symlinks included). When hard links are unavailable it
-# falls back to mv -n. In both cases the outcome is verified, never the exit
-# status alone: mv -n exits 0 without moving when the target exists, and
-# ln or mv given a directory at the final name drop the file inside it.
+# anything (hard link, which fails if the name exists, dangling symlinks
+# included). Succeeds only when the outcome was verified. The temp file is
+# gone afterwards either way.
 _shunt_cw_link_no_clobber() {
-  local tmp="$1" final="$2" code_file="$3" name="${1##*/}"
-  if [ -e "$final" ] || [ -L "$final" ]; then
-    return 1
-  fi
-  if ln -- "$tmp" "$final" 2>/dev/null; then
-    if [ -f "$final" ] && [ ! -L "$final" ] && [ "$final" -ef "$tmp" ]; then
-      rm -f -- "$tmp" 2>/dev/null || :
-      _SHUNT_CW_TMP=""
-      return 0
-    fi
-    _shunt_cw_remove_stray "$final" "$name" "$code_file"
-    return 1
-  fi
-  if [ -e "$final" ] || [ -L "$final" ]; then
-    return 1
-  fi
-  mv -n -- "$tmp" "$final" 2>/dev/null || :
-  if [ ! -e "$tmp" ] && [ -f "$final" ] && [ ! -L "$final" ] && cmp -s -- "$code_file" "$final"; then
+  if shunt_py codewrite link -- "${1%/*}" "${1##*/}" "${2##*/}" >/dev/null; then
     _SHUNT_CW_TMP=""
     return 0
   fi
-  _shunt_cw_remove_stray "$final" "$name" "$code_file"
   return 1
 }
 
@@ -654,7 +432,6 @@ shunt_cw_publish() {
     echo "shunt: usage: shunt_cw_publish <root> <target> <readable-code-file>" >&2
     return 2
   fi
-  command -v iconv >/dev/null 2>&1 || { echo "shunt: 'iconv' not found in PATH." >&2; return 2; }
   if ! message=$(_shunt_cw_check_code_file "$code_file"); then
     echo "$message" >&2
     return 1
@@ -671,7 +448,7 @@ shunt_cw_publish() {
   _shunt_cw_seam after-mkdir
   _shunt_cw_stage_tmp "$code_file" "$final_name" || return 1
   _shunt_cw_seam before-link
-  _shunt_cw_link_no_clobber "$_SHUNT_CW_TMP" "$_SHUNT_CW_DIR/$final_name" "$code_file" \
+  _shunt_cw_link_no_clobber "$_SHUNT_CW_TMP" "$_SHUNT_CW_DIR/$final_name" \
     || { _shunt_cw_fail "the file could not be published without overwriting (the target appeared or the link was refused), nothing was overwritten."; return 1; }
 
   _SHUNT_CW_CREATED=()

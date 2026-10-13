@@ -10,7 +10,7 @@ import os
 import sys
 from typing import Any
 
-from . import cw_target, cw_text
+from . import cw_parse, cw_publish, cw_target, cw_text
 
 INTERNAL_ERROR = 2
 NONE = 10  # "no hit" of a yes/no check; 1 is what a crashing interpreter may exit with
@@ -23,8 +23,12 @@ _FILE_CHECKS = {
 _TEXT_ARGS = {  # sub command -> positional names
     "strip-invisible": ("text",), "unsafe": ("text",), "sensitive": ("path",), "canon-dir": ("path",),
     "root-hit": ("path",), "limit": ("value", "default"), "placement": ("root", "canon", "tail"),
-    "resolve": ("root", "target"),
+    "resolve": ("root", "target"), "normalize": ("path",), "parse": ("response", "out_dir"),
+    "check-code-file": ("code_file",), "stage-tmp": ("root", "directory", "final_name", "code_file", "tmp_name"),
+    "link": ("directory", "tmp_name", "final_name"),
 }
+_STAGES = ("stage-tmp", "link")
+_MAKE_DIRS = "make-dirs"  # ancestor, then one or more names
 
 
 def _out(data: bytes) -> None:
@@ -82,7 +86,41 @@ def _strip(args: list[bytes]) -> int:
     return 0
 
 
+def _parse(args: list[bytes]) -> int:
+    reason, status = cw_parse.parse(args[0], args[1])
+    _line(reason)
+    return status
+
+
+def _check_code_file(args: list[bytes]) -> int:
+    message = cw_publish.check_code_file(args[0])
+    if message:
+        _line(message)
+    return 1 if message else 0
+
+
+def _make_dirs(args: list[bytes]) -> int:
+    final, created = cw_publish.make_dirs(args[0], args[1:])
+    for item in (final, *created):
+        _line(item)
+    return 0
+
+
+def _stage_tmp(args: list[bytes]) -> int:
+    _line(cw_publish.stage_tmp(*args))
+    return 0
+
+
+def _link(args: list[bytes]) -> int:
+    return 0 if cw_publish.link_no_clobber(*args) else 1
+
+
 _HANDLERS = {
+    "normalize": lambda args: _answer(cw_parse.normalize_path(args[0])),
+    "parse": _parse,
+    "check-code-file": _check_code_file,
+    "stage-tmp": _stage_tmp,
+    "link": _link,
     "strip-invisible": _strip,
     "unsafe": lambda args: 0 if cw_text.has_unsafe_chars(args[0]) else NONE,
     "sensitive": lambda args: _answer(cw_target.sensitive_component(args[0])),
@@ -97,6 +135,11 @@ _HANDLERS = {
 def _run(args: Any) -> int:
     name = args.codewrite_command
     try:
+        if name == _MAKE_DIRS:
+            cw_publish.rollback_on_signals()
+            return _make_dirs([os.fsencode(args.ancestor), *map(os.fsencode, args.names)])
+        if name in _STAGES:
+            cw_publish.rollback_on_signals()
         if name in _FILE_CHECKS:
             reason = _FILE_CHECKS[name](args.file)
             if reason:
@@ -104,6 +147,9 @@ def _run(args: Any) -> int:
             return 1 if reason else 0
         values = [os.fsencode(getattr(args, field)) for field in _TEXT_ARGS[name]]
         return _HANDLERS[name](values)
+    except cw_publish.PublishError as exc:
+        _line(str(exc))
+        return 1
     except Exception as exc:  # noqa: BLE001  no traceback: any crash is an internal error, never a "clean" answer
         sys.stderr.write(f"shunt: codewrite {name}: {exc}\n")
         return INTERNAL_ERROR
@@ -116,6 +162,9 @@ def register(subparsers: Any) -> None:
     sub = group.add_subparsers(dest="codewrite_command", required=True)
     for name in _FILE_CHECKS:
         sub.add_parser(name).add_argument("file")
+    dirs = sub.add_parser(_MAKE_DIRS)
+    dirs.add_argument("ancestor")
+    dirs.add_argument("names", nargs="+")
     for name, fields in _TEXT_ARGS.items():
         parser = sub.add_parser(name)
         for field in fields:

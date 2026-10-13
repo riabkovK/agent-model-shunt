@@ -4,7 +4,7 @@ import argparse
 from collections.abc import Sequence
 
 from . import (breaker, bulk_read, context_detect, cw_cli, failover, migrate, models, models_write, opencode_cli, providers,
-               providers_write, transport, usage_log)
+               providers_write, selffix, transport, usage_log)
 from .version import plugin_version
 
 
@@ -30,6 +30,7 @@ def build_parser() -> argparse.ArgumentParser:
     usage_log.register(sub)
     opencode_cli.register(sub)
     cw_cli.register(sub)
+    selffix.register(sub)
     return parser
 
 

@@ -926,11 +926,9 @@ EOF
 }
 
 @test "publish detects a racer on the mv fallback path even when mv -n exits 0" {
-  ln() { return 1; }
-  mv() {
+  _shunt_cw_seam() {
+    [ "$1" = "before-link" ] || return 0
     echo racer >"$PROJ/x.txt"
-    command mv -n "$@"
-    return 0
   }
   run shunt_cw_publish "$PROJ" "x.txt" "$CODE_IN"
   assert_failure
@@ -940,7 +938,6 @@ EOF
 }
 
 @test "publish falls back to mv -n when hard links are unavailable" {
-  ln() { return 1; }
   run shunt_cw_publish "$PROJ" "sub/x.txt" "$CODE_IN"
   assert_success
   assert_output "$PROJ/sub/x.txt"
@@ -990,9 +987,9 @@ EOF
 }
 
 @test "publish does not report success when a directory is planted at the final name" {
-  ln() {
+  _shunt_cw_seam() {
+    [ "$1" = "before-link" ] || return 0
     mkdir "$PROJ/x.txt"
-    command ln "$@"
   }
   run shunt_cw_publish "$PROJ" "x.txt" "$CODE_IN"
   assert_failure
@@ -1002,9 +999,9 @@ EOF
 }
 
 @test "publish does not follow a symlink to a directory planted at the final name" {
-  ln() {
-    command ln -s "$OUTSIDE" "$PROJ/x.txt"
-    command ln "$@"
+  _shunt_cw_seam() {
+    [ "$1" = "before-link" ] || return 0
+    ln -s "$OUTSIDE" "$PROJ/x.txt"
   }
   run shunt_cw_publish "$PROJ" "x.txt" "$CODE_IN"
   assert_failure
@@ -1013,10 +1010,9 @@ EOF
 }
 
 @test "publish does not report success when the mv fallback moves the file into a planted directory" {
-  ln() { return 1; }
-  mv() {
+  _shunt_cw_seam() {
+    [ "$1" = "before-link" ] || return 0
     mkdir "$PROJ/x.txt"
-    command mv -n "$@"
   }
   run shunt_cw_publish "$PROJ" "x.txt" "$CODE_IN"
   assert_failure
@@ -1096,8 +1092,10 @@ EOF
 
 @test "publish rollback removes only the directories this call created" {
   mkdir -p "$PROJ/a"
-  ln() { return 1; }
-  mv() { return 1; }
+  _shunt_cw_seam() {
+    [ "$1" = "before-link" ] || return 0
+    rm -f -- "$_SHUNT_CW_TMP"
+  }
   run shunt_cw_publish "$PROJ" "a/b/c/x.txt" "$CODE_IN"
   assert_failure
   [ -d "$PROJ/a" ]
@@ -1109,9 +1107,8 @@ EOF
   _shunt_cw_seam() {
     [ "$1" = "before-link" ] || return 0
     echo other >"$PROJ/a/b/other.txt"
+    rm -f -- "$_SHUNT_CW_TMP"
   }
-  ln() { return 1; }
-  mv() { return 1; }
   run shunt_cw_publish "$PROJ" "a/b/c/x.txt" "$CODE_IN"
   assert_failure
   [ "$(cat "$PROJ/a/b/other.txt")" = "other" ]
@@ -1122,8 +1119,10 @@ EOF
 @test "publish rollback keeps a pre-existing directory that holds another file" {
   mkdir -p "$PROJ/a"
   echo other >"$PROJ/a/other.txt"
-  ln() { return 1; }
-  mv() { return 1; }
+  _shunt_cw_seam() {
+    [ "$1" = "before-link" ] || return 0
+    rm -f -- "$_SHUNT_CW_TMP"
+  }
   run shunt_cw_publish "$PROJ" "a/b/x.txt" "$CODE_IN"
   assert_failure
   [ "$(cat "$PROJ/a/other.txt")" = "other" ]
@@ -1434,8 +1433,7 @@ EOF
   run bash -c '
     set -euo pipefail
     source "$1/scripts/lib/codewrite.sh"
-    ln() { return 1; }
-    mv() { return 1; }
+    _shunt_cw_seam() { if [ "$1" = "before-link" ]; then rm -f -- "$_SHUNT_CW_TMP"; fi; }
     shunt_cw_publish "$2" "a/b/c/x.txt" "$3" 2>&1
   ' _ "$REPO_ROOT" "$PROJ" "$CODE_IN"
   assert_failure
@@ -1986,4 +1984,22 @@ code_refused_seqs() {
     run shunt_cw_sensitive_component "$name"
     assert_failure
   done
+}
+
+# --- a dead interpreter must never publish or read as clean ----------------
+
+@test "publish fails closed and writes nothing when the interpreter is missing" {
+  local before
+  before="$(snapshot)"
+  SHUNT_PYTHON="$TEST_TMPDIR/no-such-python" run shunt_cw_publish "$PROJ" "a/x.txt" "$CODE_IN"
+  assert_failure
+  [ "$before" = "$(snapshot)" ]
+}
+
+@test "parse reports an internal error and leaves no files when the interpreter is missing" {
+  printf '<SHUNT-NOTES>\nn\n</SHUNT-NOTES>\n<SHUNT-CODE>\nc\n</SHUNT-CODE>\n' >"$RESP"
+  SHUNT_PYTHON="$TEST_TMPDIR/no-such-python" run shunt_cw_parse "$RESP" "$OUT"
+  assert_failure 2
+  assert_output --partial "internal error"
+  [ ! -e "$OUT/code" ]
 }
