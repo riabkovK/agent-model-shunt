@@ -2,20 +2,20 @@
 OpenAI-compatible provider, normalized into the response format of transport.sh.
 
 Port of scripts/lib/transport-http.sh (setup, size guard, request, reply
-checks). The total deadline, the chunking and the temp file cleanup stay in
-bash until sub-phase 9: the wrapper passes the max time of each request in
-SHUNT_HTTP_MAX_TIME and runs map_reduce when `http-call` exits 90.
+checks). One call is one process: the total deadline (deadline.py) and the
+map_reduce chunking (chunking.py) run in the same process, so the registry, the
+providers file and the key are read once per call, however many requests it takes.
 
 Status mapping (the SHUNT_TRY_INVOKE_* codes of transport.sh, see transport_reply):
-  timeout                              TIMEOUT (the wrapper makes it DEADLINE when the
-                                       request's max time was cut to the total deadline)
+  timeout                              TIMEOUT (DEADLINE when the request's time limit was cut
+                                       to the time left of the total deadline)
   other transport failure, 429, 5xx,
   400/404/413 and any other non-2xx    ERROR (model failure, the breaker counts it)
   401, 403                             AUTH (a key problem, the failover skips the breaker)
   2xx, text empty                      EMPTY
   2xx, finish_reason not "stop"        ERROR (a cut off answer is unusable)
   2xx, not a chat completion           ERROR
-  input over the context budget        OVERSIZE (map_reduce: exit 90 for a bulk-reader)
+  input over the context budget        OVERSIZE (map_reduce: chunked in process for a bulk-reader)
   missing key, bad base_url, request_body, oversize policy, no context_tokens,
   missing role prompt                  CONFIG (nothing sent)
 
@@ -31,6 +31,7 @@ import argparse
 import json
 import os
 import re
+import signal
 import sys
 import tempfile
 from collections.abc import Mapping, Sequence
@@ -38,32 +39,26 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import env, httpclient, models, providers
+from . import chunking, env, httpclient, models, providers
 from . import transport_reply as reply
-from .transport_reply import AUTH, CONFIG, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT
+from .deadline import Deadline, DeadlineError
+from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT
 
 BYTES_PER_TOKEN = 3
 CONTEXT_BUDGET_PERCENT = 60
 UNKNOWN_CONTEXT_MAX_TOKENS = 4000
 MAX_CONTEXT_DIGITS = 12
 DEFAULT_OVERSIZE_POLICY = "map_reduce"
-DEFAULT_TIMEOUT_SECONDS = "300"
 FINISH_REASON_CHARS = 40
 OUT_PREFIX = "shunt-opencode."  # the name shunt_tmpfile gives, the caller removes the file
 _CONTEXT_RE = re.compile(r"[1-9][0-9]*")
-_TIME_RE = re.compile(r"[0-9]+(?:\.[0-9]*)?|\.[0-9]+")
 _CAMEL_RE = re.compile(r"(?P<a>[a-z0-9])(?P<b>[A-Z])")
 _CAMEL_RUN_RE = re.compile(r"(?P<a>[A-Z]+)(?P<b>[A-Z][a-z])")
 _STATUS_BEATS_SIZE = (401, 403, 429)
 _KEY_ROLE = {"bulk-reader": "bulk-read", "code-writer": "code-write"}
 
 
-class _Stop(Exception):
-    """End the call with this SHUNT_TRY_INVOKE_* status. The reason is already on stderr."""
-
-    def __init__(self, status: int) -> None:
-        super().__init__(status)
-        self.status = status
+_Stop = reply.Abort  # end the call with this status, the reason is already on stderr
 
 
 def _fail(status: int, message: str = "") -> NoReturn:
@@ -245,14 +240,6 @@ def _guard_size(setup: _Setup, size: int) -> None:
 
 # ---------------------------------------------------------------- request
 
-def _timeout(environ: Mapping[str, str]) -> float | None:
-    raw = environ.get("SHUNT_HTTP_MAX_TIME") or environ.get("SHUNT_TIMEOUT_SECONDS") or DEFAULT_TIMEOUT_SECONDS
-    if not _TIME_RE.fullmatch(raw):
-        _fail(CONFIG, "the request time limit must be a non-negative number of seconds "
-                      "(config problem, no request sent).")
-    return float(raw) or None
-
-
 def _models_command() -> str:
     root = Path(os.path.abspath(__file__)).parents[3]
     return providers._bash_quote(str(root / "scripts" / "shunt-models"))
@@ -302,13 +289,8 @@ def _answer(setup: _Setup, response: httpclient.Response, key: str | None) -> di
     return normalized
 
 
-def _send(setup: _Setup, prompt: bytes, environ: Mapping[str, str]) -> dict[str, Any]:
-    timeout = _timeout(environ)
-    try:
-        key = providers.bearer_key(env.providers_file_text(environ), setup.provider, environ,
-                                   env.proc_version_file_text(environ))
-    except providers.ProviderError as exc:
-        _fail(CONFIG if exc.code == providers.EXIT_CONFIG else ERROR, str(exc))
+def _send(setup: _Setup, prompt: bytes, environ: Mapping[str, str], key: str | None,
+          timeout: float | None) -> dict[str, Any]:
     headers = {"Authorization": f"Bearer {key}"} if key else {}
     messages = [{"role": "system", "content": setup.system.decode("utf-8", "replace")},
                 {"role": "user", "content": prompt.decode("utf-8", "replace")}]
@@ -323,6 +305,42 @@ def _send(setup: _Setup, prompt: bytes, environ: Mapping[str, str]) -> dict[str,
     return _answer(setup, response, key)
 
 
+class _Attempt:
+    """One model attempt: its deadline and its key, read on the first request and kept."""
+
+    def __init__(self, setup: _Setup, environ: Mapping[str, str], deadline: Deadline) -> None:
+        self.setup = setup
+        self.environ = environ
+        self.deadline = deadline
+        self._key: str | None = None
+        self._have_key = False
+
+    def key(self) -> str | None:
+        if not self._have_key:
+            try:
+                self._key = providers.bearer_key(env.providers_file_text(self.environ), self.setup.provider,
+                                                 self.environ, env.proc_version_file_text(self.environ))
+            except providers.ProviderError as exc:
+                _fail(CONFIG if exc.code == providers.EXIT_CONFIG else ERROR, str(exc))
+            self._have_key = True
+        return self._key
+
+    def ask(self, prompt: bytes) -> dict[str, Any]:
+        """One request within the time left of the total deadline. DEADLINE when none is left, or
+        when the request ran out of the time it was cut to."""
+        window = self.deadline.request_time()
+        if window is None:
+            self.deadline.note(self.setup.model_id)
+            raise _Stop(DEADLINE)
+        try:
+            return _send(self.setup, prompt, self.environ, self.key(), window.max_time)
+        except _Stop as stop:
+            if stop.status == TIMEOUT and window.capped:
+                self.deadline.note(self.setup.model_id)
+                raise _Stop(DEADLINE) from None
+            raise
+
+
 def _write_reply(normalized: dict[str, Any], environ: Mapping[str, str]) -> str:
     try:
         fd, path = tempfile.mkstemp(prefix=OUT_PREFIX, dir=str(env.tmp_dir(environ)))
@@ -335,34 +353,53 @@ def _write_reply(normalized: dict[str, Any], environ: Mapping[str, str]) -> str:
 
 # ---------------------------------------------------------------- entry points
 
+def _needs_chunking(setup: _Setup, size: int) -> bool:
+    try:
+        _guard_size(setup, size)
+    except _Stop as stop:
+        if stop.status == NEEDS_CHUNKING:
+            return True
+        raise
+    return False
+
+
 def http_call(agent: str, question: str, files: Sequence[str], environ: Mapping[str, str]) -> str:
-    """The whole call except chunking: setup, prompt, size guard, request. Returns the reply file."""
+    """The whole call: deadline, setup, prompt, size guard, then one request or, for an oversize
+    bulk-reader input, map_reduce. Returns the reply file."""
+    try:
+        deadline = Deadline(environ)
+    except DeadlineError as exc:
+        _fail(CONFIG, str(exc))
     setup = _setup(agent, environ)
     prompt = build_prompt(question, files)
-    _guard_size(setup, len(setup.system) + len(prompt))
-    return _write_reply(_send(setup, prompt, environ), environ)
-
-
-def http_ask(agent: str, prompt_file: str, environ: Mapping[str, str]) -> str:
-    """One request for a prompt already in a file (a chunk or merge request, no size guard)."""
-    setup = _setup(agent, environ)
-    return _write_reply(_send(setup, _read_attached(prompt_file), environ), environ)
+    attempt = _Attempt(setup, environ, deadline)
+    if _needs_chunking(setup, len(setup.system) + len(prompt)):
+        result = chunking.map_reduce(question, files, model_id=setup.model_id, system_len=len(setup.system),
+                                     context_tokens=setup.context_tokens, ask=attempt.ask, environ=environ,
+                                     progress=deadline)
+    else:
+        result = attempt.ask(prompt)
+    return _write_reply(result, environ)
 
 
 def run(args: argparse.Namespace) -> int:
     environ = os.environ
     try:
-        if args.transport_command == "http-call":
-            path = http_call(args.agent, args.question, args.files, environ)
-        else:
-            path = http_ask(args.agent, args.prompt_file, environ)
+        path = http_call(args.agent, args.question, args.files, environ)
     except _Stop as stop:
         return stop.status
     except BrokenPipeError:
         raise
+    except KeyboardInterrupt:  # die of SIGINT, so the calling shell stops too, without a traceback
+        signal.signal(signal.SIGINT, signal.SIG_DFL)
+        os.kill(os.getpid(), signal.SIGINT)
+        return 130
     except (OSError, models.RegistryUnreadable) as exc:  # paths and strerror text, never a key
         sys.stderr.write(f"shunt: {exc}\n")
         return CONFIG
+    except Exception as exc:  # a bug must not look like a chunk failure (exit 1)
+        sys.stderr.write(f"shunt: the HTTP transport failed unexpectedly ({type(exc).__name__}).\n")
+        return ERROR
     sys.stdout.write(path + "\n")
     return 0
 
@@ -376,6 +413,3 @@ def register(subparsers: Any) -> None:
     call.add_argument("agent")
     call.add_argument("question")
     call.add_argument("files", nargs="*")
-    ask = sub.add_parser("http-ask")
-    ask.add_argument("agent")
-    ask.add_argument("prompt_file")

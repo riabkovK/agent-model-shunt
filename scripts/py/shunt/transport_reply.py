@@ -15,7 +15,18 @@ from typing import Any
 
 # The SHUNT_TRY_INVOKE_* statuses of scripts/lib/transport.sh, which a test keeps in step.
 TIMEOUT, ERROR, EMPTY, AUTH, DEADLINE, OVERSIZE, CONFIG = 124, 2, 3, 4, 5, 6, 7
-NEEDS_CHUNKING = 90  # internal: tells the bash wrapper to run map_reduce
+NEEDS_CHUNKING = 90  # internal: the size guard says map_reduce
+
+FAILED = 1  # a chunk could not be cut or the reply file not written (not a SHUNT_TRY_INVOKE_* code)
+
+
+class Abort(Exception):
+    """End the call with this status. The reason is already on stderr."""
+
+    def __init__(self, status: int) -> None:
+        super().__init__(status)
+        self.status = status
+
 
 EXCERPT_CHARS = 300
 EXCERPT_READ_BYTES = 4000

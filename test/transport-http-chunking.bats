@@ -60,7 +60,6 @@ sent_chunk() {
 use_fake_clock() {
   export FAKE_CLOCK="$TEST_TMPDIR/clock" FAKE_CURL_ADVANCE="$1"
   echo 0 >"$FAKE_CLOCK"
-  _shunt_http_now() { _SHUNT_HTTP_NOW=$(cat "$FAKE_CLOCK"); }
 }
 
 lines_file() {
@@ -75,39 +74,56 @@ repeat() {
   printf '%s' "$out"
 }
 
-# http_ready: resolves and sets up the agent in this shell, as _shunt_http_call does.
-http_ready() {
-  _SHUNT_HTTP_TMP=()
-  _shunt_http_resolve "$AGENT" && _shunt_http_setup "$AGENT"
-}
+# The planner is Python now (chunk_plan.py), so these helpers run it through chunk_py.
+# PLAN_PY plans one file for the agent of this test, cuts every chunk with write_chunk,
+# stitches them back (dropping the line overlap of neighbouring line chunks) and writes
+# "start end offset length" per chunk to the plan file and chunk i to OUT.chunk.i.
+PLAN_PY='
+import os
+from shunt import chunk_plan as c, chunking, transport_http as t
+from shunt.transport_reply import Abort
+agent, f, out, plan_file = sys.argv[1:5]
+setup = t._setup(agent, os.environ)
+try:
+    plan = c.plan_all("q", [f], model_id=setup.model_id, system_len=len(setup.system),
+                      budget_bytes=chunking.budget_bytes(setup.context_tokens), max_chunks=chunking.max_chunks(os.environ))
+except Abort as stop:
+    sys.exit(stop.status)
+import io
+nxt = 1
+with open(out, "wb") as joined, open(plan_file, "w") as rows:
+    for i, ch in enumerate(plan):
+        data = c.write_chunk(ch)
+        open(f"{out}.chunk.{i}", "wb").write(data)
+        rows.write(f"{ch.start} {ch.end} {ch.offset} {ch.length}\n")
+        if ch.offset >= 0:
+            joined.write(data)
+            nxt = ch.start + 1
+        else:
+            joined.write(b"".join(io.BytesIO(data).readlines()[nxt - ch.start:]))
+            nxt = ch.end + 1
+'
 
 # room_for <question> <file-label> <size>: content bytes the planner allows per chunk.
 room_for() {
-  local p e
-  http_ready || return 1
-  _shunt_http_new_tmp p && _shunt_http_new_tmp e || return 1
-  echo $(( $(_shunt_http_budget_bytes) - $(_shunt_http_chunk_overhead "$1" "$2" "$3" "$p" "$e") ))
+  SHUNT_PROMPTS_DIR="$SHUNT_PROMPTS_DIR" chunk_py '
+import os
+from shunt import chunk_plan as c, chunking, transport_http as t
+setup = t._setup(sys.argv[1], os.environ)
+print(chunking.budget_bytes(setup.context_tokens) - c.overhead(sys.argv[2], sys.argv[3], sys.argv[4], len(setup.system)))' \
+    "$AGENT" "$1" "$2" "$3"
 }
 
-# rebuild_from_plan <file> <outfile>: plans <file> alone, writes every chunk with
-# the transport's own writer and stitches them back, dropping the line overlap
-# of neighbouring line chunks. Leaves the chunk count in PLAN_N.
+# rebuild_from_plan <file> <outfile>: plans <file> alone and stitches the chunks back.
+# Leaves the chunk count in PLAN_N and the plan in PLAN_START/END/OFF/LEN.
 rebuild_from_plan() {
-  local f="$1" out="$2" i next=1 c="$TEST_TMPDIR/chunk"
-  http_ready || return 1
-  _shunt_http_plan_all "q" "$f" || return 1
-  PLAN_N=${#_CH_FILE[@]}
-  : >"$out"
-  for (( i = 0; i < PLAN_N; i++ )); do
-    _shunt_http_write_chunk "$i" "$c"
-    if [ "${_CH_OFF[i]}" -ge 0 ]; then
-      cat "$c" >>"$out"
-      next=$(( _CH_START[i] + 1 ))
-    else
-      tail -n +$(( next - _CH_START[i] + 1 )) "$c" >>"$out"
-      next=$(( _CH_END[i] + 1 ))
-    fi
-  done
+  local s e o l
+  SHUNT_PROMPTS_DIR="$SHUNT_PROMPTS_DIR" chunk_py "$PLAN_PY" "$AGENT" "$1" "$2" "$TEST_TMPDIR/plan" || return 1
+  PLAN_N=0 PLAN_START=() PLAN_END=() PLAN_OFF=() PLAN_LEN=()
+  while read -r s e o l; do
+    PLAN_START+=("$s") PLAN_END+=("$e") PLAN_OFF+=("$o") PLAN_LEN+=("$l")
+    PLAN_N=$(( PLAN_N + 1 ))
+  done <"$TEST_TMPDIR/plan"
 }
 
 # ---- byte fidelity -----------------------------------------------------------
@@ -177,11 +193,11 @@ rebuild_from_plan() {
   lines_file "$TEST_TMPDIR/tail" 200
   cat "$TEST_TMPDIR/tail" >>"$f"
   rebuild_from_plan "$f" "$TEST_TMPDIR/re"
-  [ "${_CH_OFF[0]}" -eq -1 ]
+  [ "${PLAN_OFF[0]}" -eq -1 ]
   cmp "$f" "$TEST_TMPDIR/re"
   { repeat $(( room - 2 )) a; printf '\n'; cat "$TEST_TMPDIR/tail"; } >"$f"
   rebuild_from_plan "$f" "$TEST_TMPDIR/re"
-  [ "${_CH_OFF[0]}" -eq -1 ]
+  [ "${PLAN_OFF[0]}" -eq -1 ]
 }
 
 @test "budget: a line one byte over the room does not cost a whole request for its lone newline" {
@@ -193,8 +209,8 @@ rebuild_from_plan() {
   cmp "$TEST_TMPDIR/b2.txt" "$TEST_TMPDIR/re"
   for (( i = 0; i < PLAN_N; i++ )); do
     # A piece holding nothing but the line's newline is an empty request.
-    if [ "${_CH_OFF[i]}" -ge 0 ] && [ "${_CH_LEN[i]}" -eq 1 ]; then
-      echo "chunk $i is the lone newline at byte $(( _CH_OFF[i] + 1 )) of line ${_CH_START[i]}" >&2
+    if [ "${PLAN_OFF[i]}" -ge 0 ] && [ "${PLAN_LEN[i]}" -eq 1 ]; then
+      echo "chunk $i is the lone newline at byte $(( PLAN_OFF[i] + 1 )) of line ${PLAN_START[i]}" >&2
       false
     fi
   done
@@ -207,16 +223,15 @@ rebuild_from_plan() {
   rebuild_from_plan "$f" "$TEST_TMPDIR/re"
   cmp "$f" "$TEST_TMPDIR/re"
   for (( i = 0; i < PLAN_N; i++ )); do
-    [ "${_CH_OFF[i]}" -ge 0 ] || continue
-    _shunt_http_write_chunk "$i" "$TEST_TMPDIR/c"
-    LC_ALL=C grep -q '[^[:space:]]' "$TEST_TMPDIR/c"
+    [ "${PLAN_OFF[i]}" -ge 0 ] || continue
+    LC_ALL=C grep -q '[^[:space:]]' "$TEST_TMPDIR/re.chunk.$i"
   done
 }
 
 @test "budget: exactly SHUNT_HTTP_MAX_CHUNKS chunks is sent, one more is refused with nothing sent" {
   local f="$TEST_TMPDIR/m.txt" room
-  SHUNT_HTTP_MAX_CHUNKS=3
   room=$(room_for q "$f" 99999)
+  SHUNT_HTTP_MAX_CHUNKS=3
   repeat $(( 3 * room )) a >"$f"
   run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$f"
   assert_success
@@ -269,9 +284,8 @@ rebuild_from_plan() {
 
 @test "dos: planning a 40 MB file of newlines is refused within 15 seconds" {
   head -c 40000000 /dev/zero | tr '\0' '\n' >"$TEST_TMPDIR/huge.txt"
-  http_ready
   local t0=$SECONDS st=0
-  _shunt_http_plan_all "q" "$TEST_TMPDIR/huge.txt" 2>/dev/null || st=$?
+  SHUNT_PROMPTS_DIR="$SHUNT_PROMPTS_DIR" chunk_py "$PLAN_PY" "$AGENT" "$TEST_TMPDIR/huge.txt" "$TEST_TMPDIR/re" "$TEST_TMPDIR/plan" 2>/dev/null || st=$?
   [ "$st" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   [ $(( SECONDS - t0 )) -le 15 ]
 }
@@ -279,10 +293,9 @@ rebuild_from_plan() {
 @test "dos: a 1 MB single line within the chunk cap spawns a bounded number of processes in time" {
   SHUNT_HTTP_MAX_CHUNKS=100
   head -c 1000000 /dev/zero | tr '\0' 'w' >"$TEST_TMPDIR/line.txt"
-  http_ready
   local t0=$SECONDS
-  _shunt_http_plan_all "q" "$TEST_TMPDIR/line.txt"
-  [ "${#_CH_FILE[@]}" -le 100 ]
+  rebuild_from_plan "$TEST_TMPDIR/line.txt" "$TEST_TMPDIR/re"
+  [ "$PLAN_N" -le 100 ]
   [ $(( SECONDS - t0 )) -le 15 ]
 }
 
@@ -401,43 +414,50 @@ rebuild_from_plan() {
   [ "$(jq -r '.text' "$output")" = "ok" ]
 }
 
+# write_chunk_py <file> <start> <end> <offset> <length> <outfile>: cuts one planned chunk with
+# chunk_plan.write_chunk, writes it to <outfile>, exits with the Abort status.
+write_chunk_py() {
+  chunk_py '
+from shunt import chunk_plan as c
+from shunt.transport_reply import Abort
+f, start, end, off, length, out = sys.argv[1:7]
+try:
+    data = c.write_chunk(c.Chunk(f, int(start), int(end), int(off), int(length), 1, 1))
+except Abort as stop:
+    sys.exit(stop.status)
+open(out, "wb").write(data)' "$@"
+}
+
 @test "write_chunk: a source that cannot be read fails instead of writing an empty chunk" {
-  _CH_FILE[0]="$TEST_TMPDIR/missing.txt" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=5
-  _CH_OFF[0]=0
-  run ! _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
-  _CH_OFF[0]=-1
-  run ! _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  run ! write_chunk_py "$TEST_TMPDIR/missing.txt" 1 1 0 5 "$TEST_TMPDIR/c"
+  run ! write_chunk_py "$TEST_TMPDIR/missing.txt" 1 1 -1 0 "$TEST_TMPDIR/c"
 }
 
 @test "write_chunk: a byte slice shorter than the line still succeeds when head closes the pipe early" {
   local f="$TEST_TMPDIR/long.txt"
   { repeat 200000 a; echo; } >"$f"
-  _CH_FILE[0]="$f" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=10 _CH_OFF[0]=0
-  _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  write_chunk_py "$f" 1 1 0 10 "$TEST_TMPDIR/c"
   [ "$(wc -c <"$TEST_TMPDIR/c" | tr -d ' ')" = 10 ]
 }
 
 @test "write_chunk: a small slice of a huge line succeeds when SIGPIPE is ignored" {
   local f="$TEST_TMPDIR/long.txt"
   { repeat 300000 a; echo; } >"$f"
-  run bash -c "trap '' PIPE; source '$REPO_ROOT/scripts/lib/opencode.sh'
-    _CH_FILE[0]='$f' _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=10 _CH_OFF[0]=0
-    _shunt_http_write_chunk 0 '$TEST_TMPDIR/c2'"
-  assert_success
+  trap '' PIPE
+  write_chunk_py "$f" 1 1 0 10 "$TEST_TMPDIR/c2"
+  trap - PIPE
   [ "$(wc -c <"$TEST_TMPDIR/c2" | tr -d ' ')" = 10 ]
 }
 
 @test "write_chunk: an unreadable source is rejected up front with a clear error" {
-  _CH_FILE[0]="$TEST_TMPDIR/missing.txt" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=5 _CH_OFF[0]=0
-  run --separate-stderr _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  run --separate-stderr write_chunk_py "$TEST_TMPDIR/missing.txt" 1 1 0 5 "$TEST_TMPDIR/c"
   assert_failure
   [[ "$stderr" == *"cannot read"* ]]
 }
 
 @test "write_chunk: a directory as the source is rejected" {
   mkdir "$TEST_TMPDIR/d"
-  _CH_FILE[0]="$TEST_TMPDIR/d" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=100 _CH_OFF[0]=2
-  run --separate-stderr _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  run --separate-stderr write_chunk_py "$TEST_TMPDIR/d" 1 1 2 100 "$TEST_TMPDIR/c"
   assert_failure
   [[ "$stderr" == *"cannot read"* ]]
 }
@@ -445,13 +465,18 @@ rebuild_from_plan() {
 @test "write_chunk: a file truncated after planning fails instead of writing a short chunk" {
   local f="$TEST_TMPDIR/short.txt"
   printf 'abcdef\n' >"$f"
-  _CH_FILE[0]="$f" _CH_START[0]=1 _CH_END[0]=1 _CH_LEN[0]=100 _CH_OFF[0]=2
-  run --separate-stderr _shunt_http_write_chunk 0 "$TEST_TMPDIR/c"
+  run --separate-stderr write_chunk_py "$f" 1 1 2 100 "$TEST_TMPDIR/c"
   assert_failure
   [[ "$stderr" == *"expected 100 bytes"* ]]
 }
 
 @test "plan_long_line fails when the line cannot be read" {
-  run _shunt_http_plan_long_line "$TEST_TMPDIR/missing.txt" 1 100
+  run chunk_py '
+from shunt import chunk_plan as c
+from shunt.transport_reply import Abort
+try:
+    c.plan_file(sys.argv[1], 100, 10)
+except (Abort, OSError):
+    sys.exit(1)' "$TEST_TMPDIR/missing.txt"
   assert_failure
 }

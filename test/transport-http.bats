@@ -710,22 +710,22 @@ utf8_line() {
 }
 
 @test "chunking: a line split by bytes never cuts a UTF-8 character" {
-  local f="$TEST_TMPDIR/u.txt" c="$TEST_TMPDIR/chunk" joined="$TEST_TMPDIR/joined" ch k i n
+  local f="$TEST_TMPDIR/u.txt" ch k
   for ch in é я € 😀; do
     for k in 0 1 2 3; do
       utf8_line "$f" $(( 200 - k )) "$ch"
-      _CH_FILE=() _CH_START=() _CH_END=() _CH_OFF=() _CH_LEN=() _CH_PART=() _CH_OF=()
-      _shunt_http_plan_file "$f" 200
-      n=${#_CH_FILE[@]}
-      [ "$n" -gt 1 ]
-      : >"$joined"
-      for (( i = 0; i < n; i++ )); do
-        _shunt_http_write_chunk "$i" "$c"
-        [ "$(wc -c <"$c")" -le 200 ]
-        iconv -f UTF-8 -t UTF-8 "$c" >/dev/null
-        cat "$c" >>"$joined"
-      done
-      cmp "$joined" "$f"
+      chunk_py '
+from shunt import chunk_plan as c
+f, budget = sys.argv[1], 200
+plan = c.plan_file(f, budget, 10**6)
+assert len(plan) > 1
+joined = b""
+for i, (s, e, o, n) in enumerate(plan):
+    piece = c.write_chunk(c.Chunk(f, s, e, o, n, i + 1, len(plan)))
+    assert len(piece) <= budget
+    piece.decode("utf-8")
+    joined += piece
+assert joined == open(f, "rb").read()' "$f"
     done
   done
 }
@@ -879,11 +879,10 @@ sent_text_bytes() {
 # ---- total deadline (SHUNT_TOTAL_TIMEOUT_SECONDS) ----------------------------
 
 # use_fake_clock <seconds-per-request>: the transport's clock reads FAKE_CLOCK,
-# which starts at 0 and only moves when the fake curl answers a request.
+# which starts at 0 and only moves when a request is sent (test/fake_shunt_main.py).
 use_fake_clock() {
   export FAKE_CLOCK="$TEST_TMPDIR/clock" FAKE_CURL_ADVANCE="$1"
   echo 0 >"$FAKE_CLOCK"
-  _shunt_http_now() { _SHUNT_HTTP_NOW=$(cat "$FAKE_CLOCK"); }
 }
 
 @test "total deadline: hit between chunks stops further requests with DEADLINE" {
@@ -1062,12 +1061,12 @@ breaker_failures() {
 
 @test "agg_add: a non-numeric value in a normalized file counts as 0 and runs nothing" {
   export SHUNT_PWNED="$TEST_TMPDIR/pwned"
-  jq -n '{text:"t",finish_reason:"stop",usage:{input:"x[$(date>$SHUNT_PWNED)]",output:"1.5"}}' >"$TEST_TMPDIR/n.json"
-  _shunt_http_agg_reset
-  _shunt_http_agg_add "$TEST_TMPDIR/n.json"
+  chunk_py '
+from shunt import chunking
+usage = chunking.Usage()
+usage.add({"text": "t", "usage": {"input": "x[$(date>$SHUNT_PWNED)]", "output": "1.5"}})
+assert (usage.tokens_in, usage.tokens_out) == (0, 0)'
   [ ! -e "$SHUNT_PWNED" ]
-  [ "$_SHUNT_HTTP_AGG_IN" = 0 ]
-  [ "$_SHUNT_HTTP_AGG_OUT" = 0 ]
 }
 
 @test "config: a missing key returns the CONFIG status and sends nothing" {
@@ -1316,53 +1315,4 @@ breaker_failures() {
   [ "$(shunt_http_budget_tokens 0)" = 0 ]
   [ "$(shunt_http_budget_tokens 7)" = 4 ]
   [ "$(shunt_http_budget_tokens 999999999999)" = 599999999999 ]
-}
-
-@test "_shunt_rm_tracked removes the header file and every listed file and empties both" {
-  local h="$TEST_TMPDIR/hdr" a="$TEST_TMPDIR/a" b="$TEST_TMPDIR/b"
-  touch "$h" "$a" "$b"
-  HDR="$h" LIST=("$a" "$b")
-  _shunt_rm_tracked HDR LIST
-  [ ! -e "$h" ] && [ ! -e "$a" ] && [ ! -e "$b" ]
-  [ -z "$HDR" ] && [ "${#LIST[@]}" = 0 ]
-  _shunt_rm_tracked HDR LIST
-}
-
-@test "shunt_http_budget_tokens prints 0 for empty or non-numeric input and never evaluates it" {
-  cd "$TEST_TMPDIR"
-  [ "$(shunt_http_budget_tokens "")" = 0 ]
-  [ "$(shunt_http_budget_tokens 08)" = 4 ]
-  [ "$(shunt_http_budget_tokens 1234567890123)" = 0 ]
-  [ "$(shunt_http_budget_tokens -5)" = 0 ]
-  [ "$(shunt_http_budget_tokens 'a[$(touch x)]')" = 0 ]
-  [ ! -e x ]
-}
-
-@test "_shunt_rm_tracked handles leading-dash names, sparse arrays and caller vars named f or n" {
-  cd "$TEST_TMPDIR"
-  touch ./-dash ./s1 ./s3 ./hf
-  HDR="./hf"
-  LIST=("-dash" "./s1" "./s3")
-  unset 'LIST[1]'
-  [ ! -e s2 ]
-  local f="keep-f" n="keep-n"
-  _shunt_rm_tracked HDR LIST
-  [ ! -e ./-dash ] && [ ! -e ./s3 ] && [ ! -e ./hf ]
-  [ "${#LIST[@]}" = 0 ]
-  [ "$f" = keep-f ] && [ "$n" = keep-n ]
-  # the f and n arrays themselves
-  touch ./x1 ./x2
-  f="" ; n=()
-  n=(./x1 ./x2)
-  _shunt_rm_tracked f n
-  [ ! -e ./x1 ] && [ ! -e ./x2 ]
-}
-
-@test "_shunt_rm_tracked rejects variable names that are not identifiers" {
-  cd "$TEST_TMPDIR"
-  run _shunt_rm_tracked 'a[$(touch pwned)]' LIST
-  assert_failure
-  run _shunt_rm_tracked HDR 'L;touch pwned'
-  assert_failure
-  [ ! -e pwned ]
 }

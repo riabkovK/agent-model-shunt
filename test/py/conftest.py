@@ -60,3 +60,48 @@ def run_shunt():
         )
 
     return _run
+
+
+CHUNK_KEY = "sk-chunk-secret-key-456"
+CHUNK_AGENT = "shunt-bulk-reader-acme-m1"
+CHUNK_ROUTE = "/v1/chat/completions"
+CHUNK_REPLY = {"choices": [{"message": {"content": "ok"}, "finish_reason": "stop"}],
+               "usage": {"prompt_tokens": 1, "completion_tokens": 1}}
+
+
+@pytest.fixture
+def chunk_world(tmp_path, http_server):
+    """acme/m1 with a 6000 token context (a 10800 byte request budget) on the scripted server.
+
+    `environ` goes to transport_http.http_call, `big_file(lines)` writes lines of 100 bytes.
+    """
+    import json
+    import os
+
+    prompts = tmp_path / "prompts"
+    prompts.mkdir()
+    (prompts / "bulk-reader.md").write_text("You read.\n")
+    (prompts / "code-writer.md").write_text("You write.\n")
+    model = {"id": "acme/m1", "agent": CHUNK_AGENT, "enabled": True, "context_tokens": 6000}
+    (tmp_path / "models.json").write_text(json.dumps({"version": 1, "models": [model]}))
+    providers = {"version": 1, "providers": {"acme": {
+        "transport": "http", "base_url": http_server.url + "/v1", "key": {"type": "env", "ref": "ACME_KEY"}}}}
+    (tmp_path / "providers.json").write_text(json.dumps(providers))
+    http_server.script(CHUNK_ROUTE, body=CHUNK_REPLY)
+
+    class World:
+        server = http_server
+        environ = {**os.environ, "SHUNT_MODELS_FILE": str(tmp_path / "models.json"),
+                   "SHUNT_PROVIDERS_FILE": str(tmp_path / "providers.json"),
+                   "SHUNT_PROMPTS_DIR": str(prompts), "ACME_KEY": CHUNK_KEY}
+        path = tmp_path
+
+        def big_file(self, lines=300, name="big.txt"):
+            target = tmp_path / name
+            target.write_text("".join(f"L{i:04d} {'x' * 93}\n" for i in range(1, lines + 1)))
+            return str(target)
+
+        def user(self, n):
+            return json.loads(http_server.requests[n].body)["messages"][1]["content"]
+
+    return World()

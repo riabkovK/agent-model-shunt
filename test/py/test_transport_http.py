@@ -33,7 +33,7 @@ def world(tmp_path, http_server):
         environ = {**os.environ, "SHUNT_MODELS_FILE": str(tmp_path / "models.json"),
                    "SHUNT_PROVIDERS_FILE": str(tmp_path / "providers.json"),
                    "SHUNT_PROMPTS_DIR": str(prompts), "ACME_KEY": KEY,
-                   "SHUNT_HTTP_MAX_TIME": "5"}
+                   "SHUNT_TIMEOUT_SECONDS": "5"}
 
         def registry(self, **fields):
             model = {"id": "acme/m1", "agent": AGENT, "enabled": True, **fields}
@@ -72,8 +72,6 @@ def test_status_codes_match_transport_sh():
     shell = {n: int(v) for n, v in re.findall(r"^SHUNT_TRY_INVOKE_([A-Z]+)=(\d+)", text, re.M)}
     assert shell == {"TIMEOUT": reply.TIMEOUT, "ERROR": reply.ERROR, "EMPTY": reply.EMPTY, "AUTH": reply.AUTH,
                      "DEADLINE": 5, "OVERSIZE": reply.OVERSIZE, "CONFIG": reply.CONFIG}
-    assert f"SHUNT_HTTP_NEEDS_CHUNKING={reply.NEEDS_CHUNKING}" in (
-        REPO_ROOT / "scripts" / "lib" / "transport-http.sh").read_text()
 
 
 def test_success_writes_the_normalized_reply(world):
@@ -231,7 +229,7 @@ def test_a_missing_finish_reason_and_non_string_content_are_normalized():
 
 def test_timeout_is_reported_as_timeout(world, capsys):
     world.server.script(ROUTE, body=OK, delay=3)
-    world.environ["SHUNT_HTTP_MAX_TIME"] = "0.3"
+    world.environ["SHUNT_TIMEOUT_SECONDS"] = "0.3"
     assert status_of(world, capsys)[0] == reply.TIMEOUT
 
 
@@ -365,23 +363,22 @@ def test_size_guard(fields, size, outcome):
 
 
 def test_oversize_message_and_exit_code_through_the_cli(world):
-    world.registry(context_tokens=1000)
+    world.registry(context_tokens=1000, oversize_policy="fail")
     big = "x" * 4000
     argv = [sys.executable, "-I", "-B", str(SHUNT_MAIN), "transport", "http-call", "--", AGENT, big]
     done = subprocess.run(argv, env=world.environ, capture_output=True, text=True, check=False)
-    assert done.returncode == reply.NEEDS_CHUNKING and done.stdout == "" and world.server.requests == []
-    world.registry(context_tokens=1000, oversize_policy="fail")
-    done = subprocess.run(argv, env=world.environ, capture_output=True, text=True, check=False)
     assert done.returncode == reply.OVERSIZE and "input is too large for the model" in done.stderr
+    assert world.server.requests == []
 
 
-def test_http_ask_sends_a_prompt_file_without_the_size_guard(world, tmp_path):
+def test_an_oversize_map_reduce_input_is_chunked_in_the_same_process(world, tmp_path):
     world.registry(context_tokens=1000)
-    prompt = tmp_path / "p.txt"
-    prompt.write_text("part 1\n" + "y" * 5000)
-    doc = json.load(open(transport_http.http_ask(AGENT, str(prompt), world.environ)))
-    assert doc["text"] == "hello there"
-    assert world.sent()["messages"][1]["content"].startswith("part 1\n")
+    attached = tmp_path / "big.txt"
+    attached.write_text("".join(f"line {i:04d} {'x' * 80}\n" for i in range(80)))
+    argv = [sys.executable, "-I", "-B", str(SHUNT_MAIN), "transport", "http-call", "--", AGENT, "q", str(attached)]
+    done = subprocess.run(argv, env=world.environ, capture_output=True, text=True, check=False)
+    assert done.returncode == 0 and "asking in" in done.stderr and len(world.server.requests) > 2
+    assert json.load(open(done.stdout.strip()))["text"] == "hello there"
 
 
 def test_invalid_utf8_is_replaced_not_fatal(world, tmp_path):
@@ -389,9 +386,3 @@ def test_invalid_utf8_is_replaced_not_fatal(world, tmp_path):
     attached.write_bytes(b"ok \xff\xfe end")
     world.call("q", [str(attached)])
     assert "ok �� end" in world.sent()["messages"][1]["content"]
-
-
-def test_unexpected_exit_codes_stay_inside_the_wrapper_contract(world):
-    argv = [sys.executable, "-I", "-B", str(SHUNT_MAIN), "transport", "http-ask", "--", AGENT, "/no/such/file"]
-    done = subprocess.run(argv, env=world.environ, capture_output=True, text=True, check=False)
-    assert done.returncode == reply.CONFIG and "cannot read attached file" in done.stderr
