@@ -1,4 +1,5 @@
 load 'test_helper'
+bats_require_minimum_version 1.5.0
 
 HOOK="$REPO_ROOT/hooks/session-start-orchestrator"
 
@@ -230,13 +231,21 @@ registry_bulk_only() {
   [ -z "$output" ]
 }
 
-@test "hook: jq absent gives exit 0 and empty stdout" {
+@test "hook: jq absent still injects the rule, the hook no longer uses jq" {
   registry_all
   local farm
   farm=$(path_without jq)
   run env PATH="$farm" "$HOOK" </dev/null
   assert_success
+  assert_output --partial '"hookEventName": "SessionStart"'
+}
+
+@test "hook: a missing interpreter gives exit 0, empty stdout and a warning on stderr" {
+  registry_all
+  SHUNT_PYTHON="$TEST_TMPDIR/no-such-python" run --separate-stderr "$HOOK" </dev/null
+  assert_success
   [ -z "$output" ]
+  [[ "$stderr" == "shunt: the Python interpreter is unusable"* ]]
 }
 
 @test "hook: output stays under 3000 characters" {
@@ -363,7 +372,8 @@ registry_bulk_only() {
   registry_all
   mkdir -p "$SHUNT_ORCHESTRATOR_DIR"
   printf 'role: code-write\n- extra code wording\n' >"$SHUNT_ORCHESTRATOR_DIR/extra.md"
-  shunt_breaker_any_closed() { return 1; }
+  export SHUNT_BREAKER_THRESHOLD=1
+  shunt_breaker_record_failure "p/m"
   run shunt_orchestrator_render
   assert_success
   local n

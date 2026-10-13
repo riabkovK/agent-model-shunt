@@ -23,10 +23,13 @@ def check_python(version_info=None):
 
 def run():
     error = check_python()
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    if sys.argv[1:2] == ["hook"]:  # the per-call hooks skip argparse and the other modules
+        from shunt.hooks import main as hook_main
+        return hook_main(sys.argv[2:], error)  # exit 2 would block the tool call, so hooks never use it
     if error:
         sys.stderr.write(error + "\n")
         return 2
-    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
     from shunt.cli import main
     # Bytes in, bytes out: ids and paths are not ASCII, and the locale must not matter.
     sys.stdout.reconfigure(encoding="utf-8", errors="surrogateescape")

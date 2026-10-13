@@ -1,48 +1,21 @@
 #!/bin/bash
-# Block Bash commands that read large files, redirect to the bulk-reader skill.
-# Catches cat/head/tail/less/more that bypass the Read hook.
+# PreToolUse Bash hook: block cat/head/tail/less/more on large files, redirect to the bulk-reader skill.
+# The whole hook is one Python process (scripts/py/shunt/hooks.py): no jq, no
+# other subprocess. It prints the hook JSON and always exits 0, also when the
+# interpreter is missing (then the call is allowed / nothing is injected).
 
-allow() { echo '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}'; }
-deny() { echo "{\"hookSpecificOutput\": {\"hookEventName\": \"PreToolUse\", \"permissionDecision\": \"deny\", \"permissionDecisionReason\": \"$1\"}}"; }
-
-case "${SHUNT_HOOKS_DISABLED:-}" in
-  1|true|TRUE|yes|YES) allow; exit 0 ;;
+case "${BASH_SOURCE[0]}" in
+  */*) HOOK_DIR="${BASH_SOURCE[0]%/*}" ;;
+  *) HOOK_DIR=. ;;
 esac
+# shellcheck source=../scripts/lib/py.sh
+source "$HOOK_DIR/../scripts/lib/py.sh"
 
-MIN_LINES="${SHUNT_MIN_LINES:-350}"
-case "$MIN_LINES" in ''|*[!0-9]*) MIN_LINES=350 ;; esac
-
-input=$(cat)
-
-command=$(echo "$input" | jq -r '.tool_input.command // empty')
-[ -z "$command" ] && { allow; exit 0; }
-
-echo "$command" | grep -qE '\|' && { allow; exit 0; }
-echo "$command" | grep -qE '>' && { allow; exit 0; }
-
-file_path=""
-if echo "$command" | grep -qE '^(cat|head|tail|less|more) '; then
-  args=$(echo "$command" | sed -E 's/^(cat|head|tail|less|more) +//')
-  skip_next=0
-  for arg in $args; do
-    if [ "$skip_next" -eq 1 ]; then
-      skip_next=0
-      continue
-    fi
-    case "$arg" in
-      -n|-c) skip_next=1; continue ;;
-      -*) continue ;;
-      *)  file_path=$(echo "$arg" | tr -d '"'"'"); break ;;
-    esac
-  done
+SHUNT_HOOK_PYTHON="${SHUNT_PYTHON:-python3}"
+if ! command -v "$SHUNT_HOOK_PYTHON" >/dev/null 2>&1 || [ ! -r "${SHUNT_PY_MAIN:-}" ]; then
+  echo "shunt: the Python interpreter is unusable (not found or no entry script), the hook does nothing." >&2
+  printf '%s\n' '{"hookSpecificOutput": {"hookEventName": "PreToolUse", "permissionDecision": "allow"}}'
+  exit 0
 fi
 
-[ -z "$file_path" ] && { allow; exit 0; }
-[ ! -f "$file_path" ] && { allow; exit 0; }
-
-lines=$(wc -l < "$file_path" 2>/dev/null | tr -d ' ' || echo "0")
-if [ "$lines" -gt "$MIN_LINES" ]; then
-  deny "File is ${lines} lines (threshold: ${MIN_LINES}). Use the /bulk-reader skill to delegate this read to a custom model instead of cat/head/tail."
-else
-  allow
-fi
+exec "$SHUNT_HOOK_PYTHON" -I -B -S "$SHUNT_PY_MAIN" hook check-bash-read
