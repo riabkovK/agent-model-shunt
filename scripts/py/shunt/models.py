@@ -201,6 +201,23 @@ def _agent_name_error(models: list[dict[str, Any]]) -> str | None:
     return None
 
 
+def _role_thinking_error(models: list[dict[str, Any]]) -> str | None:
+    for model in models:
+        if "role_thinking" not in model:
+            continue
+        mid = _interp(model.get("id"))
+        value = model["role_thinking"]
+        if not isinstance(value, dict):
+            return f'model "{mid}" has invalid role_thinking: must be a JSON object of role to true or false.'
+        for role, state in value.items():
+            if role not in ROLES:
+                return (f'model "{mid}" has invalid role_thinking: unknown role "{role}" '
+                        f'(roles: {" ".join(ROLES)}).')
+            if not isinstance(state, bool):
+                return f'model "{mid}" has invalid role_thinking for "{role}": must be true or false.'
+    return None
+
+
 def _sizing_error(models: list[dict[str, Any]]) -> str | None:
     for model in models:
         mid = _interp(model.get("id"))
@@ -239,7 +256,8 @@ def validate(path: str | os.PathLike[str]) -> str | None:
     reason = _duplicate_error(models, shown)
     if reason:
         return reason
-    for check in (_control_char_error, _roles_error, _agent_name_error, _sizing_error):
+    for check in (_control_char_error, _roles_error, _agent_name_error, _sizing_error,
+                  _role_thinking_error):
         reason = check(models)
         if reason:
             return f"models registry at {shown}: {reason}"
@@ -287,8 +305,19 @@ def _field_values(path: PathArg, model_id: str, field: str, default: Any) -> lis
     return [default if m.get(field) is None or m[field] is False and default is None else m[field] for m in found]
 
 
-def thinking_for(path: PathArg, model_id: str) -> list[str]:
-    return [_raw(v) for v in _field_values(path, model_id, "thinking", False)]
+def effective_thinking(model: Mapping[str, Any], role: str = "") -> bool:
+    """The thinking state for a role: role_thinking[role] when it is a bool, else the model's `thinking`."""
+    overrides = model.get("role_thinking")
+    if role and isinstance(overrides, dict) and isinstance(overrides.get(role), bool):
+        return overrides[role]
+    return model.get("thinking") is True
+
+
+def thinking_for(path: PathArg, model_id: str, role: str = "") -> list[str]:
+    """The model's thinking value per matching entry, or the role's effective state when a role is given."""
+    if not role:
+        return [_raw(v) for v in _field_values(path, model_id, "thinking", False)]
+    return [_raw(effective_thinking(m, role)) for m in _matching(_entries(_load(path)), model_id)]
 
 
 def thinking_options_for(path: PathArg, model_id: str, field: str = "thinking_options") -> list[str]:
@@ -311,13 +340,13 @@ def _refuse_control_chars(text: str, what: str) -> None:
         raise ShuntError(f"refusing to render {what}: it contains a control character.")
 
 
-def thinking_block(path: PathArg, model_id: str) -> str:
-    """Extra agent frontmatter lines for the model's current thinking state, or ""."""
+def thinking_block(path: PathArg, model_id: str, role: str = "") -> str:
+    """Extra agent frontmatter lines for the model's thinking state (for `role` when given), or ""."""
     models = _matching(_entries(_load(path)), model_id)
     if not models:
         return ""
     model = models[0]
-    thinking_on = model.get("thinking") is True
+    thinking_on = effective_thinking(model, role)
     options = model.get("thinking_options" if thinking_on else "thinking_off_options")
     if not isinstance(options, dict):
         return ""
@@ -419,17 +448,16 @@ def materialize_agent(path: PathArg, agents_dir: Path, prompts_dir: PathArg, mod
     if not agent:
         raise ShuntError(f"no registered agent name for model '{model_id}'.")
     _refuse_control_chars(model_id, "a model id")
-    block = thinking_block(path, model_id)
     agents_dir.mkdir(parents=True, exist_ok=True)
 
     prompts = Path(prompts_dir)
     bulk_prompt = (prompts / "bulk-reader.md").read_bytes()
-    write_bytes_atomic(_agent_file(agents_dir, agent), render_bulk_reader(model_id, block, bulk_prompt),
+    write_bytes_atomic(_agent_file(agents_dir, agent), render_bulk_reader(model_id, thinking_block(path, model_id, "bulk-read"), bulk_prompt),
                        AGENT_FILE_MODE)
     writer_file = _agent_file(agents_dir, code_writer_agent_for(model_id))
     if writes_code:
         writer_prompt = (prompts / "code-writer.md").read_bytes()
-        write_bytes_atomic(writer_file, render_code_writer(model_id, block, writer_prompt),
+        write_bytes_atomic(writer_file, render_code_writer(model_id, thinking_block(path, model_id, "code-write"), writer_prompt),
                            AGENT_FILE_MODE)
     elif writer_file not in _bulk_agent_files(path, agents_dir):
         writer_file.unlink(missing_ok=True)
@@ -466,7 +494,7 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         agent = agent_for(path, args.id)
         _out([agent] if agent else [])
     elif cmd == "thinking-for":
-        _out(thinking_for(path, args.id))
+        _out(thinking_for(path, args.id, args.role))
     elif cmd == "thinking-options-for":
         _out(thinking_options_for(path, args.id))
     elif cmd == "thinking-off-options-for":
@@ -480,7 +508,7 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     elif cmd == "has-role":
         return 0 if has_role(path, args.id, args.role) else 1
     elif cmd == "thinking-block":
-        block = thinking_block(path, args.id)
+        block = thinking_block(path, args.id, args.role)
         _out([block] if block else [])
     elif cmd == "require-prompts":
         require_prompts(_prompts_dir(environ), args.roles)
@@ -518,7 +546,10 @@ def register(subparsers: Any) -> None:
     cands.add_argument("role")
     cands.add_argument("quiet", nargs="?", default="")
     for name in _ID_COMMANDS:
-        sub.add_parser(name).add_argument("id")
+        parser = sub.add_parser(name)
+        parser.add_argument("id")
+        if name in ("thinking-for", "thinking-block"):
+            parser.add_argument("role", nargs="?", default="")
     has = sub.add_parser("has-role")
     has.add_argument("id")
     has.add_argument("role")

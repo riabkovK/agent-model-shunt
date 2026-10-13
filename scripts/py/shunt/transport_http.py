@@ -20,6 +20,7 @@ Status mapping (the SHUNT_TRY_INVOKE_* codes of transport.sh, see transport_repl
   input over the context budget        OVERSIZE (map_reduce: chunked in process for a bulk-reader)
   missing key, bad base_url, request_body, oversize policy, no context_tokens,
   missing role prompt                  CONFIG (nothing sent)
+  fresh unhealthy healthcheck status   SKIPPED (nothing sent, the failover skips the breaker)
 
 Secret rules: the key lives only in this process: it is put into the
 Authorization header of the one request and into the scrubber of the error
@@ -44,7 +45,7 @@ from typing import Any, NoReturn
 from . import chunking, env, healthcheck_bg, httpclient, models, providers
 from . import transport_reply as reply
 from .deadline import Deadline, DeadlineError
-from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT, UNREACHABLE
+from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, SKIPPED, TIMEOUT, UNREACHABLE
 
 BYTES_PER_TOKEN = 3
 CONTEXT_BUDGET_PERCENT = 60
@@ -67,6 +68,10 @@ def _fail(status: int, message: str = "") -> NoReturn:
     if message:
         sys.stderr.write(f"shunt: {message}\n")
     raise _Stop(status)
+
+
+class _ConnectFailed(reply.Abort):
+    """UNREACHABLE because no connection could be made (not a broken model route)."""
 
 
 @dataclass(frozen=True)
@@ -165,7 +170,7 @@ def _request_body(model: Mapping[str, Any], role: str, model_id: str) -> dict[st
     base = {} if base is None or base is False else base
     role_bodies = model.get("role_request_body")
     role_bodies = {} if role_bodies is None or role_bodies is False else role_bodies
-    field = "thinking_options" if model.get("thinking") is True else "thinking_off_options"
+    field = "thinking_options" if models.effective_thinking(model, _KEY_ROLE[role]) else "thinking_off_options"
     think = model.get(field)
     if not isinstance(base, dict):
         _fail(CONFIG, f"model '{model_id}': request_body must be a JSON object.")
@@ -309,10 +314,12 @@ def _transport_failure(setup: _Setup, err: httpclient.HttpError, environ: Mappin
     if err.kind == "timeout":
         raise _Stop(TIMEOUT)
     if err.kind == "unreachable":
-        _fail(UNREACHABLE, f"{setup.model_id} unreachable: no connection within "
-                           f"{_seconds_text(env.connect_timeout(environ))}s (or no route to the host)")
+        sys.stderr.write(f"shunt: {setup.model_id} unreachable: no connection within "
+                         f"{_seconds_text(env.connect_timeout(environ))}s (or no route to the host)\n")
+        raise _ConnectFailed(UNREACHABLE)
     if setup.healthcheck and err.kind in ("connect", "dns"):  # e.g. a model behind a VPN that is down
-        _fail(UNREACHABLE, f"{setup.model_id} unreachable: {err}")
+        sys.stderr.write(f"shunt: {setup.model_id} unreachable: {err}\n")
+        raise _ConnectFailed(UNREACHABLE)
     # An auth or rate limit status says more than the size of its body.
     if err.kind == "too_large" and err.status in _STATUS_BEATS_SIZE:
         _check_status(setup, httpclient.Response(err.status, {}, b""), key)
@@ -399,7 +406,7 @@ class _Attempt:
 
     def _healthcheck(self) -> None:
         """The status gate of a provider that asks for a healthcheck, once per attempt. It only reads
-        the status cache: a fresh unhealthy status ends the attempt as unreachable at once, anything
+        the status cache: a fresh unhealthy status ends the attempt as skipped at once, anything
         else goes on with the real call. A probe, when one is due, runs in the background."""
         setup = self.setup
         if self._checked or not setup.healthcheck:
@@ -408,12 +415,11 @@ class _Attempt:
         try:
             if env.healthcheck_timeout(self.environ) <= 0:
                 return
-            blocked = healthcheck_bg.gate(self.environ, setup.provider, setup.base_url, self._model())
+            wait = healthcheck_bg.gate(self.environ, setup.provider, setup.base_url, self._model())
         except env.EnvError as exc:
             _fail(CONFIG, str(exc))
-        if blocked:
-            _fail(UNREACHABLE, f"{setup.model_id} healthcheck failed: unhealthy at the last check, "
-                               "tried again after SHUNT_HEALTHCHECK_RETRY seconds")
+        if wait is not None:
+            _fail(SKIPPED, f"{setup.model_id} skipped: unhealthy at the last healthcheck, next check in {wait} s")
 
     def _model(self) -> str:
         return self.setup.model_id.split("/", 1)[-1]
@@ -422,6 +428,14 @@ class _Attempt:
         """Record the real call's outcome as the model's status (providers with a healthcheck only)."""
         if self.setup.healthcheck:
             healthcheck_bg.note_call(self.environ, self.setup.provider, self.setup.base_url, self._model(), healthy)
+
+    def _note_unreachable(self, connect_failed: bool) -> None:
+        """A connect failure only starts a probe, which sets the status. A broken route marks unhealthy."""
+        if not connect_failed:
+            self._note(False)
+        elif self.setup.healthcheck:
+            healthcheck_bg.note_connect_failure(self.environ, self.setup.provider, self.setup.base_url,
+                                                self._model())
 
     def ask(self, prompt: bytes) -> dict[str, Any]:
         """One request within the time left of the total deadline. DEADLINE when none is left, or
@@ -435,7 +449,7 @@ class _Attempt:
             result = _send(self.setup, prompt, self.environ, self.key(), window.max_time)
         except _Stop as stop:
             if stop.status == UNREACHABLE:
-                self._note(False)
+                self._note_unreachable(isinstance(stop, _ConnectFailed))
             if stop.status == TIMEOUT and window.capped:
                 self.deadline.note(self.setup.model_id)
                 raise _Stop(DEADLINE) from None

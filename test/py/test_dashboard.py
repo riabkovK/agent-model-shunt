@@ -134,3 +134,14 @@ def test_a_provider_without_any_model_is_flagged(cfg):
 def test_thinking_counts_as_on_only_for_boolean_true(cfg):
     cfg.models({"id": "oc/m2", "agent": "a2", "enabled": True, "thinking": "on", "roles": ["bulk-read"]})
     assert any(line.startswith("model oc/m2 ") and "thinking=off" in line for line in cfg.report())
+
+
+def test_thinking_roles_shows_the_effective_state_per_role_only_when_set(cfg):
+    cfg.models({"id": "oc/m2", "agent": "a2", "enabled": True, "thinking": False,
+                "role_thinking": {"code-write": True}},
+               {"id": "oc/m3", "agent": "a3", "enabled": True, "thinking": True})
+    lines = cfg.report()
+    m2 = next(line for line in lines if line.startswith("model oc/m2 "))
+    m3 = next(line for line in lines if line.startswith("model oc/m3 "))
+    assert " thinking=off thinking_roles=bulk-read:off,code-write:on thinking_off=" in m2
+    assert "thinking_roles" not in m3

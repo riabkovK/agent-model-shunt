@@ -108,6 +108,15 @@ def _providers_value(path: str) -> Any:
     return doc.get("providers") if isinstance(doc, dict) else None
 
 
+def _thinking_roles(model: Mapping[str, Any]) -> list[str]:
+    """`thinking_roles=<role>:on|off,...` (effective state per role), only when role_thinking is a non-empty object."""
+    overrides = model.get("role_thinking")
+    if not isinstance(overrides, dict) or not overrides:
+        return []
+    states = ",".join(f"{role}:{'on' if models.effective_thinking(model, role) else 'off'}" for role in models.ROLES)
+    return [f"thinking_roles={states}"]
+
+
 def _model_rest(model: Mapping[str, Any], active: Any) -> str:
     context = model.get("context_tokens")
     policy = model.get("oversize_policy")
@@ -116,6 +125,7 @@ def _model_rest(model: Mapping[str, Any], active: Any) -> str:
         f"active={'yes' if model.get('id') == active else 'no'}",
         f"roles={','.join(str(r) for r in (models._roles_of(model)))}",
         f"thinking={'on' if model.get('thinking') is True else 'off'}",
+        *_thinking_roles(model),
         f"thinking_off={'none' if model.get('thinking_off_options') is None else 'set'}",
         f"context_tokens={'unset' if context is None or context is False else models._interp(context)}",
         f"oversize_policy={'map_reduce(default)' if policy is None or policy is False else models._interp(policy)}",

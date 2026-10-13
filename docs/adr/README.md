@@ -33,3 +33,4 @@ rather than duplicating it here.
 | [0020](0020-context-window-and-oversize-handling.md) | Context window from detection or the user, and `map_reduce` or `fail` for oversize input | Accepted | Yes (`scripts/py/shunt/context_detect.py`, `scripts/py/shunt/transport_http.py`) |
 | [0021](0021-thinking-options-apply-to-both-transports.md) | Thinking options apply to both transports | Accepted | Yes (`scripts/py/shunt/transport_http.py` request body merge) |
 | [0022](0022-python-core-port.md) | Port the core from bash and jq to Python | Accepted | Yes (`scripts/py/shunt/`, bridge `scripts/lib/py.sh`). Supersedes ADR 0004 |
+| [0023](0023-thinking-per-role.md) | Thinking per role via an optional `role_thinking` override | Accepted | Yes (`scripts/py/shunt/models.py` `effective_thinking`, `transport_http.py`, `models_cli.py`) |

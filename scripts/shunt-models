@@ -14,11 +14,15 @@
 #   shunt-models remove <provider/model>
 #   shunt-models reorder <provider/model> <1-based position>
 #   shunt-models activate <provider/model>
-#   shunt-models thinking <provider/model> <on|off> [options-json]
+#   shunt-models thinking <provider/model> <on|off> [--role <bulk-read|code-write>] [options-json]
 #     on: options-json holds the provider's reasoning options (flat object).
 #     off: options-json (a flat object) sets explicit off options, e.g.
 #          '{"reasoningEffort":"none"}', rendered into the agent files while
 #          thinking is off. Omitted: stored off options stay. '{}' clears them.
+#     --role: sets only role_thinking[role] (the model default and the other role stay);
+#          options-json then goes to the on or off options without touching the other.
+#   shunt-models thinking <provider/model> --role <bulk-read|code-write> --clear
+#     Removes that role's override (the field goes when empty).
 #   shunt-models request-body <provider/model> [--role <bulk-read|code-write>] <json-object|--clear>
 #     Sets or clears the model's request_body (extra fields of every HTTP request),
 #     or with --role only that role's role_request_body entry, merged on top of it.

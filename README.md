@@ -216,6 +216,8 @@ hand-editing the files below:
   via `scripts/shunt-models thinking <provider/model> on '<options-json>'`
   (see the `/model-config` skill). It applies to both transports
   ([ADR 0021](docs/adr/0021-thinking-options-apply-to-both-transports.md)).
+  Add `--role bulk-read` or `--role code-write` to set it for one role only
+  ([ADR 0023](docs/adr/0023-thinking-per-role.md)).
 
 If no registry file exists, shunt stays in the legacy single-agent mode
 described in [Setup](#setup) above. See [Management skills](#management-skills)
@@ -279,8 +281,10 @@ goes on at once:
   command line. One probe per model runs at a time (a lock file in the cache
   dir), it has a time cap and its failures are silent. A good probe also
   clears the model's circuit breaker state.
-- The real call keeps the status current: a success marks the model healthy, a
-  failed connection, a 404 or a 5xx marks it unhealthy. Other errors (auth, other 4xx, oversize, a
+- The real call keeps the status current: a success marks the model healthy, a 404 or
+  a 5xx marks it unhealthy. A failed connection does not change the status: it starts a probe at once, which
+  tries the connection three times in a row (a Tailscale tunnel may need a few seconds after idling) and sets
+  the status. Other errors (auth, other 4xx, oversize, a
   timeout on a long reply) leave it alone.
 - The session start hook starts a probe for each enabled model of a healthcheck
   provider whose status is missing or stale. It does not wait for them.

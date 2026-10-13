@@ -11,6 +11,12 @@ the child starts and removed by it. A lock older than twice the probe's time cap
 The child has a time cap and always exits 0. Any problem to start it is swallowed, the real call goes on.
 A successful probe also clears the circuit breaker state of the model.
 
+The status is set by the probe, not by a failed connect of a real call. A real call that could not
+connect (`note_connect_failure`) leaves the status alone and starts a probe at once, even when the status
+is still fresh. The probe tries a connect three times (healthcheck.PROBE_CONNECT_RETRIES), so a tunnel
+that needs a few seconds after idling does not disable the model. The real call itself fails over as
+before. A success still marks healthy, and a broken model route (404, 5xx) still marks unhealthy.
+
 SHUNT_HEALTHCHECK_INLINE=1 runs the probe in the calling process instead (tests only).
 """
 
@@ -18,6 +24,7 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import math
 import os
 import sys
 import threading
@@ -39,9 +46,10 @@ def _lock_path(environ: Mapping[str, str], key: tuple[str, str, str]) -> Path:
 
 
 def time_cap(environ: Mapping[str, str]) -> float:
-    """The most seconds a probe may run: both steps, two connects and a grace."""
+    """The most seconds a probe may run: both steps, every connect attempt of both steps and a grace."""
+    connects = 2 * (1 + healthcheck.PROBE_CONNECT_RETRIES)
     return (env.healthcheck_timeout(environ) + env.healthcheck_model_timeout(environ)
-            + 2 * env.connect_timeout(environ) + CAP_GRACE_SECONDS)
+            + connects * env.connect_timeout(environ) + CAP_GRACE_SECONDS)
 
 
 def _release(path: Path) -> None:
@@ -110,8 +118,8 @@ def spawn_many(environ: Mapping[str, str], items: list[tuple[str, str, str]]) ->
             _release(lock)
 
 
-def gate(environ: Mapping[str, str], provider: str, base_url: str, model: str) -> bool:
-    """True when the request must fail over now. Starts a background probe when the status is
+def gate(environ: Mapping[str, str], provider: str, base_url: str, model: str) -> int | None:
+    """Seconds until the next check (at least 1) when the request must fail over now, else None. Starts a background probe when the status is
     missing or stale. Raises env.EnvError for an invalid SHUNT_HEALTHCHECK_TTL or _RETRY."""
     ttl, retry = env.healthcheck_ttl(environ), env.healthcheck_retry(environ)
     base = healthcheck.normalize_base(base_url)
@@ -119,17 +127,25 @@ def gate(environ: Mapping[str, str], provider: str, base_url: str, model: str) -
     blocked, probe = healthcheck.verdict(found, ttl, retry)
     if probe:
         spawn(environ, provider, base, model)
-    return blocked
+    if not blocked or found is None:
+        return None
+    return max(1, math.ceil(retry - found[1]))
 
 
 
 def note_call(environ: Mapping[str, str], provider: str, base_url: str, model: str, healthy: bool) -> None:
     """The real call's outcome: a success marks healthy and clears the model's breaker state, a
-    connect failure or a broken model route marks unhealthy."""
+    broken model route marks unhealthy. A connect failure goes to note_connect_failure instead."""
     healthcheck.remember(env.healthcheck_cache_file(environ), provider, base_url, model,
                          breaker.now(environ), healthy)
     if healthy:
         clear_breaker(environ, f"{provider}/{model}")
+
+
+def note_connect_failure(environ: Mapping[str, str], provider: str, base_url: str, model: str) -> None:
+    """The real call could not connect: leave the status as it is and let a probe decide (it retries
+    the connect). Never waits and never raises."""
+    spawn(environ, provider, base_url, model)
 
 
 def clear_breaker(environ: Mapping[str, str], model_id: str) -> None:

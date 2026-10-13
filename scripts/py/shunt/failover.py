@@ -25,7 +25,7 @@ from typing import Any, NoReturn
 
 from . import breaker, env, healthcheck_bg, models, transport
 from . import transport_reply as reply
-from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, OVERSIZE, TIMEOUT, UNREACHABLE
+from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, OVERSIZE, SKIPPED, TIMEOUT, UNREACHABLE
 
 DEFAULT_TIMEOUT = "300"
 WRITER_KIND = "writer"
@@ -79,6 +79,8 @@ def failure_reason(status: int, agent: str, environ: Mapping[str, str]) -> str:
         return f"timed out after {timeout}s"
     if status == UNREACHABLE:
         return "unreachable (no connection within SHUNT_CONNECT_TIMEOUT)"
+    if status == SKIPPED:
+        return "skipped by the healthcheck (unhealthy at the last check)"
     if status == DEADLINE:
         return "total deadline reached (SHUNT_TOTAL_TIMEOUT_SECONDS)"
     if status == ERROR:
@@ -117,7 +119,8 @@ def run_role(role: str, kind: str, question: str, files: Sequence[str], environ:
     """Try the candidates of `role` in order until one answers (and `accept`, when given, takes it).
 
     A model that fails to run gets a note and a breaker failure. One that refuses the input as too
-    large (OVERSIZE), whose key is rejected (AUTH) or that has a config problem (CONFIG) is skipped
+    large (OVERSIZE), whose key is rejected (AUTH), that has a config problem (CONFIG) or that the healthcheck
+    cache marks unhealthy (SKIPPED) is skipped
     without a breaker failure. Fatal (Fatal) once every candidate failed or is paused."""
     path = env.models_file_text(environ)
     if role not in models.ROLES:
@@ -150,7 +153,7 @@ def run_role(role: str, kind: str, question: str, files: Sequence[str], environ:
             _record(environ, "failure", key)
             continue
         note_failure(model_id, status, agent, environ)
-        if status in (AUTH, CONFIG):
+        if status in (AUTH, CONFIG, SKIPPED):  # SKIPPED: no call was made, the healthcheck status is the pause
             continue
         if status == OVERSIZE:
             oversize += 1

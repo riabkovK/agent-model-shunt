@@ -229,17 +229,42 @@ def cmd_disable(args: Sequence[str]) -> int:
     return _set_enabled(False, args)
 
 
+_THINKING_USAGE = (f"usage: shunt-models thinking <provider/model> <on|off> [--role <{ROLES[0]}|{ROLES[1]}>] "
+                   "[options-json]\n"
+                   f"       shunt-models thinking <provider/model> --role <{ROLES[0]}|{ROLES[1]}> --clear")
+
+
 def cmd_thinking(args: Sequence[str]) -> int:
-    model_id, state, options = _arg(args, 0), _arg(args, 1), _arg(args, 2)
-    if not model_id or not state:
-        raise _fail("usage: shunt-models thinking <provider/model> <on|off> [options-json]")
-    if state not in ("on", "off"):
-        raise _fail("thinking state must be 'on' or 'off'.")
+    model_id = _arg(args, 0)
+    if not model_id:
+        raise _fail(_THINKING_USAGE)
+    rest = list(args[1:])
+    role = ""
+    if "--role" in rest:
+        at = rest.index("--role")
+        role = _arg(rest, at + 1)
+        if not role:
+            raise _fail(_THINKING_USAGE)
+        rest = rest[:at] + rest[at + 2:]
+    clearing = CLEAR in rest
+    if clearing:
+        if not role or len(rest) != 1:
+            raise _fail(_THINKING_USAGE)
+        state, options = CLEAR, ""
+    else:
+        state, options = _arg(rest, 0), _arg(rest, 1)
+        if not state:
+            raise _fail(_THINKING_USAGE)
+        if state not in ("on", "off"):
+            raise _fail("thinking state must be 'on' or 'off'.")
+    if role and role not in ROLES:
+        raise _fail(f"unknown role '{role}' (roles: {_ROLES_TEXT}).")
     _require_registry()
     _require_entry(model_id)
-    _write(models_write.thinking, model_id, state, options)
+    _write(models_write.thinking, model_id, state, options, role)
     _materialize(model_id)
-    _say(f"shunt: thinking for '{model_id}' set to {state}.")
+    suffix = f" (role {role})" if role else ""
+    _say(f"shunt: thinking for '{model_id}'{suffix} " + ("cleared." if clearing else f"set to {state}."))
     return 0
 
 

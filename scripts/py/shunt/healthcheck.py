@@ -6,6 +6,9 @@ never answer, for instance behind a Bonjour Sleep Proxy, or may have the model u
 a connection error, a timeout or a 5xx status is unhealthy, and a readable list without the model is
 unhealthy. A 4xx or an unreadable list passes the step. Then a one token POST {base_url}/chat/completions
 for the model: 2xx, 400 and 422 are healthy, 404, 5xx, a timeout or no connection are not.
+A request that could not make a connection is tried PROBE_CONNECT_RETRIES more times at once (a tunnel
+such as Tailscale may need a few seconds to come up). There is no pause between tries, so it helps when
+the connect times out, not when it is refused at once. No other failure is tried again.
 
 The probe never runs on the path of a request (see healthcheck_bg.py). What the request path reads is
 the status cache: per provider name, base_url and model id, {status: healthy|unhealthy, at}, in a small
@@ -20,7 +23,7 @@ import json
 import os
 import stat
 import tempfile
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from pathlib import Path
 from typing import Any
 
@@ -36,6 +39,8 @@ MAX_LIST_BYTES = 1 << 20  # a /models list of a big gateway is long
 NO_ANSWER = "no answer in time"
 MODEL_NO_ANSWER = "model gave no answer in time"
 NOT_LISTED = "model not listed"
+PROBE_CONNECT_RETRIES = 2  # extra tries of a probe request that could not connect (3 attempts in all)
+CONNECT_KINDS = ("unreachable", "connect", "dns")  # no connection was made
 PROBE_BODY = {"messages": [{"role": "user", "content": "ping"}], "max_tokens": 1, "stream": False}
 
 
@@ -158,14 +163,26 @@ def _listed(body: bytes) -> list[str] | None:
     return [m["id"] for m in data if isinstance(m.get("id"), str)]
 
 
+def _retry_connect(send: Callable[[], httpclient.Response]) -> httpclient.Response:
+    """`send()`, tried again at once when no connection could be made (a tunnel that needs a few seconds
+    to come up). Any other failure, and the last connect failure, is raised."""
+    for _ in range(PROBE_CONNECT_RETRIES):
+        try:
+            return send()
+        except httpclient.HttpError as err:
+            if err.kind not in CONNECT_KINDS:
+                raise
+    return send()
+
+
 def probe(url: str, headers: Mapping[str, str], timeout: float | None, connect_timeout: float,
           model: str | None = None) -> str | None:
     """Step 1: one GET of `url` (the /models list). None when healthy, else the reason (it never holds
     a header or a body). With a `model`, a parsable list that lacks it is unhealthy. A 4xx or a list
     that cannot be read says nothing about the model, so the step passes."""
     try:
-        response = httpclient.get(url, headers=headers, timeout=timeout, max_bytes=MAX_LIST_BYTES,
-                                  connect_timeout=connect_timeout)
+        response = _retry_connect(lambda: httpclient.get(
+            url, headers=headers, timeout=timeout, max_bytes=MAX_LIST_BYTES, connect_timeout=connect_timeout))
     except httpclient.HttpError as err:
         reason = _transport_reason(err, NO_ANSWER, "")
         if reason is not None:
@@ -188,8 +205,9 @@ def probe_model(url: str, model: str, headers: Mapping[str, str], timeout: float
     2xx, 400 and 422 (e.g. a reasoning model that rejects max_tokens) and other 4xx but 404 are healthy,
     a 401 or 403 is left to the real call to report."""
     try:
-        response = httpclient.post_json(url, PROBE_BODY | {"model": model}, headers=headers, timeout=timeout,
-                                        max_bytes=MAX_BODY_BYTES, connect_timeout=connect_timeout)
+        response = _retry_connect(lambda: httpclient.post_json(
+            url, PROBE_BODY | {"model": model}, headers=headers, timeout=timeout, max_bytes=MAX_BODY_BYTES,
+            connect_timeout=connect_timeout))
         status = response.status
     except httpclient.HttpError as err:
         reason = _transport_reason(err, MODEL_NO_ANSWER, "model ")
