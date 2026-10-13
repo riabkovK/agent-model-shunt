@@ -26,7 +26,7 @@ import sys
 from collections.abc import Mapping
 from typing import Any
 
-from . import env, httpclient, providers
+from . import env, httpclient, probe, providers
 
 EXIT_NOT_FOUND = 1
 EXIT_AUTH_FAILED = 3
@@ -219,6 +219,10 @@ def detect(model_id: str, environ: Mapping[str, str]) -> tuple[int | None, int]:
 
 
 def run(args: argparse.Namespace) -> int:
+    # Registered models only, checked before the key is resolved or anything is sent (migrate calls detect() directly).
+    if probe.ask(os.environ, "has-model", args.model_id)[1] != 0:
+        sys.stderr.write(f"shunt: model '{args.model_id}' is not in the registry (no request sent).\n")
+        return EXIT_NOT_FOUND
     value, status = detect(args.model_id, os.environ)
     if value is not None:
         sys.stdout.write(f"{value}\n")

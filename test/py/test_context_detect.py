@@ -25,7 +25,9 @@ def setup(tmp_path, http_server, isolated_env):
         (tmp_path / PROVIDERS).write_text(json.dumps(doc))
 
     write()
-    environ = {**os.environ, "SHUNT_PROVIDERS_FILE": str(tmp_path / PROVIDERS), "ACME_KEY": KEY}
+    (tmp_path / "models.json").write_text(json.dumps({"models": [{"id": "acme/m1"}]}))
+    environ = {**os.environ, "SHUNT_PROVIDERS_FILE": str(tmp_path / PROVIDERS), "ACME_KEY": KEY,
+               "SHUNT_MODELS_FILE": str(tmp_path / "models.json")}
     return environ, http_server, write
 
 
@@ -249,6 +251,15 @@ def test_cli_exit_codes_for_not_found_and_auth(setup):
     assert run_cli(environ, "--", "acme/m1").returncode == 1
     server.script("/v1/models/m1", status=401)
     assert run_cli(environ, "--", "acme/m1").returncode == 3
+
+
+def test_cli_refuses_an_id_missing_from_the_registry_before_any_request(setup):
+    environ, server, _ = setup
+    server.script("/v1/models/zzz", body={"context_length": 4096})
+    proc = run_cli(environ, "--", "acme/zzz")
+    assert (proc.returncode, proc.stdout) == (1, "")
+    assert "model 'acme/zzz' is not in the registry" in proc.stderr
+    assert server.requests == []
 
 
 @pytest.mark.parametrize("status", [401, 403, 500])
