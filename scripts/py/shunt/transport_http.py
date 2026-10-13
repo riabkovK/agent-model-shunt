@@ -406,12 +406,17 @@ class _Attempt:
             limit = wanted if window.max_time is None else min(wanted, window.max_time)
             key = self.key()
             headers = {"Authorization": f"Bearer {key}"} if key else {}
-            reason = healthcheck.check(setup.provider, setup.base_url, headers, limit, self.environ)
+            model_wanted = env.healthcheck_model_timeout(self.environ)
+            model_limit = model_wanted if window.max_time is None else min(model_wanted, window.max_time)
+            reason = healthcheck.check(setup.provider, setup.base_url, setup.model_id.split("/", 1)[-1], headers,
+                                       limit, model_limit, self.environ)
         except env.EnvError as exc:
             _fail(CONFIG, str(exc))
         if reason is None:
             return True
-        if window.capped and limit < wanted and reason == healthcheck.NO_ANSWER:
+        cut = (reason == healthcheck.NO_ANSWER and limit < wanted) or (
+            reason == healthcheck.MODEL_NO_ANSWER and model_limit < model_wanted)
+        if window.capped and cut:
             self.deadline.note(setup.model_id)
             raise _Stop(DEADLINE)
         _fail(UNREACHABLE, f"{setup.model_id} healthcheck failed: {reason}")

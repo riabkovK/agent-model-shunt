@@ -264,7 +264,7 @@ Healthcheck: `--healthcheck on|off` sets the provider's `healthcheck` flag.
 A new provider gets `on` when the flag is not given, and so do providers
 created by the OpenCode migration. An existing provider keeps its value (a
 provider with no field counts as off) until the flag is given. When on, shunt
-sends a quick `GET <base_url>/models` before each task, so a sleeping or down
+checks the model before each task (`GET <base_url>/models` for the model id, then a one token completion, up to `SHUNT_HEALTHCHECK_MODEL_TIMEOUT`, default 30 s), so a sleeping or down
 server is skipped in seconds and the next model is tried. Offer it as a choice
 next to key storage. Env knobs: `SHUNT_HEALTHCHECK_TIMEOUT` (seconds, default
 3, `0` disables), `SHUNT_HEALTHCHECK_TTL` (seconds a healthy answer is

@@ -260,14 +260,24 @@ The entry then looks like this:
                "key": {"type": "none"}, "healthcheck": true}}}
 ```
 
-Before the chat request shunt then sends `GET <base_url>/models` with the same
-auth header. Any HTTP answer below 500 counts as healthy, even a 404. A
-connection error, a timeout or a 5xx answer stops the call with
+Before the chat request shunt checks the model in two steps, both with the same
+auth header. First `GET <base_url>/models`: a connection error, a timeout or a
+5xx answer is unhealthy, and so is a readable model list that lacks the
+configured model (`model not listed`). A 4xx (some servers have no `/models`) or
+a list that cannot be read passes this step. Then a one token
+`POST <base_url>/chat/completions` for the model (`max_tokens` 1, no stream).
+Any 2xx is healthy, and so are 400 and 422 (the model route answered, for
+instance a reasoning model that rejects `max_tokens`) and 401 or 403 (the real
+call then reports the auth error). A 404, a 5xx, a timeout or no connection is
+unhealthy. A failed check stops the call with
 `shunt: <model> healthcheck failed: <reason>`, counts as "unreachable" (short
-breaker cooldown) and the next model is tried. A healthy answer is remembered
-per provider and base_url for `SHUNT_HEALTHCHECK_TTL` seconds in
+breaker cooldown) and the next model is tried. The probe's tokens are not
+written to the usage log. A healthy answer is remembered
+per provider, base_url and model for `SHUNT_HEALTHCHECK_TTL` seconds in
 `~/.cache/agent-model-shunt/healthcheck.json` (no key in it). The check time
-counts toward the total deadline.
+counts toward the total deadline. The completion step may take
+`SHUNT_HEALTHCHECK_MODEL_TIMEOUT` seconds (default 30), because a local server
+may have to load the model first.
 
 ### Large files (HTTP transport)
 
@@ -430,7 +440,8 @@ both, so the skill gets no fragment. Invalid fragments are always skipped withou
 | `SHUNT_BREAKER_COOLDOWN_SECONDS` | `300` | Env override for how long a model stays paused once its breaker opens; takes precedence over the config file. |
 | `SHUNT_BREAKER_UNREACHABLE_COOLDOWN_SECONDS` | `120` | Like `SHUNT_BREAKER_COOLDOWN_SECONDS`, but for a model that failed as "unreachable" (no connection within `SHUNT_CONNECT_TIMEOUT`, or no route to the host). The config file field is `unreachable_cooldown_seconds`. The threshold is the same as for other failures. |
 | `SHUNT_CONNECT_TIMEOUT` | `5` | `http` transport only: seconds the TCP connect (and TLS handshake) may take, a non-negative number. `0` means only `SHUNT_TIMEOUT_SECONDS` applies. A connect that does not finish fails fast as "unreachable" (`shunt: <model> unreachable: no connection within Ns`) and the next model is tried, so a sleeping laptop no longer costs a whole request timeout. It has no effect when it is not shorter than the request timeout. A model that connects but answers slowly is still a plain timeout. |
-| `SHUNT_HEALTHCHECK_TIMEOUT` | `3` | `http` transport only, for providers with `"healthcheck": true`: seconds the pre-flight `GET <base_url>/models` may take, a non-negative number. `0` disables the check. |
+| `SHUNT_HEALTHCHECK_TIMEOUT` | `3` | `http` transport only, for providers with `"healthcheck": true`: seconds the pre-flight `GET <base_url>/models` may take (the completion probe has its own timeout below), a non-negative number. `0` disables the check. |
+| `SHUNT_HEALTHCHECK_MODEL_TIMEOUT` | `30` | `http` transport only, for providers with `"healthcheck": true`: seconds the one token completion probe may take, a non-negative number. `0` skips that step. |
 | `SHUNT_HEALTHCHECK_TTL` | `60` | Seconds a healthy healthcheck answer is remembered, a non-negative number. `0` means no cache, so every call asks. Failures are never cached. |
 
 ## Management skills

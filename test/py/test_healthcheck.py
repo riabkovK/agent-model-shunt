@@ -1,4 +1,4 @@
-"""The optional provider healthcheck: GET {base_url}/models before the chat request."""
+"""The optional provider healthcheck: GET {base_url}/models and a one token completion before the chat request."""
 
 import json
 import os
@@ -19,8 +19,21 @@ def gets(server):
     return [r for r in server.requests if r.method == "GET"]
 
 
+def is_probe(request):
+    return json.loads(request.body).get("max_tokens") == 1 and "ping" in request.body.decode()
+
+
 def posts(server):
-    return [r for r in server.requests if r.method == "POST"]
+    """The real chat requests, without the healthcheck's one token probes."""
+    return [r for r in server.requests if r.method == "POST" and not is_probe(r)]
+
+
+def probes(server):
+    return [r for r in server.requests if r.method == "POST" and is_probe(r)]
+
+
+def listing(*ids):
+    return {"data": [{"id": i, "object": "model"} for i in ids]}
 
 
 def write_providers(fo, **flags):
@@ -34,7 +47,7 @@ def write_providers(fo, **flags):
 
 @pytest.fixture
 def hc(fo):  # noqa: F811
-    fo.server.script(MODELS, body={"data": []})
+    fo.server.script(MODELS, body=listing("m1"))
     fo.registry(model("acme/m1"))
     write_providers(fo, acme=True)
     fo.environ["SHUNT_NOW_EPOCH"] = "1000"
@@ -192,7 +205,7 @@ def test_the_cache_file_is_private_and_holds_no_key(hc, capsys):
     text = path.read_text()
     assert KEY not in text
     doc = json.loads(text)
-    assert doc["entries"] == [{"provider": "acme", "base_url": hc.server.url + "/v1", "at": 1000}]
+    assert doc["entries"] == [{"provider": "acme", "base_url": hc.server.url + "/v1", "model": "m1", "at": 1000}]
     assert KEY not in capsys.readouterr().err
     assert not [p for p in path.parent.iterdir() if p.name != "healthcheck.json"]
 
@@ -200,7 +213,7 @@ def test_the_cache_file_is_private_and_holds_no_key(hc, capsys):
 def test_a_symlinked_cache_is_neither_read_nor_written(hc, tmp_path):
     target = tmp_path / "elsewhere.json"
     target.write_text(json.dumps({"version": 1, "entries": [
-        {"provider": "acme", "base_url": hc.server.url + "/v1", "at": 1000}]}))
+        {"provider": "acme", "base_url": hc.server.url + "/v1", "model": "m1", "at": 1000}]}))
     path = cache_file()
     path.parent.mkdir(parents=True)
     path.symlink_to(target)
@@ -238,7 +251,7 @@ def test_a_fifo_cache_is_ignored_without_blocking(hc):
 
 def test_the_check_runs_inside_the_total_deadline(hc, monkeypatch):
     seen = []
-    monkeypatch.setattr(healthcheck, "probe", lambda url, headers, timeout, connect: seen.append(timeout))
+    monkeypatch.setattr(healthcheck, "probe", lambda url, headers, timeout, connect, model=None: seen.append(timeout))
     hc.environ.update({"SHUNT_TIMEOUT_SECONDS": "30", "SHUNT_TOTAL_TIMEOUT_SECONDS": "2"})
     os.unlink(hc.run().path)
     assert seen == [2.0]
@@ -247,7 +260,8 @@ def test_the_check_runs_inside_the_total_deadline(hc, monkeypatch):
 # ---------------------------------------------------------------- env and config
 
 @pytest.mark.parametrize("name,fn", [("SHUNT_HEALTHCHECK_TIMEOUT", env.healthcheck_timeout),
-                                     ("SHUNT_HEALTHCHECK_TTL", env.healthcheck_ttl)])
+                                     ("SHUNT_HEALTHCHECK_TTL", env.healthcheck_ttl),
+                                     ("SHUNT_HEALTHCHECK_MODEL_TIMEOUT", env.healthcheck_model_timeout)])
 def test_env_values_are_validated(name, fn):
     assert fn({name: "0"}) == 0
     assert fn({name: "1.5"}) == 1.5
@@ -259,9 +273,11 @@ def test_env_values_are_validated(name, fn):
 def test_env_defaults():
     assert env.healthcheck_timeout({}) == 3
     assert env.healthcheck_ttl({}) == 60
+    assert env.healthcheck_model_timeout({}) == 30
 
 
-@pytest.mark.parametrize("name", ["SHUNT_HEALTHCHECK_TIMEOUT", "SHUNT_HEALTHCHECK_TTL"])
+@pytest.mark.parametrize("name", ["SHUNT_HEALTHCHECK_TIMEOUT", "SHUNT_HEALTHCHECK_TTL",
+                                  "SHUNT_HEALTHCHECK_MODEL_TIMEOUT"])
 def test_a_bad_env_value_is_a_config_problem_before_the_chat_request(hc, capsys, name):
     hc.environ[name] = "soon"
     assert failover_status(hc)[0] == reply.CONFIG
@@ -293,3 +309,122 @@ def test_a_slow_check_cut_by_the_total_deadline_is_a_deadline_stop(hc, monkeypat
     hc.environ.update({"SHUNT_TIMEOUT_SECONDS": "30", "SHUNT_TOTAL_TIMEOUT_SECONDS": "1"})
     assert failover_status(hc)[0] == reply.DEADLINE
     assert not posts(hc.server)
+
+
+# ---------------------------------------------------------------- the model check
+
+def reasons(hc, capsys):
+    status, _ = failover_status(hc)
+    return status, capsys.readouterr().err
+
+
+def test_a_model_missing_from_the_list_is_unhealthy_and_no_probe_or_chat_follows(hc, capsys):
+    hc.server.script(MODELS, body=listing("other"))
+    status, err = reasons(hc, capsys)
+    assert status == reply.UNREACHABLE
+    assert "shunt: acme/m1 healthcheck failed: model not listed" in err
+    assert not probes(hc.server) and not posts(hc.server)
+    assert not cache_file().exists()
+
+
+def test_a_listed_model_is_probed_once_before_the_chat_request(hc):
+    os.unlink(hc.run().path)
+    assert len(probes(hc.server)) == 1
+    assert hc.server.requests.index(probes(hc.server)[0]) < hc.server.requests.index(posts(hc.server)[0])
+
+
+def test_the_probe_body_asks_for_one_token_without_streaming_and_carries_the_key(hc):
+    os.unlink(hc.run().path)
+    probe = probes(hc.server)[0]
+    assert json.loads(probe.body) == {"model": "m1", "messages": [{"role": "user", "content": "ping"}],
+                                      "max_tokens": 1, "stream": False}
+    assert probe.path == ROUTE
+    assert probe.headers["authorization"] == f"Bearer {KEY}"
+
+
+@pytest.mark.parametrize("body", ["not json", "[]", '{"data": 5}', '{"data": [1, 2]}', "{}"])
+def test_an_unreadable_list_does_not_fail_the_step(hc, body):
+    hc.server.script(MODELS, body=body)
+    os.unlink(hc.run().path)
+    assert len(probes(hc.server)) == 1
+
+
+def test_a_404_models_then_a_working_completion_is_healthy(hc):
+    hc.server.script(MODELS, status=404, body=listing("other"))
+    os.unlink(hc.run().path)
+    assert len(probes(hc.server)) == 1
+
+
+@pytest.mark.parametrize("status", [200, 201, 400, 422, 401, 403, 429])
+def test_these_completion_statuses_are_healthy(hc, status):
+    hc.server.script(ROUTE, status=status, body={"choices": [{"message": {"content": "hi"}, "finish_reason": "stop"}]}
+                     if status < 300 else {"error": "x"})
+    assert healthcheck.probe_model(hc.server.url + ROUTE, "m1", {}, 5, 5) is None
+
+
+@pytest.mark.parametrize("status", [404, 500, 502, 503])
+def test_these_completion_statuses_are_unhealthy(hc, status, capsys):
+    hc.server.script(ROUTE, status=status, body={"error": "SECRET-BODY"})
+    assert healthcheck.probe_model(hc.server.url + ROUTE, "m1", {"Authorization": f"Bearer {KEY}"}, 5, 5) \
+        == f"model HTTP {status}"
+
+
+def test_a_failing_completion_aborts_as_unreachable_without_caching(hc, capsys):
+    hc.server.script(ROUTE, status=404, body={"error": "SECRET-BODY"})
+    status, err = reasons(hc, capsys)
+    assert status == reply.UNREACHABLE
+    assert "shunt: acme/m1 healthcheck failed: model HTTP 404" in err
+    assert KEY not in err and "SECRET-BODY" not in err
+    assert not cache_file().exists()
+    assert not posts(hc.server)
+
+
+def test_a_slow_completion_fails_by_the_model_timeout(hc, capsys):
+    hc.server.script(ROUTE, body={}, delay=3)
+    hc.environ["SHUNT_HEALTHCHECK_MODEL_TIMEOUT"] = "0.3"
+    status, err = reasons(hc, capsys)
+    assert status == reply.UNREACHABLE
+    assert "shunt: acme/m1 healthcheck failed: model gave no answer in time" in err
+    assert KEY not in err
+
+
+def test_the_model_timeout_is_cut_by_the_total_deadline(hc, capsys):
+    hc.server.script(ROUTE, body={}, delay=3)
+    hc.environ.update({"SHUNT_TIMEOUT_SECONDS": "30", "SHUNT_TOTAL_TIMEOUT_SECONDS": "1"})
+    assert failover_status(hc)[0] == reply.DEADLINE
+    assert not posts(hc.server)
+
+
+def test_model_timeout_zero_skips_the_completion_step(hc):
+    hc.environ["SHUNT_HEALTHCHECK_MODEL_TIMEOUT"] = "0"
+    os.unlink(hc.run().path)
+    assert not probes(hc.server)
+    assert len(gets(hc.server)) == 1
+
+
+def test_the_cache_key_includes_the_model(hc):
+    os.unlink(hc.run().path)
+    hc.registry(model("acme/m2"))
+    hc.server.script(MODELS, body=listing("m1", "m2"))
+    os.unlink(hc.run().path)
+    assert len(gets(hc.server)) == 2
+    assert [json.loads(p.body)["model"] for p in probes(hc.server)] == ["m1", "m2"]
+    models_cached = sorted(e["model"] for e in json.loads(cache_file().read_text())["entries"])
+    assert models_cached == ["m1", "m2"]
+
+
+def test_an_old_cache_entry_without_a_model_never_matches(hc):
+    path = cache_file()
+    path.parent.mkdir(parents=True)
+    path.write_text(json.dumps({"version": 1, "entries": [
+        {"provider": "acme", "base_url": hc.server.url + "/v1", "at": 1000}]}))
+    os.unlink(hc.run().path)
+    assert len(gets(hc.server)) == 1
+    assert len(probes(hc.server)) == 1
+
+
+def test_a_cached_model_skips_both_steps(hc):
+    os.unlink(hc.run().path)
+    os.unlink(hc.run().path)
+    assert len(gets(hc.server)) == 1
+    assert len(probes(hc.server)) == 1

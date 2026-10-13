@@ -18,6 +18,7 @@ DEFAULT_PROVIDERS_LOCK_TIMEOUT = 10.0
 DEFAULT_CONNECT_TIMEOUT = 5.0
 DEFAULT_HEALTHCHECK_TIMEOUT = 3.0
 DEFAULT_HEALTHCHECK_TTL = 60.0
+DEFAULT_HEALTHCHECK_MODEL_TIMEOUT = 30.0
 
 
 class EnvError(ValueError):
@@ -147,6 +148,11 @@ def connect_timeout(env: Mapping[str, str] | None = None) -> float:
 def healthcheck_timeout(env: Mapping[str, str] | None = None) -> float:
     """SHUNT_HEALTHCHECK_TIMEOUT in seconds: how long the pre-flight GET may take. 0 disables the check."""
     return _non_negative_number(env, "SHUNT_HEALTHCHECK_TIMEOUT", DEFAULT_HEALTHCHECK_TIMEOUT)
+
+
+def healthcheck_model_timeout(env: Mapping[str, str] | None = None) -> float:
+    """SHUNT_HEALTHCHECK_MODEL_TIMEOUT in seconds: how long the one token completion probe may take. 0 skips it."""
+    return _non_negative_number(env, "SHUNT_HEALTHCHECK_MODEL_TIMEOUT", DEFAULT_HEALTHCHECK_MODEL_TIMEOUT)
 
 
 def healthcheck_ttl(env: Mapping[str, str] | None = None) -> float:
