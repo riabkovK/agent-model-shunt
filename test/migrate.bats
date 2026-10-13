@@ -270,8 +270,8 @@ no_secret_anywhere_but() {
   # Every probe waits 30 s, so the request is still in flight when the group is killed.
   printf '%s' '{"context_length":1}' >"$FAKE_ROUTES/v1_models_m1"
   printf 30 >"$FAKE_ROUTES/v1_models_m1.delay"
-  setsid "$BIN" --migrate-from-opencode </dev/null >/dev/null 2>&1 &
-  pid=$!
+  bg_detached "$BIN" --migrate-from-opencode
+  pid=$BG_PID
   for i in $(seq 1 100); do
     [ -s "$HTTP_LOG" ] && break
     sleep 0.05

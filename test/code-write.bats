@@ -850,8 +850,8 @@ package src
   add_models p/one
   set_resp default "$(response none "x := 1")"
   echo 2 >"$STUB_DIR/sleep.$(agent_of p/one)"
-  "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target out.go >/dev/null 2>&1 &
-  local pid=$!
+  bg_detached "$CODE_WRITE" --kind generic --spec s --reference src/add.go --target out.go
+  local pid=$BG_PID
   sleep 0.7
   kill -TERM "$pid"
   local rc=0

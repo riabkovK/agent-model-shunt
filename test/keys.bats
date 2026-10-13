@@ -111,8 +111,8 @@ SH
   # Hold the providers lock, as a concurrent `provider set` would.
   exec 9>>"$SHUNT_PROVIDERS_FILE.lock"
   flock -x 9
-  SHUNT_PROVIDERS_LOCK_TIMEOUT=37 bash -c "printf '%s\n' '$key' | '$SHUNT_MODELS_BIN' key set p" >/dev/null 2>&1 &
-  local bg=$! i waiting=0
+  bg_detached env SHUNT_PROVIDERS_LOCK_TIMEOUT=37 bash -c "printf '%s\n' '$key' | '$SHUNT_MODELS_BIN' key set p"
+  local bg=$BG_PID i waiting=0
   # The lock is polled by the Python writer (no sleep child to look for), so a
   # waiting key set is a running providers-write plaintext-store process.
   for i in $(seq 1 100); do

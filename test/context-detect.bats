@@ -267,8 +267,8 @@ kill_group_when_request_starts() {
 @test "detect: killing detect-context mid-request leaves no auth header file with the key in TMPDIR" {
   command -v setsid >/dev/null || skip "setsid not available"
   hang_request
-  setsid "$REPO_ROOT/scripts/shunt-models" detect-context acme/m1 >/dev/null 2>&1 &
-  kill_group_when_request_starts "$!"
+  bg_detached "$REPO_ROOT/scripts/shunt-models" detect-context acme/m1
+  kill_group_when_request_starts "$BG_PID"
   run grep -rlF "$ACME_KEY" "$TMPDIR"
   assert_output ""
 }

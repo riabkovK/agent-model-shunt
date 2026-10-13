@@ -30,7 +30,35 @@ shunt_test_setup() {
 }
 
 shunt_test_teardown() {
+  kill_bg_detached
   [ -n "${TEST_TMPDIR:-}" ] && rm -rf "$TEST_TMPDIR"
+}
+
+# bg_detached <cmd> [args...]: starts a command in the background in its own
+# session (when setsid exists), with stdin from /dev/null, output discarded and
+# fds 3, 4, 5 closed. A background process that keeps bats' result fd (3) open
+# holds the test file's parallel slot (bats -j) forever. Sets BG_PID and records
+# it for kill_bg_detached, which shunt_test_teardown calls.
+bg_detached() {
+  if command -v setsid >/dev/null 2>&1; then
+    setsid "$@" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- &
+  else
+    "$@" </dev/null >/dev/null 2>&1 3>&- 4>&- 5>&- &
+  fi
+  BG_PID=$!
+  BG_PIDS="${BG_PIDS:-} $BG_PID"
+}
+
+# kill_bg_detached: SIGKILLs the process group (and the pid) of every process
+# started by bg_detached, then reaps them. Safe to call repeatedly.
+kill_bg_detached() {
+  local pid
+  for pid in ${BG_PIDS:-}; do
+    kill -KILL -- -"$pid" 2>/dev/null || true
+    kill -KILL "$pid" 2>/dev/null || true
+    wait "$pid" 2>/dev/null || true
+  done
+  BG_PIDS=""
 }
 
 # Writes a minimal opencode.json with a provider block for the given
@@ -51,9 +79,8 @@ start_http_server() {
   HTTP_LOG="$TEST_TMPDIR/http-log"
   rm -f "$port_file" "$HTTP_LOG"
   # 3>&- so the server does not hold bats' result pipe open after the test.
-  python3 -B "$REPO_ROOT/test/py/httpserver.py" --routes "$1" --port-file "$port_file" --log "$HTTP_LOG" "${@:2}" \
-    >/dev/null 2>&1 3>&- &
-  HTTP_PID=$!
+  bg_detached python3 -B "$REPO_ROOT/test/py/httpserver.py" --routes "$1" --port-file "$port_file" --log "$HTTP_LOG" "${@:2}"
+  HTTP_PID=$BG_PID
   for i in $(seq 1 200); do
     [ -s "$port_file" ] && break
     sleep 0.05
@@ -67,7 +94,8 @@ start_http_server() {
 # stop_http_server: kills the server started by start_http_server, if any.
 stop_http_server() {
   if [ -n "${HTTP_PID:-}" ]; then
-    kill "$HTTP_PID" 2>/dev/null || true
+    kill -KILL -- -"$HTTP_PID" 2>/dev/null || true
+    kill -KILL "$HTTP_PID" 2>/dev/null || true
     wait "$HTTP_PID" 2>/dev/null || true
     HTTP_PID=""
   fi

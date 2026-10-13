@@ -249,7 +249,7 @@ pfield() { jq -c ".providers.$1" "$SHUNT_PROVIDERS_FILE"; }
   echo '{"version":1,"providers":{}}' >"$SHUNT_PROVIDERS_FILE"
   local i
   for i in $(seq 1 20); do
-    "$SHUNT_MODELS_BIN" provider set "p$i" --transport opencode >/dev/null 2>&1 &
+    "$SHUNT_MODELS_BIN" provider set "p$i" --transport opencode >/dev/null 2>&1 3>&- &
   done
   wait
   run jq '.providers | length' "$SHUNT_PROVIDERS_FILE"
