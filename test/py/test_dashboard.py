@@ -46,7 +46,7 @@ HTTP = {"transport": "http", "base_url": "https://api.acme.test/v1", "key": {"ty
 def test_nothing_configured_is_empty_with_defaults(cfg):
     assert cfg.report() == [
         "registry: missing", "providers_file: missing",
-        "breaker threshold=3 default=3 cooldown_seconds=300 default=300 status=enabled",
+        "breaker threshold=3 default=3 cooldown_seconds=300 default=300 unreachable_cooldown_seconds=120 default=120 status=enabled",
         "self_fix_retries=1 default=1", "first_choice bulk-read none", "first_choice code-write none",
         "opencode config=absent importable=none", "issue no-models -", "setup: empty"]
 
@@ -105,9 +105,9 @@ def test_the_breaker_status_follows_the_config_and_open_state(cfg, tmp_path):
     (tmp_path / "state.json").write_text(json.dumps({"models": {"acme/m1": {"failures": 3, "cooldown_until": 9999999999}}}))
     (tmp_path / "sf.json").write_text(json.dumps({"self_fix_retries": 4}))
     lines = cfg.report()
-    assert "breaker threshold=999999999 default=3 cooldown_seconds=60 default=300 status=disabled" in lines
+    assert "breaker threshold=999999999 default=3 cooldown_seconds=60 default=300 unreachable_cooldown_seconds=120 default=120 status=disabled" in lines
     assert "self_fix_retries=4 default=1" in lines
-    assert "breaker threshold=2 default=3 cooldown_seconds=60 default=300 status=enabled" in cfg.report(SHUNT_BREAKER_THRESHOLD="2")
+    assert "breaker threshold=2 default=3 cooldown_seconds=60 default=300 unreachable_cooldown_seconds=120 default=120 status=enabled" in cfg.report(SHUNT_BREAKER_THRESHOLD="2")
     assert "breaker_state acme/m1 bulk-read failures=3 open=false" in lines
     assert "breaker_state acme/m1 bulk-read failures=3 open=true" in cfg.report(SHUNT_BREAKER_THRESHOLD="2", SHUNT_NOW_EPOCH="1")
 

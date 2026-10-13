@@ -250,3 +250,14 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 - 2026-10-13. The mac/qwen36 leg of the live benchmark is not reported. Its first call timed out after 300 s, the circuit breaker opened, and the remaining calls were refused. The breaker state is the user's runtime state, so it was left as is and no mac numbers were invented. The benchmark driver and its leftover processes were stopped, and the v0.5.0 scratch worktree was removed.
 - 2026-10-13. Live timings are reported as medians over 2 to 3 repetitions, because single runs vary by up to 5 times (one Python run took 293 s). The report is in `docs/benchmarks/python-port.md`. It is not committed yet, because the user has not asked for a commit.
 - 2026-10-13. Fidelity recall (1.00 for both) and code-write syntax checks (6/6 for both) come from the benchmark agent's own summary, not from the raw rows.
+
+## Model healthcheck
+
+- 2026-10-13. Part A, connect timeout. A new `SHUNT_CONNECT_TIMEOUT` (default 5 s, `0` disables it) bounds the TCP connect and the TLS handshake of the http transport. After the connect the socket gets the overall timeout back, so the existing body deadline logic is unchanged.
+- 2026-10-13. The connect timeout applies only when it is shorter than the overall request timeout. Otherwise a stuck connect is a plain "timeout", so the two kinds cannot race at the same instant.
+- 2026-10-13. A connect that times out is the new kind "unreachable" (curl exit 28 style, status 8 `UNREACHABLE`, Python only). Failover treats it as a model failure and moves on at once.
+- 2026-10-13. No route to the host or network (ENETUNREACH, EHOSTUNREACH, EHOSTDOWN, ENETDOWN) is also "unreachable", because the host cannot be reached either way. A refused connection stays "connect" (status ERROR): the host is up, so the normal cooldown fits.
+- 2026-10-13. DNS resolution is not covered by the connect timeout (getaddrinfo has no timeout). It stays bounded by the overall timeout.
+- 2026-10-13. Breaker: an unreachable failure counts toward the same threshold as other failures (default 3) and then pauses the model for `SHUNT_BREAKER_UNREACHABLE_COOLDOWN_SECONDS` (config field `unreachable_cooldown_seconds`, default 120). With a 5 s connect timeout the sleeping-laptop case costs about 15 s before the model is paused, which is acceptable, and a single flaky connect does not pause a model. `breaker.limits()` keeps its two values, a separate `unreachable_cooldown()` resolves the new one (env, config, default).
+- 2026-10-13. The dashboard breaker line now also carries `unreachable_cooldown_seconds=<n> default=120`. The `shunt-breaker-config` command is not extended (the field is set by editing the config file or the env var).
+- 2026-10-13. An invalid `SHUNT_CONNECT_TIMEOUT` is a CONFIG problem of the call (`shunt: SHUNT_CONNECT_TIMEOUT must be a number, got 'x'`), raised before any request is sent, so the model is skipped without a breaker failure.

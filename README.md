@@ -398,6 +398,8 @@ both, so the skill gets no fragment. Invalid fragments are always skipped withou
 | `SHUNT_BREAKER_CONFIG_FILE` | `~/.config/agent-model-shunt/breaker-config.json` | Threshold/cooldown overrides, written by `scripts/shunt-breaker-config`. |
 | `SHUNT_BREAKER_THRESHOLD` | `3` | Env override for consecutive failures before a model's breaker opens; takes precedence over the config file. |
 | `SHUNT_BREAKER_COOLDOWN_SECONDS` | `300` | Env override for how long a model stays paused once its breaker opens; takes precedence over the config file. |
+| `SHUNT_BREAKER_UNREACHABLE_COOLDOWN_SECONDS` | `120` | Like `SHUNT_BREAKER_COOLDOWN_SECONDS`, but for a model that failed as "unreachable" (no connection within `SHUNT_CONNECT_TIMEOUT`, or no route to the host). The config file field is `unreachable_cooldown_seconds`. The threshold is the same as for other failures. |
+| `SHUNT_CONNECT_TIMEOUT` | `5` | `http` transport only: seconds the TCP connect (and TLS handshake) may take, a non-negative number. `0` means only `SHUNT_TIMEOUT_SECONDS` applies. A connect that does not finish fails fast as "unreachable" (`shunt: <model> unreachable: no connection within Ns`) and the next model is tried, so a sleeping laptop no longer costs a whole request timeout. It has no effect when it is not shorter than the request timeout. A model that connects but answers slowly is still a plain timeout. |
 
 ## Management skills
 

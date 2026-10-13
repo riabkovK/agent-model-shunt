@@ -9,6 +9,8 @@ providers file and the key are read once per call, however many requests it take
 Status mapping (the SHUNT_TRY_INVOKE_* codes of transport.sh, see transport_reply):
   timeout                              TIMEOUT (DEADLINE when the request's time limit was cut
                                        to the time left of the total deadline)
+  no connection within SHUNT_CONNECT_TIMEOUT (5s), or no route to the host
+                                       UNREACHABLE (model failure, the breaker uses the short unreachable cooldown)
   other transport failure, 429, 5xx,
   400/404/413 and any other non-2xx    ERROR (model failure, the breaker counts it)
   401, 403                             AUTH (a key problem, the failover skips the breaker)
@@ -42,7 +44,7 @@ from typing import Any, NoReturn
 from . import chunking, env, httpclient, models, providers
 from . import transport_reply as reply
 from .deadline import Deadline, DeadlineError
-from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT
+from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT, UNREACHABLE
 
 BYTES_PER_TOKEN = 3
 CONTEXT_BUDGET_PERCENT = 60
@@ -292,11 +294,18 @@ def _models_command() -> str:
     return providers._bash_quote(str(root / "scripts" / "shunt-models"))
 
 
+def _seconds_text(seconds: float) -> str:
+    return str(int(seconds)) if seconds == int(seconds) else f"{seconds:g}"
+
+
 def _transport_failure(setup: _Setup, err: httpclient.HttpError, environ: Mapping[str, str],
                        key: str | None) -> NoReturn:
     provider = setup.provider
     if err.kind == "timeout":
         raise _Stop(TIMEOUT)
+    if err.kind == "unreachable":
+        _fail(UNREACHABLE, f"{setup.model_id} unreachable: no connection within "
+                           f"{_seconds_text(env.connect_timeout(environ))}s (or no route to the host)")
     # An auth or rate limit status says more than the size of its body.
     if err.kind == "too_large" and err.status in _STATUS_BEATS_SIZE:
         _check_status(setup, httpclient.Response(err.status, {}, b""), key)
@@ -344,8 +353,13 @@ def _send(setup: _Setup, prompt: bytes, environ: Mapping[str, str], key: str | N
     payload = {**setup.body, "model": setup.model_id.split("/", 1)[-1], "messages": messages}
     url = setup.base_url[:-1] if setup.base_url.endswith("/") else setup.base_url
     try:
+        connect_timeout = env.connect_timeout(environ)
+    except env.EnvError as exc:
+        _fail(CONFIG, str(exc))
+    try:
         response = httpclient.post_json(url + "/chat/completions", payload, headers=headers, timeout=timeout,
-                                        max_bytes=httpclient.max_response_bytes(environ))
+                                        max_bytes=httpclient.max_response_bytes(environ),
+                                        connect_timeout=connect_timeout)
     except httpclient.HttpError as err:
         _transport_failure(setup, err, environ, key)
     _check_status(setup, response, key)

@@ -30,7 +30,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_success
   assert_line "registry: missing"
   assert_line "providers_file: missing"
-  assert_line "breaker threshold=3 default=3 cooldown_seconds=300 default=300 status=enabled"
+  assert_line "breaker threshold=3 default=3 cooldown_seconds=300 default=300 unreachable_cooldown_seconds=120 default=120 status=enabled"
   assert_line "self_fix_retries=1 default=1"
   assert_line "first_choice bulk-read none"
   assert_line "first_choice code-write none"
@@ -166,7 +166,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   echo '{"self_fix_retries":4}' >"$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE"
   run "$SHUNT_MODELS_BIN" dashboard
   assert_success
-  assert_line "breaker threshold=999999999 default=3 cooldown_seconds=60 default=300 status=disabled"
+  assert_line "breaker threshold=999999999 default=3 cooldown_seconds=60 default=300 unreachable_cooldown_seconds=120 default=120 status=disabled"
   assert_line "self_fix_retries=4 default=1"
 }
 

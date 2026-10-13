@@ -25,7 +25,7 @@ from typing import Any, NoReturn
 
 from . import breaker, env, models, transport
 from . import transport_reply as reply
-from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, OVERSIZE, TIMEOUT
+from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, OVERSIZE, TIMEOUT, UNREACHABLE
 
 DEFAULT_TIMEOUT = "300"
 WRITER_KIND = "writer"
@@ -56,14 +56,14 @@ def _is_open(environ: Mapping[str, str], key: str) -> bool:
         return False  # a state file that cannot be read means closed
 
 
-def _record(environ: Mapping[str, str], outcome: str, key: str) -> None:
+def _record(environ: Mapping[str, str], outcome: str, key: str, unreachable: bool = False) -> None:
     """Record an attempt outcome. A breaker write failure is only a warning: the breaker is an
     optimisation and must not kill a call whose paid generation already happened."""
     try:
         if outcome == "success":
             breaker.write_state(environ, key, 0, 0)
         else:
-            breaker.record_failure(environ, key)
+            breaker.record_failure(environ, key, unreachable=unreachable)
     except Exception:  # noqa: BLE001 (any failure to write the state, never fatal)
         state = environ.get("SHUNT_BREAKER_STATE_FILE") or str(env.breaker_state_file(environ))
         sys.stderr.write(f"shunt: warning: could not update the circuit breaker state ({state})\n")
@@ -77,6 +77,8 @@ def failure_reason(status: int, agent: str, environ: Mapping[str, str]) -> str:
     timeout = environ.get("SHUNT_TIMEOUT_SECONDS") or DEFAULT_TIMEOUT
     if status == TIMEOUT:
         return f"timed out after {timeout}s"
+    if status == UNREACHABLE:
+        return "unreachable (no connection within SHUNT_CONNECT_TIMEOUT)"
     if status == DEADLINE:
         return "total deadline reached (SHUNT_TOTAL_TIMEOUT_SECONDS)"
     if status == ERROR:
@@ -153,7 +155,7 @@ def run_role(role: str, kind: str, question: str, files: Sequence[str], environ:
         if status == OVERSIZE:
             oversize += 1
             continue
-        _record(environ, "failure", key)
+        _record(environ, "failure", key, unreachable=status == UNREACHABLE)
     if not tried_any:
         _fatal("every delegate model in the registry is currently paused (circuit breaker open); "
                "no candidates available.")

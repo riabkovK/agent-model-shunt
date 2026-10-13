@@ -6,6 +6,11 @@ It replaces the curl calls of the bash core, one call at a time. What the old
 * total time is bounded by `timeout` (connect plus headers use it as a socket
   timeout, and the body read re-checks a deadline and shrinks the socket timeout
   to what is left),
+* the connect (TCP, plus the TLS handshake) may be given a shorter `connect_timeout`.
+  When it runs out the failure is "unreachable", not "timeout", so a host that never
+  answers (a sleeping laptop) is told apart from a model that is merely slow. It
+  applies only when it is shorter than the total `timeout`. DNS resolution is bounded
+  by the total timeout only,
 * only http:// and https:// are spoken,
 * redirects are NOT followed (curl without -L reports the 3xx as the status),
 * a body larger than `max_bytes` is refused (curl exit 63), checked against
@@ -24,6 +29,7 @@ transport can map them to the same results later.
 
 from __future__ import annotations
 
+import errno
 import http.client
 import json
 import re
@@ -53,6 +59,7 @@ ERROR_KINDS: dict[str, tuple[int, str]] = {
     "dns": (6, "could not resolve the host"),
     "connect": (7, "could not connect to the host"),
     "timeout": (28, "the request timed out"),
+    "unreachable": (28, "no connection within the connect timeout"),
     "tls": (35, "TLS handshake failed"),
     "empty_reply": (52, "the server closed the connection without an answer"),
     "recv": (56, "the connection broke while receiving the answer"),
@@ -93,10 +100,19 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # the 3xx answer is reported as it is, like curl without -L
 
 
+_UNREACHABLE_ERRNOS = frozenset(
+    {errno.ENETUNREACH, errno.EHOSTUNREACH, errno.EHOSTDOWN, errno.ENETDOWN})
+
+
+class _ConnectTimeout(OSError):
+    """The connect failed as unreachable: no finish within the connect timeout, or no route."""
+
+
 class _Tracker:
     """Remembers the connections of one request so the caller can abort them."""
 
-    def __init__(self) -> None:
+    def __init__(self, connect_timeout: float | None = None) -> None:
+        self.connect_timeout = connect_timeout  # None: the total timeout governs the connect too
         self.cancelled = False
         self.conns: list[Any] = []
 
@@ -105,7 +121,25 @@ class _Tracker:
 
         class _Conn(cls):  # type: ignore[misc, valid-type]
             def connect(self) -> None:
-                super().connect()
+                overall = self.timeout
+                limit = tracker.connect_timeout
+                if limit is not None:
+                    self.timeout = limit  # create_connection and the TLS handshake both use it
+                try:
+                    super().connect()
+                except TimeoutError:
+                    if limit is None:
+                        raise
+                    self.close()
+                    raise _ConnectTimeout("connect timed out") from None
+                except OSError as exc:
+                    if exc.errno in _UNREACHABLE_ERRNOS:  # no route, only counted while connecting
+                        raise _ConnectTimeout("no route to the host") from None
+                    raise
+                finally:
+                    self.timeout = overall
+                if limit is not None:
+                    self.sock.settimeout(overall)
                 if tracker.cancelled:
                     self.close()
                     raise OSError("cancelled")
@@ -157,6 +191,8 @@ def _classify(exc: BaseException) -> str:
         if isinstance(reason, BaseException):
             return _classify(reason)
         return "connect"
+    if isinstance(exc, _ConnectTimeout):
+        return "unreachable"
     if isinstance(exc, TimeoutError):  # socket.timeout is an alias since 3.10
         return "timeout"
     if isinstance(exc, socket.gaierror):
@@ -257,7 +293,8 @@ def _exchange(req: urllib.request.Request, timeout: float | None, max_bytes: int
         return HttpError("timeout" if tracker.cancelled else _classify(exc))
 
 
-def _perform(req: urllib.request.Request, timeout: float | None, max_bytes: int) -> Response | HttpError:
+def _perform(req: urllib.request.Request, timeout: float | None, max_bytes: int,
+             connect_timeout: float | None = None) -> Response | HttpError:
     """Do the exchange under ONE hard deadline (DNS, connect, TLS, headers, body).
 
     The exchange runs in a daemon worker thread and the caller waits for it with
@@ -267,7 +304,10 @@ def _perform(req: urllib.request.Request, timeout: float | None, max_bytes: int)
     """
     limit = timeout if timeout and timeout > 0 else None
     deadline = None if limit is None else time.monotonic() + limit
-    tracker = _Tracker()
+    own_connect = connect_timeout if connect_timeout and connect_timeout > 0 else None
+    if own_connect is not None and limit is not None and own_connect >= limit:
+        own_connect = None  # the total timeout is not longer: a stuck connect is a plain "timeout"
+    tracker = _Tracker(own_connect)
     box: list[Response | HttpError] = []
     worker = threading.Thread(
         target=lambda: box.append(_exchange(req, limit, max_bytes, deadline, tracker)), daemon=True)
@@ -291,8 +331,10 @@ def request(
     body: bytes | None = None,
     timeout: float | None = None,
     max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+    connect_timeout: float | None = None,
 ) -> Response:
-    """One request. `timeout` seconds in total (None: no limit, like curl --max-time 0)."""
+    """One request. `timeout` seconds in total (None: no limit, like curl --max-time 0).
+    `connect_timeout` bounds the connect on its own (None or 0: only `timeout` applies)."""
     try:
         req = _build(method, url, headers or {}, body)
     except HttpError as err:
@@ -300,7 +342,7 @@ def request(
     except Exception:  # noqa: BLE001 - e.g. a header value with a lone surrogate
         failure = HttpError("invalid")
     else:
-        outcome = _perform(req, timeout, max_bytes)
+        outcome = _perform(req, timeout, max_bytes, connect_timeout)
         if isinstance(outcome, Response):
             return outcome
         failure = outcome
@@ -308,12 +350,15 @@ def request(
 
 
 def get(url: str, *, headers: Mapping[str, str] | None = None, timeout: float | None = None,
-        max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES) -> Response:
-    return request("GET", url, headers=headers, timeout=timeout, max_bytes=max_bytes)
+        max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES, connect_timeout: float | None = None) -> Response:
+    return request("GET", url, headers=headers, timeout=timeout, max_bytes=max_bytes,
+                   connect_timeout=connect_timeout)
 
 
 def post_json(url: str, payload: Any, *, headers: Mapping[str, str] | None = None,
-              timeout: float | None = None, max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES) -> Response:
+              timeout: float | None = None, max_bytes: int = DEFAULT_MAX_RESPONSE_BYTES,
+              connect_timeout: float | None = None) -> Response:
     merged = {"Content-Type": "application/json", **(headers or {})}
     data = json.dumps(payload, separators=(",", ":")).encode("utf-8")
-    return request("POST", url, headers=merged, body=data, timeout=timeout, max_bytes=max_bytes)
+    return request("POST", url, headers=merged, body=data, timeout=timeout, max_bytes=max_bytes,
+                   connect_timeout=connect_timeout)

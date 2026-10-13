@@ -8,7 +8,8 @@ spaces (the tab below only parses the provider list), values without spaces:
   provider <name> invalid
   model <id> enabled=.. active=.. roles=.. thinking=on|off thinking_off=set|none
         context_tokens=<n|unset> oversize_policy=<p>(|default) provider_transport=<t>
-  breaker threshold=<n> default=3 cooldown_seconds=<n> default=300 status=enabled|disabled
+  breaker threshold=<n> default=3 cooldown_seconds=<n> default=300
+        unreachable_cooldown_seconds=<n> default=120 status=enabled|disabled
   breaker_state <id> <bulk-read|code-write> failures=<n> open=true|false
   self_fix_retries=<n> default=1
   first_choice <bulk-read|code-write> <id|none>
@@ -129,8 +130,10 @@ def model_records(environ: Mapping[str, str], state: str, issues: list[str]) -> 
 
 def breaker_records(environ: Mapping[str, str]) -> list[str]:
     threshold, cooldown = breaker.limits(environ)
+    unreachable = breaker.unreachable_cooldown(environ)
     status = "enabled" if threshold < breaker.DISABLED_THRESHOLD else "disabled"
-    out = [f"breaker threshold={threshold} default=3 cooldown_seconds={cooldown} default=300 status={status}"]
+    out = [f"breaker threshold={threshold} default=3 cooldown_seconds={cooldown} default=300 "
+           f"unreachable_cooldown_seconds={unreachable} default=120 status={status}"]
     path = env.models_file_text(environ)
     if not models.available(path):
         return out

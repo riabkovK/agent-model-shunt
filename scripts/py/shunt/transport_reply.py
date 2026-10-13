@@ -16,6 +16,7 @@ from typing import Any
 
 # The SHUNT_TRY_INVOKE_* statuses of scripts/lib/transport.sh, which a test keeps in step.
 TIMEOUT, ERROR, EMPTY, AUTH, DEADLINE, OVERSIZE, CONFIG = 124, 2, 3, 4, 5, 6, 7
+UNREACHABLE = 8  # no connection within SHUNT_CONNECT_TIMEOUT (Python only, the bash twin never sees it)
 NEEDS_CHUNKING = 90  # internal: the size guard says map_reduce
 
 FAILED = 1  # a chunk could not be cut or the reply file not written (not a SHUNT_TRY_INVOKE_* code)

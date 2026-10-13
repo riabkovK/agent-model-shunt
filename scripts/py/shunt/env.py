@@ -15,6 +15,7 @@ from pathlib import Path
 
 APP_DIR_NAME = "agent-model-shunt"
 DEFAULT_PROVIDERS_LOCK_TIMEOUT = 10.0
+DEFAULT_CONNECT_TIMEOUT = 5.0
 
 
 class EnvError(ValueError):
@@ -116,4 +117,18 @@ def providers_lock_timeout(env: Mapping[str, str] | None = None) -> float:
         raise EnvError(f"SHUNT_PROVIDERS_LOCK_TIMEOUT must be a number, got {raw!r}") from None
     if not math.isfinite(value) or value < 0:
         raise EnvError(f"SHUNT_PROVIDERS_LOCK_TIMEOUT must be a finite non-negative number, got {raw!r}")
+    return value
+
+
+def connect_timeout(env: Mapping[str, str] | None = None) -> float:
+    """SHUNT_CONNECT_TIMEOUT in seconds: how long a connect may take. 0 means only the overall timeout applies."""
+    raw = _get(env, "SHUNT_CONNECT_TIMEOUT", "")
+    if not raw:
+        return DEFAULT_CONNECT_TIMEOUT
+    try:
+        value = float(raw)
+    except ValueError:
+        raise EnvError(f"SHUNT_CONNECT_TIMEOUT must be a number, got {raw!r}") from None
+    if not math.isfinite(value) or value < 0:
+        raise EnvError(f"SHUNT_CONNECT_TIMEOUT must be a finite non-negative number, got {raw!r}")
     return value
