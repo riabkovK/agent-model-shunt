@@ -30,9 +30,9 @@ source "${BASH_SOURCE[0]%/*}/py.sh"
 SHUNT_PROVIDERS_FILE="${SHUNT_PROVIDERS_FILE:-$HOME/.config/agent-model-shunt/providers.json}"
 SHUNT_PROC_VERSION_FILE="${SHUNT_PROC_VERSION_FILE:-/proc/version}"
 # The two lists below must match TRANSPORTS and KEY_TYPES in scripts/py/shunt/providers.py.
-# shellcheck disable=SC2034 # read by scripts/shunt-models and scripts/lib/migrate.sh
+# shellcheck disable=SC2034 # kept for the callers of this library
 SHUNT_PROVIDER_TRANSPORTS="http opencode"
-# shellcheck disable=SC2034 # read by scripts/shunt-models and scripts/lib/migrate.sh
+# shellcheck disable=SC2034 # kept for the callers of this library
 SHUNT_PROVIDER_KEY_TYPES="keyring env plaintext none"
 # The one provider name charset. Names reach shell hints the user copies.
 # Bash ERE's $ only matches at the very end, so "ok\n" is refused here. Python

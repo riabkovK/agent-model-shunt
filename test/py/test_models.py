@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import sys
 import stat
 import subprocess
@@ -40,12 +39,6 @@ def reg(tmp_path):
     (r.prompts / "bulk-reader.md").write_text("BULK PROMPT\n")
     (r.prompts / "code-writer.md").write_text("WRITER PROMPT\n")
     return r
-
-
-def test_roles_match_the_bash_array():
-    text = (REPO_ROOT / "scripts" / "lib" / "models.sh").read_text()
-    bash_roles = re.search(r"^SHUNT_MODELS_ROLES=\((.*?)\)", text, re.M).group(1).split()
-    assert tuple(bash_roles) == models.ROLES
 
 
 # ---- slug
@@ -483,3 +476,18 @@ def test_available_exits_0_or_1_never_2_for_odd_registries(reg, content):
     assert reg.cli("available").returncode == 1
     assert reg.cli("validate").returncode == 1
     assert "Traceback" not in reg.cli("validate").stderr
+
+
+def test_candidates_ignore_a_disabled_active_model_without_a_warning(reg):
+    reg.write([{"id": "p/first"}, {"id": "p/second", "enabled": False}], active="p/second")
+    assert _ids(reg) == ("", ["p/first"])
+
+
+def test_candidates_warn_about_an_unknown_active_model_even_when_no_model_has_the_role(reg):
+    reg.write([{"id": "p/reader", "roles": ["bulk-read"]}], active="p/missing")
+    assert _ids(reg, "code-write") == ("p/missing", [])
+
+
+def test_candidates_skip_an_active_model_lacking_the_role_without_a_warning(reg):
+    reg.write([{"id": "p/first"}, {"id": "p/reader", "roles": ["bulk-read"]}, {"id": "p/third"}], active="p/reader")
+    assert _ids(reg, "code-write") == ("", ["p/first", "p/third"])

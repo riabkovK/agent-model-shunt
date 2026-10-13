@@ -10,8 +10,7 @@
 # candidate. The no-registry legacy path stays free: shunt_models_available
 # checks for the file in bash before spawning anything.
 #
-# Meant to be sourced by scripts/bulk-read, scripts/shunt-models, and
-# scripts/lib/opencode.sh. Requires scripts/lib/opencode.sh's
+# Meant to be sourced by scripts/shunt-breaker-config and scripts/lib/opencode.sh. Requires scripts/lib/opencode.sh's
 # shunt_report_error to already be sourced (or define your own).
 #
 # Compatibility: when no registry file exists at SHUNT_MODELS_FILE, every
@@ -27,14 +26,6 @@ SHUNT_AGENTS_DIR="${SHUNT_AGENTS_DIR:-$HOME/.config/agent-model-shunt/agents}"
 # agent files and the system message of the http transport. The default is
 # derived without a subshell, since the Read hook sources this file on every Read.
 SHUNT_PROMPTS_DIR="${SHUNT_PROMPTS_DIR:-${BASH_SOURCE[0]%/*}/../../prompts}"
-
-# Roles a model can be assigned in the registry's optional `roles` array. A
-# model without `roles` has all of them. The JSON form is kept literal next to
-# the bash array so sourcing this file (the Read hook does, on every Read)
-# never has to spawn a process to build it. Keep them in sync with ROLES in
-# scripts/py/shunt/models.py.
-SHUNT_MODELS_ROLES=(bulk-read code-write)
-SHUNT_MODELS_ROLES_JSON='["bulk-read","code-write"]'
 
 # _shunt_models_py <subcommand> [args...]
 # Runs a models subcommand with the paths this file resolved, exported only for
@@ -72,58 +63,6 @@ shunt_models_validate() {
   _shunt_models_py validate
 }
 
-# shunt_models_role_known <role>
-# Success (0) if <role> is one of SHUNT_MODELS_ROLES.
-shunt_models_role_known() {
-  local role="$1" known
-  for known in "${SHUNT_MODELS_ROLES[@]}"; do
-    [ "$role" = "$known" ] && return 0
-  done
-  return 1
-}
-
-# shunt_models_candidates [role] [quiet]
-# Prints, one per line, the enabled model ids that have <role> (default
-# bulk-read, so legacy callers keep working) in the order to try them: the
-# registry's `active` model first (if it is enabled and has the role), then
-# the remaining matching entries in priority (array) order, deduped. A model
-# without a `roles` field has every role. Prints nothing when no enabled
-# model has the role, and callers decide what that means. Requires
-# shunt_models_validate to already have passed; callers should check
-# shunt_models_available first.
-#
-# Warns on stderr when `active` names a model that is not in the registry.
-# Pass "quiet" as the second argument to suppress that warning, for a caller
-# that looks the candidates up a second time in the same run and would
-# otherwise print it twice.
-#
-# Disabled models (`enabled: false`; a missing field counts as enabled)
-# never become candidates, so the breaker is not consulted for them at all.
-shunt_models_candidates() {
-  local role="${1:-bulk-read}" quiet="${2:-}"
-  if ! shunt_models_role_known "$role"; then
-    echo "shunt: unknown role '$role' (known roles: ${SHUNT_MODELS_ROLES[*]})." >&2
-    return 1
-  fi
-  _shunt_models_py candidates "$role" "$quiet" || return 1
-}
-
-# shunt_models_agent_for <id>
-# Prints the materialized agent name registered for <id>. An entry without an
-# `agent` field (hand-edited) gets the name `add` would have given it. An id
-# that is not in the registry prints nothing.
-shunt_models_agent_for() {
-  _shunt_models_py agent-for -- "$1" || return 1
-}
-
-# shunt_models_code_writer_agent_for <id>
-# Prints the name of <id>'s code-writer agent, e.g. "shunt-code-writer-spark-
-# deepseek-ai-deepseek-v4-flash-0731". Derived from the id, not stored in the
-# registry: it exists only while the model has the code-write role.
-shunt_models_code_writer_agent_for() {
-  _shunt_models_py code-writer-agent-for -- "$1"
-}
-
 # shunt_models_has_role <id> <role>
 # Success (0) when <id> has <role>. A model without a `roles` field has every
 # role.
@@ -131,18 +70,9 @@ shunt_models_has_role() {
   _shunt_models_py has-role -- "$1" "$2" 2>/dev/null
 }
 
-# shunt_models_require_prompts [role...]
-# Exits with an error unless the role prompt files are readable. bulk-reader.md
-# is always needed (every model gets a bulk-reader agent file), code-writer.md
-# only when the roles given include code-write. Run it before a registry write,
-# so a missing prompt cannot leave the registry changed.
-shunt_models_require_prompts() {
-  _shunt_models_py require-prompts -- "$@" || exit 1
-}
-
 # shunt_models_materialize_agent <id>
 # Renders <id>'s OpenCode agent files into SHUNT_AGENTS_DIR: always the
-# bulk-reader agent named in the registry (shunt_models_agent_for), in the
+# bulk-reader agent named in the registry (`models agent-for`), in the
 # same frontmatter shape as the hand-written bulk-reader.md convention
 # documented in README.md, and the code-writer agent only while the model has
 # the code-write role. A code-writer agent left over from a role that has

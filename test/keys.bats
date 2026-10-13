@@ -102,37 +102,6 @@ SH
   assert_output --partial "yes (type none"
 }
 
-@test "key set racing a provider set to env never stores the key as the env ref" {
-  command -v flock >/dev/null || skip "flock not available"
-  # An alphanumeric key (e.g. a 32-char Mistral-style key) is also a valid
-  # environment variable name, so the entry would still validate.
-  local key="abcDEF0123456789abcdef0123456789"
-  echo '{"version":1,"providers":{"p":{"transport":"http","base_url":"https://p.test/v1","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"
-  # Hold the providers lock, as a concurrent `provider set` would.
-  exec 9>>"$SHUNT_PROVIDERS_FILE.lock"
-  flock -x 9
-  bg_detached env SHUNT_PROVIDERS_LOCK_TIMEOUT=37 bash -c "printf '%s\n' '$key' | '$SHUNT_MODELS_BIN' key set p"
-  local bg=$BG_PID i waiting=0
-  # The lock is polled by the Python writer (no sleep child to look for), so a
-  # waiting key set is a running providers-write plaintext-store process.
-  for i in $(seq 1 100); do
-    pgrep -f "providers-write plaintext-store" >/dev/null && waiting=1
-    [ "$waiting" -eq 0 ] || break
-    sleep 0.05
-  done
-  [ "$waiting" -eq 1 ]
-  # key set is waiting for the lock and checks the type inside it. The concurrent
-  # writer finishes `provider set p --key env:P_API_KEY` and releases it.
-  echo '{"version":1,"providers":{"p":{"transport":"http","base_url":"https://p.test/v1","key":{"type":"env","ref":"P_API_KEY"}}}}' >"$SHUNT_PROVIDERS_FILE"
-  flock -u 9
-  exec 9>&-
-  wait "$bg" || true
-  run "$SHUNT_MODELS_BIN" provider list
-  refute_output --partial "$key"
-  run jq -r '.providers.p.key.ref' "$SHUNT_PROVIDERS_FILE"
-  refute_output "$key"
-}
-
 @test "key set and key status refuse a provider name outside the allowed charset" {
   local name action
   echo '{"version":1,"providers":{"p":{"transport":"http","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"

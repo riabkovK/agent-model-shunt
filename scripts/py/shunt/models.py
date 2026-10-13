@@ -2,8 +2,7 @@
 
 Port of scripts/lib/models.sh. Output text, stderr messages and exit codes match
 the bash functions that now wrap these subcommands. This module only reads
-models.json. The registry writers still live in scripts/shunt-models and
-scripts/lib/migrate.sh until sub-phase 6.
+models.json. The registry writers are models_write.py and models_cli.py.
 
 Where the jq programs failed silently on a malformed shape (a model entry that
 is not an object, `models` missing), the same shapes are treated as "cannot be
@@ -23,7 +22,7 @@ from typing import Any
 from . import env
 from .jsonio import JsonReadError, read_json, write_bytes_atomic
 
-ROLES: tuple[str, ...] = ("bulk-read", "code-write")  # keep in sync with SHUNT_MODELS_ROLES in models.sh
+ROLES: tuple[str, ...] = ("bulk-read", "code-write")
 AGENT_FILE_MODE = 0o600  # bash used mktemp, which creates 0600
 BULK_PREFIX = "shunt-bulk-reader-"
 WRITER_PREFIX = "shunt-code-writer-"
