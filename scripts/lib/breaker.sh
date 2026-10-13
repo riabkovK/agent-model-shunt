@@ -12,7 +12,7 @@
 #
 # Meant to be sourced by scripts/lib/opencode.sh (failover wiring) and
 # hooks/check-file-size (to allow a direct Read through when no delegate
-# model is available). Requires jq.
+# model is available). Needs python3, not jq.
 
 SHUNT_BREAKER_STATE_FILE="${SHUNT_BREAKER_STATE_FILE:-$HOME/.cache/agent-model-shunt/breaker-state.json}"
 
@@ -21,7 +21,7 @@ SHUNT_BREAKER_STATE_FILE="${SHUNT_BREAKER_STATE_FILE:-$HOME/.cache/agent-model-s
 # env vars, which stay the emergency/test override on top of everything
 # else. Read once here, at source time, not inside any function body: this
 # file is re-sourced fresh in every hook/opencode.sh process, so a function
-# that re-read the config file on every call would pay that jq cost once per
+# that re-read the config file on every call would pay that cost once per
 # call instead of once per process - unacceptable for hooks/check-file-size,
 # which must stay cheap on every Read.
 SHUNT_BREAKER_CONFIG_FILE="${SHUNT_BREAKER_CONFIG_FILE:-$HOME/.config/agent-model-shunt/breaker-config.json}"
@@ -52,9 +52,16 @@ _shunt_breaker_default_cooldown=300
 
 _shunt_breaker_config_threshold=""
 _shunt_breaker_config_cooldown=""
+# shellcheck source=py.sh
+source "${BASH_SOURCE[0]%/*}/py.sh"
 if [ -f "$SHUNT_BREAKER_CONFIG_FILE" ]; then
-  _shunt_breaker_config_threshold=$(jq -r '.threshold // empty' "$SHUNT_BREAKER_CONFIG_FILE" 2>/dev/null) || _shunt_breaker_config_threshold=""
-  _shunt_breaker_config_cooldown=$(jq -r '.cooldown_seconds // empty' "$SHUNT_BREAKER_CONFIG_FILE" 2>/dev/null) || _shunt_breaker_config_cooldown=""
+  # The two fields come from one Python call. It also applies the env overrides, so
+  # the env values below are only a second pass over an already resolved number.
+  _shunt_breaker_limits=$(SHUNT_BREAKER_CONFIG_FILE="$SHUNT_BREAKER_CONFIG_FILE" SHUNT_BREAKER_THRESHOLD="${SHUNT_BREAKER_THRESHOLD-}" \
+    SHUNT_BREAKER_COOLDOWN_SECONDS="${SHUNT_BREAKER_COOLDOWN_SECONDS-}" shunt_py breaker limits 2>/dev/null) || _shunt_breaker_limits=""
+  _shunt_breaker_config_threshold="${_shunt_breaker_limits%% *}"
+  _shunt_breaker_config_cooldown="${_shunt_breaker_limits#* }"
+  unset _shunt_breaker_limits
 fi
 
 # Same precedence as above (env, then config file, then default), but a value
@@ -76,8 +83,6 @@ unset _shunt_breaker_config_threshold _shunt_breaker_config_cooldown
 # itself for every read-modify-write (record, write, clear), the readers never
 # lock. Key ids go after `--` so an id that starts with a dash stays an id.
 
-# shellcheck source=py.sh
-source "${BASH_SOURCE[0]%/*}/py.sh"
 
 # _shunt_breaker_py <subcommand> [args...]
 _shunt_breaker_py() {

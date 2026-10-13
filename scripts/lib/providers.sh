@@ -35,12 +35,9 @@ SHUNT_PROVIDER_TRANSPORTS="http opencode"
 # shellcheck disable=SC2034 # read by scripts/shunt-models and scripts/lib/migrate.sh
 SHUNT_PROVIDER_KEY_TYPES="keyring env plaintext none"
 # The one provider name charset. Names reach shell hints the user copies.
-# Two spellings of it exist on purpose: bash ERE has no \A and \z and its $ only
-# matches at the very end, while Oniguruma (jq) lets $ match before a final
-# newline, so "ok\n" would pass there. The jq form is anchored with \A and \z.
+# Bash ERE's $ only matches at the very end, so "ok\n" is refused here. Python
+# (providers.py) matches the same set of names.
 SHUNT_PROVIDER_NAME_REGEX='^[A-Za-z0-9][A-Za-z0-9._-]*$'
-# shellcheck disable=SC2034 # read by scripts/lib/migrate.sh
-SHUNT_PROVIDER_NAME_REGEX_JQ='\A[A-Za-z0-9][A-Za-z0-9._-]*\z'
 
 # shunt_provider_name_ok <name>
 shunt_provider_name_ok() { [[ "$1" =~ $SHUNT_PROVIDER_NAME_REGEX ]]; }
@@ -58,16 +55,10 @@ shunt_word_in_list() {
 # shunt_provider_name_refuse <name>
 # Explains on stderr why the name is refused. When providers.json already holds
 # an entry under that name, says so and what to do. The name is shown through
-# jq tojson, so it is quoted and has no raw control characters.
+# JSON string quoting, so it is quoted and has no raw control characters.
+# The message is built by `shunt_py probe provider-name-refusal`.
 shunt_provider_name_refuse() {
-  local q
-  if [ -f "$SHUNT_PROVIDERS_FILE" ] \
-    && jq -e --arg p "$1" '.providers[$p] != null' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1; then
-    q=$(jq -rn --arg p "$1" '$p | tojson')
-    echo "shunt: invalid provider name: $SHUNT_PROVIDERS_FILE has an entry named $q, which uses characters other than letters, digits, dot, dash and underscore (or does not start with a letter or digit). Please edit providers.json to remove or rename that entry." >&2
-  else
-    echo "shunt: invalid provider name (use letters, digits, dot, dash, underscore)." >&2
-  fi
+  SHUNT_PROVIDERS_FILE="$SHUNT_PROVIDERS_FILE" shunt_py probe provider-name-refusal -- "$1" >&2
 }
 
 SHUNT_PROVIDERS_LOCK_TIMEOUT="${SHUNT_PROVIDERS_LOCK_TIMEOUT:-10}"

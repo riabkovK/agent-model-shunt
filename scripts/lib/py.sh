@@ -11,3 +11,12 @@ SHUNT_PY_MAIN="${SHUNT_PY_MAIN:-${BASH_SOURCE[0]%/*}/../py/shunt_main.py}"
 shunt_py() {
   "${SHUNT_PYTHON:-python3}" -I -B "$SHUNT_PY_MAIN" "$@"
 }
+
+# shunt_probe <question> [arg]
+# Small read-only questions about the registry files (scripts/py/shunt/probe.py),
+# the answers jq used to give. The file paths the calling script resolved are
+# passed for this call only, since they may be unexported shell defaults.
+shunt_probe() {
+  SHUNT_MODELS_FILE="${SHUNT_MODELS_FILE-}" SHUNT_PROVIDERS_FILE="${SHUNT_PROVIDERS_FILE-}" \
+    SHUNT_OPENCODE_CONFIG_HOME="${SHUNT_OPENCODE_CONFIG_HOME-}" shunt_py probe "$@"
+}

@@ -15,6 +15,11 @@ own context avoided by not reading the delegated file(s) directly
 (`avoided_tokens_estimate` - the same heuristic `evals/benchmark.sh`
 documents and uses).
 
+When you summarize the report, count models by the rows of `by_model` (one row per
+model id and tool, so count distinct `model` values), never by provider. A provider is
+the part of the id before the first `/`: three models on two providers are three models.
+Say "all models are local" only after checking every one of those providers.
+
 ## What this does NOT measure
 
 This plugin's hooks only ever see `tool_input`/file content - they have no

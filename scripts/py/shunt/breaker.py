@@ -257,6 +257,8 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         _update_config(environ, "threshold", _uint_arg(args.value, "threshold"), "cooldown_seconds", DEFAULT_COOLDOWN)
     elif cmd == "config-cooldown":
         _update_config(environ, "cooldown_seconds", _uint_arg(args.value, "cooldown"), "threshold", DEFAULT_THRESHOLD)
+    elif cmd == "limits":
+        print(*limits(environ))
     elif cmd == "config-disable":
         _update_config(environ, "threshold", DISABLED_THRESHOLD, "cooldown_seconds", DEFAULT_COOLDOWN)
     return 0
@@ -297,3 +299,4 @@ def register(subparsers: Any) -> None:
     sub.add_parser("config-threshold").add_argument("value")
     sub.add_parser("config-cooldown").add_argument("value")
     sub.add_parser("config-disable")
+    sub.add_parser("limits", help="print the resolved threshold and cooldown seconds")

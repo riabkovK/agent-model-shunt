@@ -44,7 +44,7 @@ custom model of your choosing.
 
 ## Prerequisites
 
-- `bash`, `jq`, `curl`, GNU `coreutils` (`timeout`).
+- `bash` and `python3` 3.11 or newer. No `jq`, `curl` or GNU `coreutils` are needed at run time.
 - [OpenCode](https://opencode.ai) installed and on `PATH`, only for providers
   on the `opencode` transport. Those need a custom provider configured in
   `~/.config/opencode/opencode.json`.

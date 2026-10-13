@@ -21,31 +21,6 @@ source "$SCRIPT_DIR/lib/opencode.sh"
 # shellcheck source=lib/selffix.sh
 source "$SCRIPT_DIR/lib/selffix.sh"
 
-# shunt_self_fix_config_read_or_empty
-# Prints the current config file JSON, or an empty object if it doesn't
-# exist yet.
-shunt_self_fix_config_read_or_empty() {
-  if [ -f "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE" ]; then
-    cat "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE"
-  else
-    echo '{}'
-  fi
-}
-
-# shunt_self_fix_config_write <json>
-# Atomically replaces the config file with <json>, validating it first.
-shunt_self_fix_config_write() {
-  local json="$1"
-  mkdir -p "$(dirname "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE")"
-
-  local tmp_file
-  tmp_file=$(mktemp "$(dirname "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE")/.code-write-self-fix-config.json.XXXXXX")
-  echo "$json" | jq -e . >"$tmp_file" 2>/dev/null \
-    || { rm -f "$tmp_file"; shunt_report_error "refusing to write an invalid self-fix config."; }
-
-  mv "$tmp_file" "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE"
-}
-
 cmd_show() {
   echo "self_fix_retries=$SHUNT_CODE_WRITE_SELF_FIX_RETRIES (default: 1)"
 }
@@ -56,9 +31,8 @@ cmd_set_self_fix_retries() {
     ''|*[!0-9]*) shunt_report_error "self-fix-retries must be a non-negative integer." ;;
   esac
 
-  local updated
-  updated=$(shunt_self_fix_config_read_or_empty | jq --argjson r "$value" '.self_fix_retries = $r')
-  shunt_self_fix_config_write "$updated"
+  # Read, change and atomic replace happen in one Python call (selffix.py).
+  shunt_py selffix set-retries -- "$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE" "$value" || exit 1
   echo "shunt: self-fix retry count set to $value."
 }
 

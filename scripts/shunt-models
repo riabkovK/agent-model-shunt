@@ -116,7 +116,7 @@ cmd_add() {
   transport=$(shunt_provider_transport "$provider") || exit 1
   local opencode_json="$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
   if [ "$transport" != http ] \
-    && { [ ! -f "$opencode_json" ] || ! jq -e --arg p "$provider" '.provider[$p]' "$opencode_json" >/dev/null 2>&1; }; then
+    && { [ ! -f "$opencode_json" ] || ! shunt_probe opencode-provider -- "$provider"; }; then
     shunt_report_error "provider '$provider' not found in $opencode_json. Add it to your OpenCode config first, or configure it for the HTTP transport with: shunt-models provider set $provider --transport http --base-url <url> --key <type>"
   fi
 
@@ -230,7 +230,7 @@ cmd_request_body() {
   fi
   # Checked here, before the registry is looked at, so the error order is unchanged.
   if [ "$value" != "--clear" ]; then
-    echo "$value" | jq -e 'type == "object"' >/dev/null 2>&1 \
+    printf '%s\n' "$value" | shunt_probe json-object \
       || shunt_report_error "request body must be a JSON object: $value"
   fi
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
@@ -266,7 +266,7 @@ cmd_roles() {
   problem=$(shunt_models_validate) || echo "shunt: warning, the registry is still invalid: $problem" >&2
 }
 
-# Longest context_tokens accepted, in digits (keeps the value exact in jq).
+# Longest context_tokens accepted, in digits.
 SHUNT_CONTEXT_MAX_DIGITS=12
 
 # shunt_models_store_context <provider/model> <tokens>
@@ -289,9 +289,9 @@ shunt_models_store_context() {
 shunt_models_require_entry() {
   local id="$1"
   [ -f "$SHUNT_MODELS_FILE" ] || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
-  jq -e '.models | type == "array"' "$SHUNT_MODELS_FILE" >/dev/null 2>&1 \
+  shunt_probe has-models-array \
     || shunt_report_error "$SHUNT_MODELS_FILE is not a valid models registry."
-  jq -e --arg id "$id" '.models | any(.id == $id)' "$SHUNT_MODELS_FILE" >/dev/null \
+  shunt_probe has-model -- "$id" \
     || shunt_report_error "model '$id' is not in the registry."
 }
 
@@ -426,9 +426,9 @@ cmd_provider_list() {
     echo "shunt: no providers configured in $SHUNT_PROVIDERS_FILE."
     return 0
   fi
-  jq -e '(.providers | type) == "object"' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1 \
+  shunt_probe providers-object \
     || shunt_report_error "$SHUNT_PROVIDERS_FILE is invalid JSON or has no \"providers\" object."
-  if jq -e '.providers | length == 0' "$SHUNT_PROVIDERS_FILE" >/dev/null; then
+  if shunt_probe providers-empty; then
     echo "shunt: no providers configured in $SHUNT_PROVIDERS_FILE."
     return 0
   fi
@@ -451,8 +451,8 @@ cmd_provider() {
 cmd_list() {
   shunt_models_available || { shunt_models_unavailable_notice; return 0; }
   local active
-  active=$(jq -r '.active // empty' "$SHUNT_MODELS_FILE")
-  jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+  active=$(shunt_probe active)
+  shunt_probe model-ids | while IFS= read -r id; do
     if [ "$id" = "$active" ]; then
       echo "$id (active)"
     else
@@ -463,19 +463,11 @@ cmd_list() {
 
 cmd_status() {
   shunt_models_available || { shunt_models_unavailable_notice; return 0; }
-  if [ "$(jq '.models | length' "$SHUNT_MODELS_FILE")" -eq 0 ]; then
+  if [ "$(shunt_probe model-count)" -eq 0 ]; then
     echo "shunt: no delegate models configured (large reads are not redirected)."
     return 0
   fi
-  jq -r --argjson all_roles "$SHUNT_MODELS_ROLES_JSON" '
-    .active as $active
-    | .models[]
-    | "\(.id)\t\(.agent)\t" + (if .enabled == false then "disabled" else "enabled" end)
-      + "\tthinking=\(.thinking)\tthinking_off=\(if .thinking_off_options == null then "none" else "set" end)\troles=\((.roles // $all_roles) | join(","))\t"
-      + (if .id != $active then ""
-         elif .enabled == false then "active (skipped, disabled)"
-         else "active" end)
-  ' "$SHUNT_MODELS_FILE"
+  shunt_probe status-rows
 
   # Which model the next bulk-read call tries first: the active one if it is
   # enabled and has the role, otherwise the first such model in registry order.
@@ -484,7 +476,7 @@ cmd_status() {
   first="${candidates%%$'\n'*}"
   if [ -n "$first" ]; then
     echo "shunt: first choice: $first"
-  elif jq -e '.models | any(.enabled != false)' "$SHUNT_MODELS_FILE" >/dev/null; then
+  elif shunt_probe any-enabled; then
     echo "shunt: no enabled model has the bulk-read role (large reads are not redirected)."
   else
     echo "shunt: no enabled models (large reads are not redirected)."
@@ -503,16 +495,14 @@ cmd_status() {
 
   # code-write keeps its own failure counter per model, apart from bulk-read's.
   local id
-  jq -r --argjson all_roles "$SHUNT_MODELS_ROLES_JSON" \
-    '.models[] | select((.roles // $all_roles) | index("code-write") != null) | .id' \
-    "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+  shunt_probe role-ids -- code-write | while IFS= read -r id; do
     echo "shunt: code-write breaker $id: $(shunt_breaker_status "$(shunt_breaker_key "$id" code-write)")"
   done
 }
 
 cmd_sync() {
   shunt_models_available || shunt_report_error "no models registry at $SHUNT_MODELS_FILE."
-  jq -r '.models[].id' "$SHUNT_MODELS_FILE" | while IFS= read -r id; do
+  shunt_probe model-ids | while IFS= read -r id; do
     shunt_models_materialize_agent "$id"
     echo "shunt: re-materialized '$id'."
   done
@@ -537,7 +527,7 @@ cmd_key() {
   local action="${1:-}" provider="${2:-}"
   [ -n "$provider" ] || shunt_report_error "usage: shunt-models key <set|status> <provider>"
   shunt_provider_name_ok "$provider" || { shunt_provider_name_refuse "$provider"; exit 1; }
-  [ -f "$SHUNT_PROVIDERS_FILE" ] && jq -e --arg p "$provider" '.providers[$p]' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1 \
+  [ -f "$SHUNT_PROVIDERS_FILE" ] && shunt_probe provider-exists -- "$provider" \
     || shunt_report_error "provider '$provider' is not in $SHUNT_PROVIDERS_FILE."
   local type
   type=$(shunt_provider_key_type "$provider") || exit 1

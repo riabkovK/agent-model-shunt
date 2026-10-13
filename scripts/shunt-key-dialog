@@ -52,7 +52,7 @@ timeout_s="${SHUNT_KEY_DIALOG_TIMEOUT:-$DEFAULT_DIALOG_TIMEOUT}"
 [[ "$timeout_s" =~ ^[1-9][0-9]*$ ]] || timeout_s=$DEFAULT_DIALOG_TIMEOUT
 
 if [ ! -f "$SHUNT_PROVIDERS_FILE" ] \
-  || ! jq -e --arg p "$provider" '.providers[$p]' "$SHUNT_PROVIDERS_FILE" >/dev/null 2>&1; then
+  || ! shunt_probe provider-exists -- "$provider"; then
   echo "shunt: provider '$provider' is not in $SHUNT_PROVIDERS_FILE. Create it first with: $SHUNT_MODELS_HINT_CMD provider set" >&2
   exit "$EXIT_REFUSED"
 fi

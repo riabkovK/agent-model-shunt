@@ -274,14 +274,15 @@ STUB
 }
 
 @test "shunt-models drops BASH_ENV and ENV for its children" {
-  local real_jq
-  real_jq=$(command -v jq)
-  cat >"$STUB_BIN/jq" <<STUB
+  local real_py
+  real_py=$(command -v python3)
+  cat >"$STUB_BIN/py-spy" <<STUB
 #!/bin/bash
 echo "\${BASH_ENV:-unset} \${ENV:-unset}" >>"$TEST_TMPDIR/jq-env"
-exec "$real_jq" "\$@"
+exec "$real_py" "\$@"
 STUB
-  chmod +x "$STUB_BIN/jq"
+  chmod +x "$STUB_BIN/py-spy"
+  export SHUNT_PYTHON="$STUB_BIN/py-spy"
   echo '{"version":1,"providers":{"p":{"transport":"http","key":{"type":"plaintext"}}}}' >"$SHUNT_PROVIDERS_FILE"
   BASH_ENV=/dev/null ENV=/dev/null run "$REPO_ROOT/scripts/shunt-models" key status p
   [ -s "$TEST_TMPDIR/jq-env" ]
