@@ -11,6 +11,7 @@ from __future__ import annotations
 import json
 import math
 import re
+import unicodedata
 from typing import Any
 
 # The SHUNT_TRY_INVOKE_* statuses of scripts/lib/transport.sh, which a test keeps in step.
@@ -43,8 +44,16 @@ def _tojson_inner(text: str) -> str:
     return json.dumps(text, ensure_ascii=False)[1:-1].replace("\x7f", "\\u007f")
 
 
-def _strip_cntrl(text: str) -> str:
-    return "".join(c for c in text if ord(c) >= 32 and ord(c) != 127)
+_STRIPPED_CATEGORIES = ("Cc", "Cf", "Zl", "Zp")  # controls (also C1), format (bidi), line and paragraph separators
+
+
+def strip_cntrl(text: str) -> str:
+    """Drop every control, format and line/paragraph separator character, so provider or
+    file controlled text cannot move the cursor, flip the direction or fake a line on a terminal."""
+    return "".join(c for c in text if unicodedata.category(c) not in _STRIPPED_CATEGORIES)
+
+
+_strip_cntrl = strip_cntrl
 
 
 def _u_forms(text: str, every_char: bool) -> str:

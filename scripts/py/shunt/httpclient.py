@@ -29,6 +29,7 @@ import json
 import re
 import socket
 import ssl
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -40,6 +41,7 @@ from urllib.parse import urlsplit
 DEFAULT_MAX_RESPONSE_BYTES = 16777216  # SHUNT_HTTP_MAX_RESPONSE_BYTES_DEFAULT
 _MAX_BYTES_RE = re.compile(r"[1-9][0-9]{0,14}")
 _CHUNK = 65536
+_MAX_JOIN = threading.TIMEOUT_MAX  # join() overflows on absurd values
 _ALLOWED_SCHEMES = ("http", "https")
 _USER_AGENT = "agent-model-shunt"
 
@@ -91,8 +93,57 @@ class _NoRedirect(urllib.request.HTTPRedirectHandler):
         return None  # the 3xx answer is reported as it is, like curl without -L
 
 
-def _opener() -> urllib.request.OpenerDirector:
-    return urllib.request.build_opener(_NoRedirect())
+class _Tracker:
+    """Remembers the connections of one request so the caller can abort them."""
+
+    def __init__(self) -> None:
+        self.cancelled = False
+        self.conns: list[Any] = []
+
+    def wrap(self, cls: Any) -> Any:
+        tracker = self
+
+        class _Conn(cls):  # type: ignore[misc, valid-type]
+            def connect(self) -> None:
+                super().connect()
+                if tracker.cancelled:
+                    self.close()
+                    raise OSError("cancelled")
+
+        def factory(*args: Any, **kwargs: Any) -> Any:
+            conn = _Conn(*args, **kwargs)
+            tracker.conns.append(conn)
+            return conn
+
+        return factory
+
+    def abort(self) -> None:
+        self.cancelled = True
+        for conn in list(self.conns):
+            sock = getattr(conn, "sock", None)
+            try:
+                if sock is not None:
+                    sock.shutdown(socket.SHUT_RDWR)
+            except OSError:
+                pass
+            try:
+                conn.close()
+            except Exception:  # noqa: BLE001 - best effort
+                pass
+
+
+def _opener(tracker: _Tracker | None = None) -> urllib.request.OpenerDirector:
+    tracker = tracker or _Tracker()
+
+    class _Http(urllib.request.HTTPHandler):
+        def http_open(self, req: Any) -> Any:
+            return self.do_open(tracker.wrap(http.client.HTTPConnection), req)
+
+    class _Https(urllib.request.HTTPSHandler):
+        def https_open(self, req: Any) -> Any:
+            return self.do_open(tracker.wrap(http.client.HTTPSConnection), req, context=self._context)
+
+    return urllib.request.build_opener(_NoRedirect(), _Http(), _Https())
 
 
 def _wire(value: str) -> str:
@@ -186,12 +237,11 @@ def _build(method: str, url: str, headers: Mapping[str, str], data: bytes | None
     return req
 
 
-def _perform(req: urllib.request.Request, timeout: float | None, max_bytes: int) -> Response | HttpError:
-    """Do the exchange. Failures are RETURNED, so no exception is chained to a later raise."""
-    deadline = None if timeout is None else time.monotonic() + timeout
+def _exchange(req: urllib.request.Request, timeout: float | None, max_bytes: int,
+              deadline: float | None, tracker: _Tracker) -> Response | HttpError:
     try:
         try:
-            resp = _opener().open(req, timeout=timeout)
+            resp = _opener(tracker).open(req, timeout=timeout if timeout else None)
         except urllib.error.HTTPError as err:  # non-2xx: still an answer
             resp = err
         try:
@@ -204,7 +254,33 @@ def _perform(req: urllib.request.Request, timeout: float | None, max_bytes: int)
     except HttpError as err:
         return err
     except Exception as exc:  # noqa: BLE001 - mapped to a category, the text is dropped
-        return HttpError(_classify(exc))
+        return HttpError("timeout" if tracker.cancelled else _classify(exc))
+
+
+def _perform(req: urllib.request.Request, timeout: float | None, max_bytes: int) -> Response | HttpError:
+    """Do the exchange under ONE hard deadline (DNS, connect, TLS, headers, body).
+
+    The exchange runs in a daemon worker thread and the caller waits for it with
+    join(remaining). On expiry the connections are shut down and the result is
+    "timeout" (curl exit 28). Failures are RETURNED, so no exception is chained.
+    A timeout of None or 0 means no limit.
+    """
+    limit = timeout if timeout and timeout > 0 else None
+    deadline = None if limit is None else time.monotonic() + limit
+    tracker = _Tracker()
+    box: list[Response | HttpError] = []
+    worker = threading.Thread(
+        target=lambda: box.append(_exchange(req, limit, max_bytes, deadline, tracker)), daemon=True)
+    worker.start()
+    try:
+        worker.join(None if limit is None else min(limit, _MAX_JOIN))
+    except BaseException:
+        tracker.abort()
+        raise
+    if box:
+        return box[0]
+    tracker.abort()
+    return HttpError("timeout")
 
 
 def request(

@@ -8,13 +8,13 @@ boundaries and the "part i of n" notes must match the bash version exactly.
 
 from __future__ import annotations
 
+import codecs
 import os
 import sys
 from collections.abc import Iterator
 from dataclasses import dataclass
-from itertools import islice
 
-from .transport_reply import FAILED, OVERSIZE, Abort
+from .transport_reply import FAILED, OVERSIZE, Abort, strip_cntrl as shown
 
 CHUNK_OVERLAP_LINES = 20
 MIN_CHUNK_BYTES = 200
@@ -22,6 +22,8 @@ DEFAULT_MAX_CHUNKS = 100
 UTF8_MAX_CONTINUATION = 3
 _BLANK = b" \t\r\f\v"  # what awk's [ \t\r\f\v] matches
 _SPACE = b" \t\n\v\f\r"  # [[:space:]] in the C locale
+_SEGMENT = 65536  # the most one read of a (possibly endless) line takes
+MAX_INFLATION = 6  # a NUL is sent as "\\u0000", an invalid byte as U+FFFD (3 bytes, 6 when escaped)
 NO_OFFSET = -1  # a chunk of whole lines, not a piece of one long line
 
 
@@ -64,10 +66,78 @@ def chunk_prompt(question: str, label: str, content: bytes) -> bytes:
             + b"\n--- end of file ---\n")
 
 
+def _line_lengths(handle) -> Iterator[tuple[int, bool]]:
+    """(byte length, ends with a newline) per line, reading a long line in bounded segments."""
+    while True:
+        length = 0
+        while True:
+            segment = handle.readline(_SEGMENT)
+            length += len(segment)
+            if not segment or segment.endswith(b"\n"):
+                break
+        if length == 0:
+            return
+        yield length, segment.endswith(b"\n")
+
+
 def read_lines(path: str, first: int, last: int) -> bytes:
     """Lines first..last (1-based) byte for byte."""
     with open(path, "rb") as handle:
-        return b"".join(islice(handle, first - 1, last))
+        lines = _line_lengths(handle)
+        for _ in range(first - 1):  # skip without holding a long line in memory
+            if next(lines, None) is None:
+                return b""
+        start = handle.tell()
+        end = start
+        for _ in range(last - first + 1):
+            item = next(lines, None)
+            if item is None:
+                break
+            end = handle.tell()
+        handle.seek(start)
+        return handle.read(end - start)
+
+
+class _Window:
+    """One line of a file, read by slices (seek and read) instead of whole."""
+
+    def __init__(self, path: str, number: int) -> None:
+        self.path = path
+        with open(path, "rb") as handle:
+            lines = _line_lengths(handle)
+            for _ in range(number - 1):
+                if next(lines, None) is None:
+                    break
+            self.start = handle.tell()
+            item = next(lines, None)
+        self.size = item[0] if item else 0
+
+    def __len__(self) -> int:
+        return self.size
+
+    def __getitem__(self, key: slice) -> bytes:
+        first, stop, _ = key.indices(self.size)
+        if stop <= first:
+            return b""
+        with open(self.path, "rb") as handle:
+            handle.seek(self.start + first)
+            return handle.read(stop - first)
+
+
+def needs_care(path: str) -> bool:
+    """True when the file has a NUL or bytes that are not valid UTF-8. Such bytes grow when
+    they are sent (a NUL becomes six, an invalid byte three), so a chunk of them is cut smaller."""
+    decoder = codecs.getincrementaldecoder("utf-8")("strict")
+    try:
+        with open(path, "rb") as handle:
+            while block := handle.read(_SEGMENT):
+                if b"\0" in block:
+                    return True
+                decoder.decode(block)
+            decoder.decode(b"", final=True)
+    except UnicodeDecodeError:
+        return True
+    return False
 
 
 def line_ranges(path: str, budget: int, max_ranges: int) -> Iterator[tuple[int, int, str]]:
@@ -78,8 +148,8 @@ def line_ranges(path: str, budget: int, max_ranges: int) -> Iterator[tuple[int, 
     lens: dict[int, int] = {}
     start, end, total, low, printed = 1, 0, 0, 1, 0
     with open(path, "rb") as handle:
-        for i, line in enumerate(handle, 1):
-            size = len(line) + (0 if line.endswith(b"\n") else 1)
+        for i, (length, has_newline) in enumerate(_line_lengths(handle), 1):
+            size = length + (0 if has_newline else 1)
             lens[i] = size
             if size > budget:
                 if end >= start:
@@ -140,7 +210,7 @@ def _cut_before_blank_tail(line: bytes, off: int, end: int, budget: int) -> int:
     return cut if cut > off and len(line) - cut <= budget else end
 
 
-def _long_line_pieces(line: bytes, budget: int) -> Iterator[tuple[int, int]]:
+def _long_line_pieces(line: "bytes | _Window", budget: int) -> Iterator[tuple[int, int]]:
     """(offset, length) pieces of one line longer than the budget, each at most the budget
     and split on a UTF-8 character boundary. When the rest after a piece would be only
     whitespace (typically the line's own newline), the piece ends one character earlier,
@@ -160,11 +230,11 @@ def _long_line_pieces(line: bytes, budget: int) -> Iterator[tuple[int, int]]:
         off = end
 
 
-def _read_line(path: str, number: int) -> bytes:
+def _read_line(path: str, number: int) -> _Window:
     try:
-        return read_lines(path, number, number)
+        return _Window(path, number)
     except OSError:
-        sys.stderr.write(f"shunt: cannot read {path} to plan it.\n")
+        sys.stderr.write(f"shunt: cannot read {shown(path)} to plan it.\n")
         raise Abort(FAILED) from None
 
 
@@ -174,7 +244,7 @@ def plan_file(path: str, budget: int, room: int) -> list[tuple[int, int, int, in
     once it holds more than `room` chunks (the plan is refused then)."""
     if os.stat(path).st_size <= budget:
         with open(path, "rb") as handle:
-            data = handle.read()
+            data = handle.read(budget + 1)
         lines = data.count(b"\n") + (1 if data and not data.endswith(b"\n") else 0)
         return [(1, max(lines, 1), NO_OFFSET, 0)]
     plan: list[tuple[int, int, int, int]] = []
@@ -211,10 +281,15 @@ def plan_all(question: str, files: list[str], *, model_id: str, system_len: int,
     for path in ["", *files]:
         size = str(os.stat(path).st_size) if path else ""
         room = budget_bytes - overhead(question, path, size, system_len)
+        if path and room >= MIN_CHUNK_BYTES and needs_care(path):
+            room //= MAX_INFLATION
         if room < MIN_CHUNK_BYTES:
             sys.stderr.write(f"shunt: model {model_id}: the role prompt and the question leave no room for "
                              "file content in the context budget (no request sent).\n")
             raise Abort(OVERSIZE)
+        if path and int(size) > (max_chunks - count) * room:  # every chunk holds at most `room` bytes
+            count = max_chunks + 1
+            break
         if path:
             pieces = plan_file(path, room, max_chunks - count)
             raw.append(pieces)
@@ -235,17 +310,17 @@ def write_chunk(chunk: Chunk) -> bytes:
     that gives other than the planned byte length, fails the call."""
     path = chunk.file
     if not (os.path.isfile(path) and os.access(path, os.R_OK)):
-        sys.stderr.write(f"shunt: cannot read {path} to cut a chunk from it.\n")
+        sys.stderr.write(f"shunt: cannot read {shown(path)} to cut a chunk from it.\n")
         raise Abort(FAILED)
     try:
         if chunk.offset < 0:
             return read_lines(path, chunk.start, chunk.end)
-        piece = read_lines(path, chunk.start, chunk.start)[chunk.offset:chunk.offset + chunk.length]
+        piece = _Window(path, chunk.start)[chunk.offset:chunk.offset + chunk.length]
     except OSError:
-        sys.stderr.write(f"shunt: cannot read {path} to cut a chunk from it.\n")
+        sys.stderr.write(f"shunt: cannot read {shown(path)} to cut a chunk from it.\n")
         raise Abort(FAILED) from None
     if len(piece) != chunk.length:
-        sys.stderr.write(f"shunt: reading {path} gave {len(piece)} bytes, expected {chunk.length} bytes "
+        sys.stderr.write(f"shunt: reading {shown(path)} gave {len(piece)} bytes, expected {chunk.length} bytes "
                          "(changed or unreadable after planning).\n")
         raise Abort(FAILED)
     return piece

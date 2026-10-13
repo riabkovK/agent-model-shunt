@@ -19,6 +19,8 @@ import time
 from collections.abc import Mapping
 from dataclasses import dataclass
 
+from .transport_reply import strip_cntrl
+
 TICKS_PER_SECOND = 1000
 TOTAL_TIMEOUT_FACTOR = 3
 # Longest accepted SHUNT_TOTAL_TIMEOUT_SECONDS, in digits. A SHUNT_TIMEOUT_SECONDS
@@ -47,7 +49,7 @@ def now_ticks() -> int:
 
 
 def _shown(value: str) -> str:
-    return "".join(c for c in value if ord(c) >= 32 and ord(c) != 127)[:SHOWN_VALUE_CHARS]
+    return strip_cntrl(value)[:SHOWN_VALUE_CHARS]
 
 
 def per_limit(raw: str) -> int | None:
@@ -98,7 +100,7 @@ class Deadline:
         """The limit for the next request: SHUNT_TIMEOUT_SECONDS, or the time left (whole
         seconds, rounded up, at most the total) when that is shorter or there is no
         per-request limit. None once no time is left: nothing may be sent then."""
-        timeout = float(self.timeout_raw) or None
+        timeout = float(self.timeout_raw) if self.limit else None  # limit 0 (no limit, too many digits) is None
         if self.total <= 0:
             return RequestTime(timeout, False)
         left = self.end - now_ticks()

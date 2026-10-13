@@ -193,23 +193,62 @@ def _setup(agent: str, environ: Mapping[str, str]) -> _Setup:
 
 # ---------------------------------------------------------------- prompt and size guard
 
-def _read_attached(name: str) -> bytes:
+def _check_attached(name: str) -> Path:
     path = Path(name)
     if not path.is_file() or not os.access(path, os.R_OK):
-        _fail(CONFIG, f"cannot read attached file '{name}'.")
+        _fail(CONFIG, f"cannot read attached file '{reply.strip_cntrl(name)}'.")
+    return path
+
+
+def _read_attached(name: str, limit: int) -> bytes:
+    """At most `limit` bytes of the file: a longer one is refused by the size guard anyway."""
     try:
-        return path.read_bytes()
+        with open(_check_attached(name), "rb") as handle:
+            return handle.read(limit)
     except OSError:
-        _fail(CONFIG, f"cannot read attached file '{name}'.")
+        _fail(CONFIG, f"cannot read attached file '{reply.strip_cntrl(name)}'.")
 
 
-def build_prompt(question: str, files: Sequence[str]) -> bytes:
-    """The question, then each attached file in a labelled block."""
-    parts = [question.encode("utf-8", "surrogateescape") + b"\n"]
+def _framing(question: str, name: str) -> tuple[bytes, bytes]:
+    label = name.encode("utf-8", "surrogateescape")
+    return b"\n--- file: " + label + b" ---\n", b"\n--- end of file ---\n"
+
+
+def prompt_size(question: str, files: Sequence[str]) -> int:
+    """The byte length build_prompt gives, from the file sizes, without reading the files."""
+    size = len(question.encode("utf-8", "surrogateescape")) + 1
     for name in files:
-        label = name.encode("utf-8", "surrogateescape")
-        parts += [b"\n--- file: " + label + b" ---\n", _read_attached(name), b"\n--- end of file ---\n"]
+        head, tail = _framing(question, name)
+        size += len(head) + len(tail) + _check_attached(name).stat().st_size
+    return size
+
+
+def build_prompt(question: str, files: Sequence[str], limit: int) -> bytes:
+    """The question, then each attached file in a labelled block. Reads at most `limit` + 1
+    bytes of file content in all, so the result is longer than `limit` only to say it is too long."""
+    parts = [question.encode("utf-8", "surrogateescape") + b"\n"]
+    left = limit + 1
+    for name in files:
+        head, tail = _framing(question, name)
+        content = _read_attached(name, left)
+        left = max(left - len(content), 0)
+        parts += [head, content, tail]
     return b"".join(parts)
+
+
+def sent_size(data: bytes) -> int:
+    """Bytes a text takes in the request: as the UTF-8 it is decoded to (an invalid byte
+    becomes U+FFFD, three bytes) plus five more for each NUL, which JSON writes as \\u0000."""
+    text = data.decode("utf-8", "replace")
+    return len(text.encode("utf-8")) + 5 * text.count("\0")
+
+
+def _max_prompt_bytes(setup: "_Setup") -> int:
+    """The most bytes of prompt the size guard can accept for this model."""
+    context = setup.context_tokens
+    if context and _CONTEXT_RE.fullmatch(context) and len(context) <= MAX_CONTEXT_DIGITS:
+        return int(context) * CONTEXT_BUDGET_PERCENT // 100 * BYTES_PER_TOKEN
+    return UNKNOWN_CONTEXT_MAX_TOKENS * BYTES_PER_TOKEN
 
 
 def _guard_size(setup: _Setup, size: int) -> None:
@@ -371,9 +410,13 @@ def http_call(agent: str, question: str, files: Sequence[str], environ: Mapping[
     except DeadlineError as exc:
         _fail(CONFIG, str(exc))
     setup = _setup(agent, environ)
-    prompt = build_prompt(question, files)
+    chunk = _needs_chunking(setup, sent_size(setup.system) + prompt_size(question, files))
+    prompt = b""
+    if not chunk:  # sized from the file sizes above, so this read is bounded by what the guard accepts
+        prompt = build_prompt(question, files, _max_prompt_bytes(setup))
+        chunk = _needs_chunking(setup, sent_size(setup.system) + sent_size(prompt))
     attempt = _Attempt(setup, environ, deadline)
-    if _needs_chunking(setup, len(setup.system) + len(prompt)):
+    if chunk:
         result = chunking.map_reduce(question, files, model_id=setup.model_id, system_len=len(setup.system),
                                      context_tokens=setup.context_tokens, ask=attempt.ask, environ=environ,
                                      progress=deadline)
