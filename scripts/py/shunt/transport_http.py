@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import chunking, env, healthcheck, httpclient, models, providers
+from . import chunking, env, healthcheck_bg, httpclient, models, providers
 from . import transport_reply as reply
 from .deadline import Deadline, DeadlineError
 from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT, UNREACHABLE
@@ -311,6 +311,8 @@ def _transport_failure(setup: _Setup, err: httpclient.HttpError, environ: Mappin
     if err.kind == "unreachable":
         _fail(UNREACHABLE, f"{setup.model_id} unreachable: no connection within "
                            f"{_seconds_text(env.connect_timeout(environ))}s (or no route to the host)")
+    if setup.healthcheck and err.kind in ("connect", "dns"):  # e.g. a model behind a VPN that is down
+        _fail(UNREACHABLE, f"{setup.model_id} unreachable: {err}")
     # An auth or rate limit status says more than the size of its body.
     if err.kind == "too_large" and err.status in _STATUS_BEATS_SIZE:
         _check_status(setup, httpclient.Response(err.status, {}, b""), key)
@@ -332,6 +334,8 @@ def _check_status(setup: _Setup, response: httpclient.Response, key: str | None)
         _fail(AUTH, f"auth failed for provider {provider}: the key was rejected or is missing. Re-enter it "
                     f"through /model-config (it opens a password window), or without a desktop: "
                     f"! {_models_command()} key set {providers._bash_quote(provider)}")
+    if setup.healthcheck and (code == 404 or code >= 500):  # the model is unloaded or the server is broken
+        _fail(UNREACHABLE, f"{setup.model_id} unreachable: provider '{provider}' answered HTTP {code}")
     if code in (400, 404, 413):
         _fail(ERROR, f"provider '{provider}' answered HTTP {code}: {reply.excerpt(response.body, key)}")
     _fail(ERROR, f"provider '{provider}' answered HTTP {code}.")
@@ -381,6 +385,7 @@ class _Attempt:
         self._key: str | None = None
         self._have_key = False
         self._checked = False
+        self._succeeded = False
 
     def key(self) -> str | None:
         if not self._have_key:
@@ -392,34 +397,31 @@ class _Attempt:
             self._have_key = True
         return self._key
 
-    def _healthcheck(self, window: Any) -> bool:
-        """The pre-flight check of a provider that asks for one, once per attempt. It runs under the
-        same total deadline as the request, so the request that follows gets the time that is left."""
+    def _healthcheck(self) -> None:
+        """The status gate of a provider that asks for a healthcheck, once per attempt. It only reads
+        the status cache: a fresh unhealthy status ends the attempt as unreachable at once, anything
+        else goes on with the real call. A probe, when one is due, runs in the background."""
         setup = self.setup
         if self._checked or not setup.healthcheck:
-            return False
+            return
         self._checked = True
         try:
-            wanted = env.healthcheck_timeout(self.environ)
-            if wanted <= 0:
-                return False
-            limit = wanted if window.max_time is None else min(wanted, window.max_time)
-            key = self.key()
-            headers = {"Authorization": f"Bearer {key}"} if key else {}
-            model_wanted = env.healthcheck_model_timeout(self.environ)
-            model_limit = model_wanted if window.max_time is None else min(model_wanted, window.max_time)
-            reason = healthcheck.check(setup.provider, setup.base_url, setup.model_id.split("/", 1)[-1], headers,
-                                       limit, model_limit, self.environ)
+            if env.healthcheck_timeout(self.environ) <= 0:
+                return
+            blocked = healthcheck_bg.gate(self.environ, setup.provider, setup.base_url, self._model())
         except env.EnvError as exc:
             _fail(CONFIG, str(exc))
-        if reason is None:
-            return True
-        cut = (reason == healthcheck.NO_ANSWER and limit < wanted) or (
-            reason == healthcheck.MODEL_NO_ANSWER and model_limit < model_wanted)
-        if window.capped and cut:
-            self.deadline.note(setup.model_id)
-            raise _Stop(DEADLINE)
-        _fail(UNREACHABLE, f"{setup.model_id} healthcheck failed: {reason}")
+        if blocked:
+            _fail(UNREACHABLE, f"{setup.model_id} healthcheck failed: unhealthy at the last check, "
+                               "tried again after SHUNT_HEALTHCHECK_RETRY seconds")
+
+    def _model(self) -> str:
+        return self.setup.model_id.split("/", 1)[-1]
+
+    def _note(self, healthy: bool) -> None:
+        """Record the real call's outcome as the model's status (providers with a healthcheck only)."""
+        if self.setup.healthcheck:
+            healthcheck_bg.note_call(self.environ, self.setup.provider, self.setup.base_url, self._model(), healthy)
 
     def ask(self, prompt: bytes) -> dict[str, Any]:
         """One request within the time left of the total deadline. DEADLINE when none is left, or
@@ -428,18 +430,20 @@ class _Attempt:
         if window is None:
             self.deadline.note(self.setup.model_id)
             raise _Stop(DEADLINE)
-        if self._healthcheck(window):  # the check used up some of the total deadline
-            window = self.deadline.request_time()
-            if window is None:
-                self.deadline.note(self.setup.model_id)
-                raise _Stop(DEADLINE)
+        self._healthcheck()
         try:
-            return _send(self.setup, prompt, self.environ, self.key(), window.max_time)
+            result = _send(self.setup, prompt, self.environ, self.key(), window.max_time)
         except _Stop as stop:
+            if stop.status == UNREACHABLE:
+                self._note(False)
             if stop.status == TIMEOUT and window.capped:
                 self.deadline.note(self.setup.model_id)
                 raise _Stop(DEADLINE) from None
             raise
+        if not self._succeeded:
+            self._succeeded = True
+            self._note(True)
+        return result
 
 
 def _write_reply(normalized: dict[str, Any], environ: Mapping[str, str]) -> str:

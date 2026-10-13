@@ -260,7 +260,35 @@ The entry then looks like this:
                "key": {"type": "none"}, "healthcheck": true}}}
 ```
 
-Before the chat request shunt checks the model in two steps, both with the same
+The check never slows a request down. A request only reads a small status cache
+(`~/.cache/agent-model-shunt/healthcheck.json`, per provider, base_url and
+model, `healthy` or `unhealthy` with the time of the check, no key in it) and
+goes on at once:
+
+- Unhealthy for less than `SHUNT_HEALTHCHECK_RETRY` seconds (default 30): the
+  call stops with `shunt: <model> healthcheck failed: ...`, counts as
+  "unreachable" and the next model is tried, with no delay.
+- Healthy, unknown, or older than its limit (`SHUNT_HEALTHCHECK_TTL` seconds,
+  default 600, for healthy; the retry time for unhealthy): the real call goes
+  on at once. An unknown or stale status also starts one detached background
+  probe (`shunt_main.py healthcheck-refresh <provider> <model>`, one child for all models at session start). An unhealthy
+  status older than the retry time is therefore tried again by the real call
+  itself, plus a probe. A model that was only reachable over a VPN is back at
+  the first call after the retry time once the VPN is up.
+- The probe reads the provider and its key itself, so a key is never in a
+  command line. One probe per model runs at a time (a lock file in the cache
+  dir), it has a time cap and its failures are silent. A good probe also
+  clears the model's circuit breaker state.
+- The real call keeps the status current: a success marks the model healthy, a
+  failed connection, a 404 or a 5xx marks it unhealthy. Other errors (auth, other 4xx, oversize, a
+  timeout on a long reply) leave it alone.
+- The session start hook starts a probe for each enabled model of a healthcheck
+  provider whose status is missing or stale. It does not wait for them.
+- For a provider with the healthcheck on, "unreachable" failures (including a
+  refused connection or an unknown host) are not counted by the circuit breaker:
+  the unhealthy status, which expires after the retry time, takes its place.
+
+The probe checks the model in two steps, both with the same
 auth header. First `GET <base_url>/models`: a connection error, a timeout or a
 5xx answer is unhealthy, and so is a readable model list that lacks the
 configured model (`model not listed`). A 4xx (some servers have no `/models`) or
@@ -269,15 +297,9 @@ a list that cannot be read passes this step. Then a one token
 Any 2xx is healthy, and so are 400 and 422 (the model route answered, for
 instance a reasoning model that rejects `max_tokens`) and 401 or 403 (the real
 call then reports the auth error). A 404, a 5xx, a timeout or no connection is
-unhealthy. A failed check stops the call with
-`shunt: <model> healthcheck failed: <reason>`, counts as "unreachable" (short
-breaker cooldown) and the next model is tried. The probe's tokens are not
-written to the usage log. A healthy answer is remembered
-per provider, base_url and model for `SHUNT_HEALTHCHECK_TTL` seconds in
-`~/.cache/agent-model-shunt/healthcheck.json` (no key in it). The check time
-counts toward the total deadline. The completion step may take
-`SHUNT_HEALTHCHECK_MODEL_TIMEOUT` seconds (default 30), because a local server
-may have to load the model first.
+unhealthy. The probe's tokens are not written to the usage log. The completion
+step may take `SHUNT_HEALTHCHECK_MODEL_TIMEOUT` seconds (default 30), because a
+local server may have to load the model first.
 
 ### Large files (HTTP transport)
 
@@ -442,7 +464,9 @@ both, so the skill gets no fragment. Invalid fragments are always skipped withou
 | `SHUNT_CONNECT_TIMEOUT` | `5` | `http` transport only: seconds the TCP connect (and TLS handshake) may take, a non-negative number. `0` means only `SHUNT_TIMEOUT_SECONDS` applies. A connect that does not finish fails fast as "unreachable" (`shunt: <model> unreachable: no connection within Ns`) and the next model is tried, so a sleeping laptop no longer costs a whole request timeout. It has no effect when it is not shorter than the request timeout. A model that connects but answers slowly is still a plain timeout. |
 | `SHUNT_HEALTHCHECK_TIMEOUT` | `3` | `http` transport only, for providers with `"healthcheck": true`: seconds the pre-flight `GET <base_url>/models` may take (the completion probe has its own timeout below), a non-negative number. `0` disables the check. |
 | `SHUNT_HEALTHCHECK_MODEL_TIMEOUT` | `30` | `http` transport only, for providers with `"healthcheck": true`: seconds the one token completion probe may take, a non-negative number. `0` skips that step. |
-| `SHUNT_HEALTHCHECK_TTL` | `60` | Seconds a healthy healthcheck answer is remembered, a non-negative number. `0` means no cache, so every call asks. Failures are never cached. |
+| `SHUNT_HEALTHCHECK_TTL` | `600` | Seconds a healthy status is trusted before a background probe refreshes it, a non-negative number. `0` starts a probe on every call. A request never waits for it. |
+| `SHUNT_HEALTHCHECK_RETRY` | `30` | Seconds an unhealthy status fails calls over at once (the "tick"). After that the model is tried again by the real call and a probe. `0` never fails over on the status. |
+| `SHUNT_HEALTHCHECK_INLINE` | unset | Tests only: `1` runs the background probe inside the calling process instead of a detached child. |
 
 ## Management skills
 

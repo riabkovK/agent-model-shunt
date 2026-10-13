@@ -1,16 +1,17 @@
-"""Optional pre-flight healthcheck of a provider and its model, and its success cache.
+"""Optional healthcheck of a provider and its model, and its status cache.
 
 A local server (LM Studio, ollama, llama.cpp on a laptop) may accept the TCP connection and still
 never answer, for instance behind a Bonjour Sleep Proxy, or may have the model unloaded. With
-`"healthcheck": true` on the provider the http transport runs two steps. First GET {base_url}/models:
+`"healthcheck": true` on the provider a probe runs two steps. First GET {base_url}/models:
 a connection error, a timeout or a 5xx status is unhealthy, and a readable list without the model is
 unhealthy. A 4xx or an unreadable list passes the step. Then a one token POST {base_url}/chat/completions
 for the model: 2xx, 400 and 422 are healthy, 404, 5xx, a timeout or no connection are not.
 
-Only successes are cached, per provider name, base_url and model id, in a small JSON file of the cache
-dir. The cache holds names, urls and timestamps and never a key. An old entry without a model never
-matches. A corrupt, foreign or unreadable cache is ignored, and a cache that cannot be written is
-skipped. Neither is ever fatal.
+The probe never runs on the path of a request (see healthcheck_bg.py). What the request path reads is
+the status cache: per provider name, base_url and model id, {status: healthy|unhealthy, at}, in a small
+JSON file of the cache dir. The cache holds names, urls and timestamps and never a key. An old entry
+without a status counts as healthy. A corrupt, foreign or unreadable cache is ignored, and a cache that
+cannot be written is skipped. Neither is ever fatal.
 """
 
 from __future__ import annotations
@@ -23,12 +24,14 @@ from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
 
-from . import breaker, env, httpclient
+from . import httpclient
 
 MAX_BODY_BYTES = 4096  # the completion body is never used, so a long answer is cut early
 MAX_CACHE_BYTES = 1 << 16
 MAX_CACHE_ENTRIES = 64
 CACHE_VERSION = 1
+HEALTHY = "healthy"
+UNHEALTHY = "unhealthy"
 MAX_LIST_BYTES = 1 << 20  # a /models list of a big gateway is long
 NO_ANSWER = "no answer in time"
 MODEL_NO_ANSWER = "model gave no answer in time"
@@ -70,22 +73,48 @@ def _same(entry: dict[str, Any], provider: str, base_url: str, model: str) -> bo
     return entry["provider"] == provider and entry["base_url"] == base_url and entry.get("model") == model
 
 
-def _fresh(entries: list[dict[str, Any]], provider: str, base_url: str, model: str, now: int, ttl: float) -> bool:
-    for entry in entries:
+def lookup(path: Path, provider: str, base_url: str, model: str, now: int) -> tuple[str, int] | None:
+    """(status, age in seconds) of the cached entry, or None when there is none. A negative age
+    (the clock went back) is reported as -1 and counts as stale."""
+    for entry in _load(path):
         if _same(entry, provider, base_url, model):
-            return 0 <= now - entry["at"] < ttl
-    return False
+            age = now - entry["at"]
+            return (UNHEALTHY if entry.get("status") == UNHEALTHY else HEALTHY), (age if age >= 0 else -1)
+    return None
 
 
-def _store(path: Path, entries: list[dict[str, Any]], provider: str, base_url: str, model: str, now: int) -> None:
+def normalize_base(base_url: str) -> str:
+    return base_url[:-1] if base_url.endswith("/") else base_url
+
+
+def verdict(found: tuple[str, int] | None, ttl: float, retry: float) -> tuple[bool, bool]:
+    """(fail over now, start a background probe) for a cached status. A fresh unhealthy status fails
+    over at once. Everything else goes on with the real call, and a missing or stale status also
+    starts a probe. An unhealthy status older than `retry` is not blocking: the call is the recheck."""
+    if found is None:
+        return False, True
+    status, age = found
+    if status == UNHEALTHY:
+        fresh = 0 <= age < retry
+        return fresh, not fresh
+    return False, not 0 <= age < ttl
+
+
+def trusted_folder(folder: Path) -> bool:
+    """Make the folder if needed. False when others can write to it or it is not ours."""
+    folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = os.stat(folder)
+    return info.st_uid == os.getuid() and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
+
+
+def _store(path: Path, entries: list[dict[str, Any]], key: tuple[str, str, str], now: int, status: str) -> None:
+    provider, base_url, model = key
     kept = [e for e in entries if not _same(e, provider, base_url, model)]
     kept = [e for e in kept if now - e["at"] >= 0][-(MAX_CACHE_ENTRIES - 1):]
-    kept.append({"provider": provider, "base_url": base_url, "model": model, "at": now})
+    kept.append({"provider": provider, "base_url": base_url, "model": model, "status": status, "at": now})
     doc = {"version": CACHE_VERSION,
-           "entries": [{k: e[k] for k in ("provider", "base_url", "model", "at") if k in e} for e in kept]}
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    folder = os.stat(path.parent)
-    if folder.st_uid != os.getuid() or folder.st_mode & (stat.S_IWGRP | stat.S_IWOTH):
+           "entries": [{k: e[k] for k in ("provider", "base_url", "model", "status", "at") if k in e} for e in kept]}
+    if not trusted_folder(path.parent):
         return  # a folder others can write to is not trusted with the cache
     if path.is_symlink():
         return  # never write through or over a link someone planted
@@ -102,9 +131,10 @@ def _store(path: Path, entries: list[dict[str, Any]], provider: str, base_url: s
         raise
 
 
-def _remember(path: Path, provider: str, base_url: str, model: str, now: int) -> None:
+def remember(path: Path, provider: str, base_url: str, model: str, now: int, healthy: bool) -> None:
+    """Store the status of a model with the time of the check. Never raises for a file problem."""
     try:
-        _store(path, _load(path), provider, base_url, model, now)
+        _store(path, _load(path), (provider, normalize_base(base_url), model), now, HEALTHY if healthy else UNHEALTHY)
     except (OSError, ValueError):
         return
 
@@ -169,21 +199,12 @@ def probe_model(url: str, model: str, headers: Mapping[str, str], timeout: float
     return f"model HTTP {status}" if status >= 500 or status == 404 else None
 
 
-def check(provider: str, base_url: str, model: str, headers: Mapping[str, str], timeout: float | None,
-          model_timeout: float | None, environ: Mapping[str, str]) -> str | None:
-    """None when the provider and its `model` are healthy (asked now, or answered within the TTL), else
-    the reason. `model_timeout` 0 skips the completion step. Raises env.EnvError for an invalid
-    SHUNT_HEALTHCHECK_TTL or SHUNT_CONNECT_TIMEOUT."""
-    ttl = env.healthcheck_ttl(environ)
-    connect_timeout = env.connect_timeout(environ)
-    base = base_url[:-1] if base_url.endswith("/") else base_url
-    path = env.healthcheck_cache_file(environ)
-    now = breaker.now(environ)
-    if ttl > 0 and _fresh(_load(path), provider, base, model, now, ttl):
-        return None
+def run_probes(base_url: str, model: str, headers: Mapping[str, str], timeout: float | None,
+               model_timeout: float | None, connect_timeout: float) -> str | None:
+    """None when the provider and its `model` answer, else the reason. `model_timeout` 0 skips the
+    completion step."""
+    base = normalize_base(base_url)
     reason = probe(base + "/models", headers, timeout, connect_timeout, model)
     if reason is None and model_timeout != 0:
         reason = probe_model(base + "/chat/completions", model, headers, model_timeout, connect_timeout)
-    if reason is None and ttl > 0:
-        _remember(path, provider, base, model, now)
     return reason

@@ -23,7 +23,7 @@ from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from typing import Any, NoReturn
 
-from . import breaker, env, models, transport
+from . import breaker, env, healthcheck_bg, models, transport
 from . import transport_reply as reply
 from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, OVERSIZE, TIMEOUT, UNREACHABLE
 
@@ -155,6 +155,8 @@ def run_role(role: str, kind: str, question: str, files: Sequence[str], environ:
         if status == OVERSIZE:
             oversize += 1
             continue
+        if status == UNREACHABLE and healthcheck_bg.owns_unreachable(environ, model_id):
+            continue  # the healthcheck status (expires after SHUNT_HEALTHCHECK_RETRY) replaces the breaker pause
         _record(environ, "failure", key, unreachable=status == UNREACHABLE)
     if not tried_any:
         _fatal("every delegate model in the registry is currently paused (circuit breaker open); "

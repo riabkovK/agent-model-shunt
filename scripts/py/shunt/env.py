@@ -17,7 +17,8 @@ APP_DIR_NAME = "agent-model-shunt"
 DEFAULT_PROVIDERS_LOCK_TIMEOUT = 10.0
 DEFAULT_CONNECT_TIMEOUT = 5.0
 DEFAULT_HEALTHCHECK_TIMEOUT = 3.0
-DEFAULT_HEALTHCHECK_TTL = 60.0
+DEFAULT_HEALTHCHECK_TTL = 600.0
+DEFAULT_HEALTHCHECK_RETRY = 30.0
 DEFAULT_HEALTHCHECK_MODEL_TIMEOUT = 30.0
 
 
@@ -156,5 +157,16 @@ def healthcheck_model_timeout(env: Mapping[str, str] | None = None) -> float:
 
 
 def healthcheck_ttl(env: Mapping[str, str] | None = None) -> float:
-    """SHUNT_HEALTHCHECK_TTL in seconds: how long a healthy answer is remembered. 0 means no cache."""
+    """SHUNT_HEALTHCHECK_TTL in seconds: how long a healthy status is trusted before a background
+    probe refreshes it. 0 means every call starts a probe."""
     return _non_negative_number(env, "SHUNT_HEALTHCHECK_TTL", DEFAULT_HEALTHCHECK_TTL)
+
+
+def healthcheck_retry(env: Mapping[str, str] | None = None) -> float:
+    """SHUNT_HEALTHCHECK_RETRY in seconds: how long an unhealthy status fails calls over at once. 0 never does."""
+    return _non_negative_number(env, "SHUNT_HEALTHCHECK_RETRY", DEFAULT_HEALTHCHECK_RETRY)
+
+
+def healthcheck_inline(env: Mapping[str, str] | None = None) -> bool:
+    """SHUNT_HEALTHCHECK_INLINE=1 runs the background probe in-process. For tests only."""
+    return (os.environ if env is None else env).get("SHUNT_HEALTHCHECK_INLINE") == "1"
