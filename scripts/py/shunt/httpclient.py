@@ -62,8 +62,9 @@ ERROR_KINDS: dict[str, tuple[int, str]] = {
 class HttpError(Exception):
     """A transport level failure. An HTTP status other than 2xx is NOT an error here."""
 
-    def __init__(self, kind: str):
+    def __init__(self, kind: str, status: int | None = None):
         self.kind = kind
+        self.status = status  # the HTTP status already seen, e.g. of a too large answer
         self.curl_exit, message = ERROR_KINDS[kind]
         super().__init__(message)
 
@@ -148,8 +149,9 @@ def _limit_socket(sock: Any, seconds: float) -> None:
 
 def _read_body(resp: Any, max_bytes: int, deadline: float | None, expect_body: bool = True) -> bytes:
     declared = resp.headers.get("Content-Length", "")
+    status = getattr(resp, "status", None) or getattr(resp, "code", None)
     if declared.isascii() and declared.isdigit() and int(declared) > max_bytes:
-        raise HttpError("too_large")
+        raise HttpError("too_large", status)
     sock = _socket_of(resp)
     read = getattr(resp, "read1", None) or resp.read
     chunks: list[bytes] = []
@@ -169,7 +171,7 @@ def _read_body(resp: Any, max_bytes: int, deadline: float | None, expect_body: b
             return b"".join(chunks)
         total += len(chunk)
         if total > max_bytes:
-            raise HttpError("too_large")
+            raise HttpError("too_large", status)
         chunks.append(chunk)
 
 

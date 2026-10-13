@@ -21,7 +21,6 @@ import re
 import shutil
 import subprocess
 import sys
-import tempfile
 from collections.abc import Mapping, Sequence
 from typing import Any
 
@@ -36,7 +35,6 @@ BACKENDS: tuple[str, ...] = ("secret-tool", "security", "kwallet-query")
 PROC_VERSION_DEFAULT = "/proc/version"
 
 EXIT_CONFIG = 1  # a key or configuration problem
-EXIT_ENVIRONMENT = 2  # the temp file could not be created or written
 JQ_ERROR_EXIT = 5  # what jq returned for a runtime error
 
 _NAME_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
@@ -340,36 +338,6 @@ def bearer_key(path: str, provider: str, environ: Mapping[str, str], version_fil
     return key
 
 
-def write_auth_header_file(path: str, provider: str, environ: Mapping[str, str], version_file: str) -> str | None:
-    """Write `Authorization: Bearer <key>` to a new 0600 file and return its path (None for type none).
-
-    mkstemp creates the file with O_EXCL and mode 0600, so the key is never in a
-    file that others can read or that an existing path could redirect.
-    """
-    key = bearer_key(path, provider, environ, version_file)
-    if key is None:
-        return None
-    tmp = environ.get("TMPDIR") or "/tmp"
-    payload = f"Authorization: Bearer {key}\n".encode("utf-8", "surrogateescape")  # before the file exists
-    try:
-        fd, name = tempfile.mkstemp(prefix="shunt-auth.", dir=tmp)
-    except OSError:
-        raise ProviderError(f"provider '{provider}': cannot create a temp file for the auth header in {tmp}.",
-                            EXIT_ENVIRONMENT) from None
-    try:
-        with os.fdopen(fd, "wb") as handle:
-            handle.write(payload)
-    except BaseException as exc:
-        try:
-            os.unlink(name)
-        except OSError:
-            pass
-        if not isinstance(exc, OSError):
-            raise
-        raise ProviderError(f"provider '{provider}': cannot write the auth header file.", EXIT_ENVIRONMENT) from None
-    return name
-
-
 # ---------------------------------------------------------------- command line
 
 def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
@@ -399,10 +367,6 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
         key = key_resolve(path, args.provider, environ, version_file)
         if key is not None:
             _emit(key)
-    elif cmd == "auth-header-file":
-        name = write_auth_header_file(path, args.provider, environ, version_file)
-        if name is not None:
-            sys.stdout.write(name + "\n")
     return 0
 
 
@@ -434,5 +398,5 @@ def register(subparsers: Any) -> None:
     one = sub.add_parser("field")
     one.add_argument("name", choices=sorted(FIELD_DEFAULTS))
     one.add_argument("provider")
-    for name in ("keyring-store", "keyring-get", "key-resolve", "auth-header-file"):
+    for name in ("keyring-store", "keyring-get", "key-resolve"):
         sub.add_parser(name).add_argument("provider")

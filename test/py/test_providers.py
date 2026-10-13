@@ -334,14 +334,14 @@ def test_resolve_env_ref_with_a_trailing_newline_is_stripped_like_bash(prov):
 
 def test_resolve_plaintext_blank_ref_is_an_error_not_a_silent_no_auth(prov):
     prov.write(json.dumps(doc(p={"key": {"type": "plaintext", "ref": "\n"}})))
-    r = prov.cli("auth-header-file", "--", "p")
+    r = prov.cli("key-resolve", "--", "p")
     assert (r.returncode, r.stdout) == (1, "")
     assert "no plaintext key stored" in r.stderr
 
 
 def test_lone_surrogate_key_gives_no_traceback_and_no_leftover_file(prov):
     prov.write(json.dumps(doc(p={"key": {"type": "plaintext", "ref": "ab\ud800cd"}})))
-    r = prov.cli("auth-header-file", "--", "p")
+    r = prov.cli("key-resolve", "--", "p")
     assert "Traceback" not in r.stderr
     assert list(prov.tmp.iterdir()) == []
 
@@ -386,69 +386,30 @@ def test_resolve_keyring_does_not_pass_the_key_to_children_env(prov):
     assert SECRET not in dump.read_text()
 
 
-# ---------------------------------------------------------------- auth header file
+# ---------------------------------------------------------------- bearer key
 
-def test_auth_header_file_is_0600_with_the_bearer_line(prov):
-    prov.write(doc(p={"key": {"type": "plaintext", "ref": SECRET}}))
-    r = prov.cli("auth-header-file", "--", "p")
-    path = r.stdout.strip()
-    assert r.returncode == 0 and r.stderr == ""
-    assert path.startswith(str(prov.tmp) + "/shunt-auth.")
-    assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
-    with open(path) as handle:
-        assert handle.read() == f"Authorization: Bearer {SECRET}\n"
+def _bearer(prov, extra_env=None):
+    environ = {"TMPDIR": str(prov.tmp), **(extra_env or {})}
+    return providers.bearer_key(str(prov.file), "p", environ, str(prov.proc_version))
 
 
-def test_auth_header_file_for_type_none_creates_nothing(prov):
+def test_bearer_key_for_type_none_is_none(prov):
     prov.write(doc(p={"key": {"type": "none"}}))
-    r = prov.cli("auth-header-file", "--", "p")
-    assert (r.returncode, r.stdout) == (0, "")
-    assert list(prov.tmp.iterdir()) == []
+    assert _bearer(prov) is None
 
 
 @pytest.mark.parametrize("bad", ["abc\nX-Evil: 1", "abc\rX-Evil: 1", "abc\r"])
-def test_auth_header_file_refuses_a_key_with_a_line_break(prov, bad):
+def test_bearer_key_refuses_a_key_with_a_line_break(prov, bad):
     prov.write(doc(p={"key": {"type": "env", "ref": "BAD_KEY"}}))
-    r = prov.cli("auth-header-file", "--", "p", extra_env={"BAD_KEY": bad})
-    assert (r.returncode, r.stdout) == (1, "")
-    assert r.stderr == "shunt: provider 'p': the key contains a line break.\n"
-    assert list(prov.tmp.iterdir()) == []
-
-
-def test_auth_header_file_strips_trailing_newlines_like_command_substitution(prov):
-    prov.write(doc(p={"key": {"type": "env", "ref": "K"}}))
-    path = prov.cli("auth-header-file", "--", "p", extra_env={"K": SECRET + "\n\n"}).stdout.strip()
-    with open(path) as handle:
-        assert handle.read() == f"Authorization: Bearer {SECRET}\n"
-
-
-def test_auth_header_file_returns_2_when_the_temp_dir_is_unusable(prov):
-    prov.write(doc(p={"key": {"type": "plaintext", "ref": SECRET}}))
-    r = prov.cli("auth-header-file", "--", "p", extra_env={"TMPDIR": str(prov.tmp / "missing")})
-    assert (r.returncode, r.stdout) == (2, "")
-    assert r.stderr == (f"shunt: provider 'p': cannot create a temp file for the auth header in "
-                        f"{prov.tmp / 'missing'}.\n")
-    assert SECRET not in r.stderr
-
-
-def test_auth_header_file_returns_1_when_the_key_cannot_be_resolved(prov):
-    prov.write(doc(p={"key": {"type": "env", "ref": "NOPE"}}))
-    r = prov.cli("auth-header-file", "--", "p")
-    assert r.returncode == 1 and list(prov.tmp.iterdir()) == []
-
-
-def test_no_traceback_or_key_when_the_write_fails(prov, monkeypatch):
-    prov.write(doc(p={"key": {"type": "plaintext", "ref": SECRET}}))
-
-    def boom(*_a, **_k):
-        raise OSError(28, "No space left on device")
-
-    monkeypatch.setattr(providers.os, "fdopen", boom)
     with pytest.raises(providers.ProviderError) as info:
-        providers.write_auth_header_file(str(prov.file), "p", {"TMPDIR": str(prov.tmp)}, str(prov.proc_version))
-    assert info.value.code == 2
-    assert SECRET not in str(info.value)
-    assert list(prov.tmp.iterdir()) == []
+        _bearer(prov, {"BAD_KEY": bad})
+    assert str(info.value) == "provider 'p': the key contains a line break."
+    assert info.value.code == 1
+
+
+def test_bearer_key_strips_trailing_newlines_like_command_substitution(prov):
+    prov.write(doc(p={"key": {"type": "env", "ref": "K"}}))
+    assert _bearer(prov, {"K": SECRET + "\n\n"}) == SECRET
 
 
 # ---------------------------------------------------------------- bash twin constants

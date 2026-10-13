@@ -1,4 +1,5 @@
 load 'test_helper'
+load 'http_fake'
 
 bats_require_minimum_version 1.5.0
 
@@ -12,16 +13,17 @@ setup() {
   shunt_test_setup
   export SHUNT_PROVIDERS_FILE="$TEST_TMPDIR/providers.json"
   export TMPDIR="$TEST_TMPDIR/tmp"
-  export FAKE_CURL_COUNT="$TEST_TMPDIR/curl-count"
+  export FAKE_CURL_BODY="$TEST_TMPDIR/curl-body"
   export FAKE_OPENCODE_CALLS="$TEST_TMPDIR/opencode-calls"
   export ACME_KEY="sk-test-key"
   mkdir -p "$TMPDIR" "$TEST_TMPDIR/bin"
-  write_fake_curl
   write_fake_opencode
   PATH="$TEST_TMPDIR/bin:$PATH"
   source "$REPO_ROOT/scripts/lib/opencode.sh"
   unset SHUNT_TRANSPORT
-  jq -n '{version:1,providers:{acme:{transport:"http",base_url:"https://api.acme.test/v1",
+  echo '{"choices":[{"message":{"content":"from http"},"finish_reason":"stop"}]}' >"$FAKE_CURL_BODY"
+  fake_http_start
+  jq -n --arg u "$FAKE_BASE" '{version:1,providers:{acme:{transport:"http",base_url:$u,
     key:{type:"env",ref:"ACME_KEY"}}}}' >"$SHUNT_PROVIDERS_FILE"
   # p/two runs through the opencode transport (no providers.json entry).
   mkdir -p "$SHUNT_AGENTS_DIR"
@@ -30,25 +32,9 @@ setup() {
 }
 
 teardown() {
+  stop_http_server
   PATH="$ORIG_PATH"
   shunt_test_teardown
-}
-
-# write_fake_curl: answers every request with a valid chat completion "from http"
-# and counts the requests in FAKE_CURL_COUNT.
-write_fake_curl() {
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-out="" prev=""
-for a in "$@"; do
-  [ "$prev" != -o ] || out="$a"
-  prev="$a"
-done
-echo $(( $(cat "$FAKE_CURL_COUNT" 2>/dev/null || echo 0) + 1 )) >"$FAKE_CURL_COUNT"
-echo '{"choices":[{"message":{"content":"from http"},"finish_reason":"stop"}]}' >"$out"
-printf 200
-SH
-  chmod +x "$TEST_TMPDIR/bin/curl"
 }
 
 # write_fake_opencode: records one line per call in FAKE_OPENCODE_CALLS and
@@ -87,7 +73,7 @@ opencode_calls() {
   run shunt_transport_invoke shunt-bulk-reader-acme-m1 "q" "$TEST_TMPDIR/big.txt"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "too large"
-  [ ! -f "$FAKE_CURL_COUNT" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "an oversize refusal leaves the breaker untouched" {

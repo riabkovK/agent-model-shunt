@@ -41,7 +41,7 @@ shunt_write_provider() {
     >"$SHUNT_OPENCODE_CONFIG_HOME/opencode.json"
 }
 
-# start_http_server <routes-dir>
+# start_http_server <routes-dir> [extra httpserver.py args, e.g. --sent PREFIX]
 # Starts test/py/httpserver.py in the background on a free 127.0.0.1 port, serving
 # route files from <routes-dir> (see the header of that file). Sets HTTP_PORT,
 # HTTP_LOG (one JSON line per request) and HTTP_PID. Pair it with stop_http_server
@@ -51,7 +51,7 @@ start_http_server() {
   HTTP_LOG="$TEST_TMPDIR/http-log"
   rm -f "$port_file" "$HTTP_LOG"
   # 3>&- so the server does not hold bats' result pipe open after the test.
-  python3 -B "$REPO_ROOT/test/py/httpserver.py" --routes "$1" --port-file "$port_file" --log "$HTTP_LOG" \
+  python3 -B "$REPO_ROOT/test/py/httpserver.py" --routes "$1" --port-file "$port_file" --log "$HTTP_LOG" "${@:2}" \
     >/dev/null 2>&1 3>&- &
   HTTP_PID=$!
   for i in $(seq 1 200); do

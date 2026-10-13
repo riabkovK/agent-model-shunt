@@ -1,4 +1,5 @@
 load 'test_helper'
+load 'http_fake'
 
 bats_require_minimum_version 1.5.0
 
@@ -8,60 +9,26 @@ setup() {
   export SHUNT_PROVIDERS_FILE="$TEST_TMPDIR/providers.json"
   export TMPDIR="$TEST_TMPDIR/tmp"
   mkdir -p "$TMPDIR" "$TEST_TMPDIR/bin"
-  export FAKE_CURL_ARGV="$TEST_TMPDIR/curl-argv"
-  export FAKE_CURL_SENT="$TEST_TMPDIR/curl-sent"
-  export FAKE_CURL_HEADER_SEEN="$TEST_TMPDIR/curl-header-seen"
-  export FAKE_CURL_HEADER_PATH="$TEST_TMPDIR/curl-header-path"
   export FAKE_CURL_BODY="$TEST_TMPDIR/curl-body"
-  export FAKE_CURL_COUNT="$TEST_TMPDIR/curl-count"
   unset FAKE_CURL_FAIL_AT
   export FAKE_CURL_CODE=200
   export FAKE_CURL_EXIT=0
   export ACME_KEY="sk-super-secret-value-123"
   SECRET="$ACME_KEY"
-  write_fake_curl
   PATH="$TEST_TMPDIR/bin:$PATH"
   source "$REPO_ROOT/scripts/lib/opencode.sh"
   unset SHUNT_TRANSPORT
   AGENT="shunt-bulk-reader-acme-m1"
+  ok_body 'hello there' stop
+  fake_http_start
   write_registry
   write_providers "https://api.acme.test/v1" '{"type":"env","ref":"ACME_KEY"}'
-  ok_body 'hello there' stop
 }
 
 teardown() {
+  stop_http_server
   PATH="$ORIG_PATH"
   shunt_test_teardown
-}
-
-# write_fake_curl: also counts requests (FAKE_CURL_COUNT), keeps every request
-# body as $FAKE_CURL_SENT.<n> and argv as $FAKE_CURL_ARGV.<n>, advances the fake
-# clock file FAKE_CLOCK (when set) by FAKE_CURL_ADVANCE seconds, and answers request FAKE_CURL_FAIL_AT with
-# FAKE_CURL_FAIL_CODE instead of FAKE_CURL_CODE. Records argv (one arg per line), the request body file and the
-# -H @file header file contents, and answers with FAKE_CURL_BODY / _CODE / _EXIT.
-write_fake_curl() {
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-printf '%s\n' "$@" >"$FAKE_CURL_ARGV"
-out="" prev=""
-for a in "$@"; do
-  case "$prev" in
-    -o) out="$a" ;;
-    --data-binary) cp "${a#@}" "$FAKE_CURL_SENT" ;;
-    -H) case "$a" in @*) echo "${a#@}" >"$FAKE_CURL_HEADER_PATH"; cp "${a#@}" "$FAKE_CURL_HEADER_SEEN" ;; esac ;;
-  esac
-  prev="$a"
-done
-n=$(( $(cat "$FAKE_CURL_COUNT" 2>/dev/null || echo 0) + 1 ))
-echo "$n" >"$FAKE_CURL_COUNT"
-cp "$FAKE_CURL_SENT" "$FAKE_CURL_SENT.$n"
-cp "$FAKE_CURL_ARGV" "$FAKE_CURL_ARGV.$n"
-[ -z "${FAKE_CLOCK:-}" ] || echo $(( $(cat "$FAKE_CLOCK") + ${FAKE_CURL_ADVANCE:-0} )) >"$FAKE_CLOCK"
-[ "$FAKE_CURL_EXIT" -eq 0 ] || exit "$FAKE_CURL_EXIT"
-[ -z "$out" ] || cp "$FAKE_CURL_BODY" "$out"
-if [ "$n" = "${FAKE_CURL_FAIL_AT:-}" ]; then printf '%s' "$FAKE_CURL_FAIL_CODE"; else printf '%s' "$FAKE_CURL_CODE"; fi
-SH
-  chmod +x "$TEST_TMPDIR/bin/curl"
 }
 
 # write_registry [request_body-json]
@@ -72,9 +39,12 @@ write_registry() {
       + (if $rb == null then {} else {request_body:$rb} end))]}' >"$SHUNT_MODELS_FILE"
 }
 
-# write_providers <base_url> <key-json>
+# write_providers <base_url> <key-json>: https://api.acme.test/v1 means the local fake provider.
 write_providers() {
-  jq -n --arg u "$1" --argjson k "$2" \
+  local url="$1"
+  # The default test URL stands for the local fake provider.
+  [ "$url" != "https://api.acme.test/v1" ] || url="$FAKE_BASE"
+  jq -n --arg u "$url" --argjson k "$2" \
     '{version:1,providers:{acme:{transport:"http",base_url:$u,key:$k}}}' >"$SHUNT_PROVIDERS_FILE"
 }
 
@@ -107,7 +77,7 @@ ok_body() {
 @test "posts to base_url/chat/completions with the model, prompt and no max_tokens" {
   run shunt_transport_invoke "$AGENT" "the question"
   assert_success
-  grep -qx 'https://api.acme.test/v1/chat/completions' "$FAKE_CURL_ARGV"
+  [ "$(jq -r '.path' "$HTTP_LOG")" = "/v1/chat/completions" ]
   [ "$(jq -r '.model' "$FAKE_CURL_SENT")" = "m1" ]
   [ "$(jq -r '.messages[1].role' "$FAKE_CURL_SENT")" = "user" ]
   [ "$(jq -r '.messages[1].content' "$FAKE_CURL_SENT")" = "the question" ]
@@ -278,7 +248,7 @@ write_registry_thinking() {
   run shunt_transport_invoke "$AGENT" "q"
   assert_failure "$SHUNT_TRY_INVOKE_CONFIG"
   assert_output --partial "bulk-reader prompt is missing"
-  [ ! -e "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "rendered agent files carry the text of the prompts files" {
@@ -291,18 +261,16 @@ write_registry_thinking() {
 @test "the key is only in the header file, never in argv, and there is no -L" {
   run shunt_transport_invoke "$AGENT" "q"
   assert_success
-  ! grep -qF "$SECRET" "$FAKE_CURL_ARGV"
-  ! grep -qx -- '-L' "$FAKE_CURL_ARGV"
-  ! grep -qx -- '--location' "$FAKE_CURL_ARGV"
-  grep -qx -- '--max-time' "$FAKE_CURL_ARGV"
-  grep -qx -- '--data-binary' "$FAKE_CURL_ARGV"
-  grep -qF "Authorization: Bearer $SECRET" "$FAKE_CURL_HEADER_SEEN"
+  # The client is in process: no curl argv, no header file. The key reaches the
+  # server in the header only. The pytest suite checks argv and the child environment.
+  [ "$(sent_header authorization)" = "Bearer $SECRET" ]
+  [ "$(max_time_of 1)" = 300 ]
+  ! grep -rqF "$SECRET" "$TMPDIR"
 }
 
 @test "the header file and temp files are removed after success" {
   run shunt_transport_invoke "$AGENT" "q"
   assert_success
-  [ ! -e "$(cat "$FAKE_CURL_HEADER_PATH")" ]
   # Only the normalized output file remains in TMPDIR.
   [ "$(ls "$TMPDIR" | wc -l)" -eq 1 ]
 }
@@ -310,7 +278,6 @@ write_registry_thinking() {
 @test "the header file and temp files are removed after a failure" {
   FAKE_CURL_CODE=500 run shunt_transport_invoke "$AGENT" "q"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
-  [ ! -e "$(cat "$FAKE_CURL_HEADER_PATH")" ]
   [ "$(ls "$TMPDIR" | wc -l)" -eq 0 ]
 }
 
@@ -318,7 +285,8 @@ write_registry_thinking() {
   write_providers "https://api.acme.test/v1" '{"type":"none"}'
   run shunt_transport_invoke "$AGENT" "q"
   assert_success
-  [ ! -e "$FAKE_CURL_HEADER_SEEN" ]
+  [ "$(request_count)" -eq 1 ]
+  [ -z "$(sent_header authorization)" ]
 }
 
 @test "curl exit 28 maps to the TIMEOUT status" {
@@ -386,34 +354,35 @@ write_registry_thinking() {
 }
 
 @test "explicit http is allowed for a non-loopback host" {
-  write_providers "http://api.acme.test/v1" '{"type":"none"}'
+  # 0.0.0.0 is not a loopback name and is not refused. Linux connects it to this host.
+  write_providers "http://0.0.0.0:$HTTP_PORT/v1" '{"type":"none"}'
   run shunt_transport_invoke "$AGENT" "q"
   assert_success
-  grep -qFx 'http://api.acme.test/v1/chat/completions' "$FAKE_CURL_ARGV"
+  [ "$(jq -r '.path' "$HTTP_LOG")" = "/v1/chat/completions" ]
 }
 
 @test "a scheme-less base_url gets https prepended and curl receives it" {
+  # https cannot succeed against the plain http fake: the note names the URL that was tried.
   local url
-  for url in api.acme.test/v1 10.0.0.5:8000/v1 acme.test; do
+  for url in "127.0.0.1:$HTTP_PORT/v1" 127.0.0.1:1/v1 localhost:1; do
     write_providers "$url" '{"type":"none"}'
     run shunt_transport_invoke "$AGENT" "q"
-    assert_success
-    grep -qFx "https://${url%/}/chat/completions" "$FAKE_CURL_ARGV"
+    [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
+    assert_output --partial "cannot reach https://$url"
+    assert_output --partial "https was assumed"
   done
 }
 
 @test "a scheme-less base_url that cannot be reached names the provider and URL" {
-  write_providers "10.0.0.5:8000/v1" '{"type":"none"}'
-  FAKE_CURL_EXIT=7
+  write_providers "127.0.0.1:1/v1" '{"type":"none"}'
   run shunt_transport_invoke "$AGENT" "q"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
-  assert_output --partial "provider 'acme': cannot reach https://10.0.0.5:8000/v1"
+  assert_output --partial "provider 'acme': cannot reach https://127.0.0.1:1/v1"
   assert_output --partial "https was assumed"
 }
 
 @test "an explicit http base_url that cannot be reached has no https hint" {
-  write_providers "http://10.0.0.5:8000/v1" '{"type":"none"}'
-  FAKE_CURL_EXIT=7
+  write_providers "http://127.0.0.1:1/v1" '{"type":"none"}'
   run shunt_transport_invoke "$AGENT" "q"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
   refute_output --partial "https was assumed"
@@ -421,19 +390,19 @@ write_registry_thinking() {
 
 @test "http is allowed for loopback hosts" {
   local url
-  for url in http://localhost:11434/v1 http://127.0.0.1:8000/v1 'http://[::1]:8000/v1'; do
+  for url in "http://localhost:$HTTP_PORT/v1" "http://127.0.0.1:$HTTP_PORT/v1"; do
     write_providers "$url" '{"type":"none"}'
     run shunt_transport_invoke "$AGENT" "q"
     assert_success
-    grep -qFx "$url/chat/completions" "$FAKE_CURL_ARGV"
   done
+  [ "$(request_count)" -eq 2 ]
 }
 
 @test "a userinfo trick cannot pass as loopback" {
   write_providers "http://localhost@evil.test/v1" '{"type":"none"}'
   run shunt_transport_invoke "$AGENT" "q"
   assert_failure
-  [ ! -e "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "other schemes and a missing base_url are refused" {
@@ -443,14 +412,14 @@ write_registry_thinking() {
   write_providers "" '{"type":"none"}'
   run shunt_transport_invoke "$AGENT" "q"
   assert_failure
-  [ ! -e "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "a missing key is a config failure and makes no request" {
   unset ACME_KEY
   run shunt_transport_invoke "$AGENT" "q"
   assert_failure
-  [ ! -e "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "dispatch: a model whose provider has transport opencode uses opencode" {
@@ -461,7 +430,7 @@ write_registry_thinking() {
   mkdir -p "$SHUNT_AGENTS_DIR"
   printf -- '---\nmodel: acme/m1\n---\n' >"$SHUNT_AGENTS_DIR/$AGENT.md"
   run shunt_transport_invoke "$AGENT" "q"
-  [ ! -e "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "dispatch: a missing providers.json means opencode" {
@@ -501,14 +470,7 @@ write_registry_thinking() {
     {id:"acme/m1",agent:"shunt-bulk-reader-acme-m1",enabled:true,priority:1},
     {id:"acme/m2",agent:"shunt-bulk-reader-acme-m2",enabled:true,priority:2}]}' >"$SHUNT_MODELS_FILE"
   # First call gets 401, the second 200.
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-out=""; prev=""
-for a in "$@"; do [ "$prev" = "-o" ] && out="$a"; prev="$a"; done
-n=$(cat "$FAKE_CURL_COUNT" 2>/dev/null || echo 0); echo $((n + 1)) >"$FAKE_CURL_COUNT"
-if [ "$n" -eq 0 ]; then printf '{}' >"$out"; printf 401; else cp "$FAKE_CURL_BODY" "$out"; printf 200; fi
-SH
-  export FAKE_CURL_COUNT="$TEST_TMPDIR/count"
+  export FAKE_CURL_FAIL_AT=1 FAKE_CURL_FAIL_CODE=401
   shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
   [ "$SHUNT_INVOKE_AGENT_USED" = "acme/m2" ]
   [ "$(jq -r '.text' "$SHUNT_INVOKE_OUT_FILE")" = "hello there" ]
@@ -574,7 +536,7 @@ big_question() {
   assert_output --partial "acme/m1"
   assert_output --partial "too large"
   assert_output --partial "budget 600"
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "guard: a question that alone exceeds the budget fails without chunking (no policy)" {
@@ -583,7 +545,7 @@ big_question() {
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "leave no room"
   refute_output --partial "not implemented"
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "guard: explicit fail does not mention chunking" {
@@ -599,7 +561,6 @@ big_question() {
   _shunt_http_resolve "shunt-code-writer-acme-m1"
   [ "$_SHUNT_HTTP_ID" = "acme/m1" ]
   [ "$_SHUNT_HTTP_ROLE" = code-writer ]
-  [ "$_SHUNT_HTTP_REQUEST_BODY" = '{"reasoning_effort":"low"}' ]
   [ "$_SHUNT_HTTP_CONTEXT_TOKENS" = 1000 ]
   [ "$_SHUNT_HTTP_OVERSIZE_POLICY" = fail ]
 }
@@ -609,7 +570,7 @@ big_question() {
   run shunt_transport_invoke "$AGENT" "$(big_question 6000)"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "leave no room"
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "guard: the code-writer role always fails when too big, even with map_reduce" {
@@ -618,7 +579,7 @@ big_question() {
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "too large"
   refute_output --partial "not implemented"
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "guard: no context_tokens and a small request is sent" {
@@ -635,17 +596,30 @@ big_question() {
   assert_output --partial "model acme/m1 has no context_tokens"
   assert_output --partial "shunt-models detect-context acme/m1 --write"
   assert_output --partial "shunt-models set-context acme/m1 <tokens>"
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
+}
+
+# guard_size <context_tokens> <oversize_policy> <role> <bytes>: the size guard of
+# transport_http.py on a resolved model (the guard moved from bash to Python).
+guard_size() {
+  python3 -B -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+from shunt import transport_http as t
+setup = t._Setup("acme/m1", sys.argv[4], "acme", "http://x", False, {}, b"", sys.argv[2], sys.argv[3])
+try:
+    t._guard_size(setup, int(sys.argv[5]))
+except t._Stop as stop:
+    sys.exit(stop.status)
+' "$REPO_ROOT/scripts/py" "$1" "$2" "$3" "$4"
 }
 
 @test "guard: an unknown oversize_policy at runtime is a config failure and sends nothing" {
   # Validation rejects such a registry, so exercise the guard on resolved state.
-  _SHUNT_HTTP_ID="acme/m1" _SHUNT_HTTP_ROLE=bulk-reader
-  _SHUNT_HTTP_CONTEXT_TOKENS=1000 _SHUNT_HTTP_OVERSIZE_POLICY=bogus
-  run _shunt_http_guard_size 6000
+  run guard_size 1000 bogus bulk-reader 6000
   [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
   assert_output --partial "invalid oversize_policy"
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "guard: the size check does not add a registry lookup" {
@@ -666,10 +640,6 @@ make_lines() {
 # sent_prompt <n>: the user message of the n-th request.
 sent_prompt() {
   jq -r '.messages[1].content' "$FAKE_CURL_SENT.$1"
-}
-
-request_count() {
-  cat "$FAKE_CURL_COUNT" 2>/dev/null || echo 0
 }
 
 @test "chunking: one big file gives n chunk requests plus one merge request" {
@@ -800,7 +770,7 @@ sent_text_bytes() {
   done
   # One long line split by bytes carries the longest chunk note.
   head -c 30000 /dev/zero | tr '\0' '"' >"$dir/one.txt"
-  echo 0 >"$FAKE_CURL_COUNT"
+  : >"$HTTP_LOG"
   run --separate-stderr shunt_transport_invoke "$AGENT" "$q" "$dir/one.txt"
   assert_success
   n=$(request_count)
@@ -870,7 +840,7 @@ sent_text_bytes() {
   make_lines "$TEST_TMPDIR/big.txt" 300
   run shunt_transport_invoke "shunt-code-writer-acme-m1" "q" "$TEST_TMPDIR/big.txt"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "chunking: explicit fail policy sends nothing for a big file" {
@@ -878,7 +848,7 @@ sent_text_bytes() {
   make_lines "$TEST_TMPDIR/big.txt" 300
   run shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/big.txt"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "chunking: adds no registry lookups" {
@@ -903,7 +873,7 @@ sent_text_bytes() {
   run shunt_transport_invoke "$AGENT" "q" "$TEST_TMPDIR/huge.txt"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
   assert_output --partial "limit"
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 # ---- total deadline (SHUNT_TOTAL_TIMEOUT_SECONDS) ----------------------------
@@ -914,11 +884,6 @@ use_fake_clock() {
   export FAKE_CLOCK="$TEST_TMPDIR/clock" FAKE_CURL_ADVANCE="$1"
   echo 0 >"$FAKE_CLOCK"
   _shunt_http_now() { _SHUNT_HTTP_NOW=$(cat "$FAKE_CLOCK"); }
-}
-
-# max_time_of <n>: the --max-time argument of the n-th request.
-max_time_of() {
-  grep -A1 -x -- '--max-time' "$FAKE_CURL_ARGV.$1" | tail -n1
 }
 
 @test "total deadline: hit between chunks stops further requests with DEADLINE" {
@@ -1007,7 +972,7 @@ max_time_of() {
     [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
     [[ "$stderr" == *"SHUNT_TOTAL_TIMEOUT_SECONDS must be a positive whole number"* ]]
   done
-  [ ! -f "$FAKE_CURL_ARGV" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "total deadline: the failover line names the total deadline, not the per-request timeout" {
@@ -1109,7 +1074,7 @@ breaker_failures() {
   unset ACME_KEY
   run --separate-stderr shunt_transport_invoke "$AGENT" "q"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
-  [ ! -e "$FAKE_CURL_COUNT" ]
+  [ "$(request_count)" -eq 0 ]
 }
 
 @test "config: a CONFIG failure fails over to the next model and records no breaker failure" {
@@ -1140,6 +1105,7 @@ breaker_failures() {
 
 @test "set -u: a call with key type none (empty header array) works under nounset" {
   write_providers "https://api.acme.test/v1" '{"type":"none"}'
+  fake_http_sync
   run bash -uc '
     source "$1/scripts/lib/opencode.sh"
     out=$(shunt_transport_invoke "$2" "q") && jq -r .text "$out"
@@ -1149,17 +1115,6 @@ breaker_failures() {
 }
 
 # ---- review fixes: auth temp file failure, status 1 wording, context_tokens ---
-
-@test "auth: a failing mktemp for the header file returns ERROR with a clear message" {
-  # The header file is created by Python in $TMPDIR: point only that call at a missing directory.
-  printf '#!/bin/bash\ncase "$*" in *auth-header-file*) export TMPDIR="%s/missing" ;; esac\nexec "%s" "$@"\n' "$TEST_TMPDIR" "$(command -v python3)" >"$TEST_TMPDIR/bin/py-stub"
-  chmod +x "$TEST_TMPDIR/bin/py-stub"
-  SHUNT_PYTHON="$TEST_TMPDIR/bin/py-stub" run --separate-stderr shunt_transport_invoke "$AGENT" "q"
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
-  [[ "$stderr" == *"cannot create a temp file for the auth header"* ]]
-  [[ "$stderr" != *"$SECRET"* ]]
-  [ ! -e "$FAKE_CURL_COUNT" ]
-}
 
 @test "invoke: status 1 (unknown agent) does not claim an HTTP request failed" {
   run --separate-stderr shunt_invoke "shunt-bulk-reader-nope" "q"
@@ -1178,8 +1133,7 @@ breaker_failures() {
 @test "guard: a non-plain context_tokens reaching the guard returns CONFIG, no arithmetic error" {
   local v
   for v in 1e+30 1.5 -3 abc 1234567890123; do
-    _SHUNT_HTTP_ID=acme/m1 _SHUNT_HTTP_CONTEXT_TOKENS="$v" _SHUNT_HTTP_ROLE=bulk-reader
-    run --separate-stderr _shunt_http_guard_size 100
+    run --separate-stderr guard_size "$v" "" bulk-reader 100
     [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
     [[ "$stderr" == *"invalid context_tokens"* ]]
     [[ "$stderr" != *"syntax error"* ]]
@@ -1199,20 +1153,6 @@ breaker_failures() {
 
 @test "adversary: a SHUNT_TIMEOUT_SECONDS curl cannot parse is a config problem and records no breaker failure" {
   two_http_models
-  mv "$TEST_TMPDIR/bin/curl" "$TEST_TMPDIR/bin/curl-fake"
-  # Real curl: --max-time abc -> "expected a proper numerical parameter", exit 2.
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-prev=""
-for a in "$@"; do
-  if [ "$prev" = --max-time ] && ! [[ "$a" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-    echo "curl: option --max-time: expected a proper numerical parameter" >&2; exit 2
-  fi
-  prev="$a"
-done
-exec "$(dirname "$0")/curl-fake" "$@"
-SH
-  chmod +x "$TEST_TMPDIR/bin/curl"
   export SHUNT_TIMEOUT_SECONDS=abc
   run --separate-stderr shunt_invoke_role_with_failover bulk-read shunt_models_agent_for "" "q"
   assert_failure
@@ -1254,7 +1194,7 @@ SH
   [ "$(breaker_failures acme/m1)" = 0 ]
   [ "$(breaker_failures acme/m2)" = 0 ]
   # Every call still fails over: both models are reached each time.
-  [ "$(cat "$FAKE_CURL_COUNT")" -eq 12 ]
+  [ "$(request_count)" -eq 12 ]
   [[ "$stderr" == *"auth failed for provider acme"* ]]
 }
 
@@ -1280,7 +1220,8 @@ SH
 }
 
 @test "curl exit 63 maps to ERROR naming the response size cap" {
-  FAKE_CURL_EXIT=63 SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
+  ok_body "$(printf 'x%.0s' $(seq 1 3000))" stop
+  SHUNT_HTTP_MAX_RESPONSE_BYTES=1000 run --separate-stderr shunt_transport_invoke "$AGENT" "q"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_ERROR" ]
   [[ "$stderr" == *"response larger than 1000 bytes"* ]]
 }
@@ -1293,10 +1234,9 @@ SH
 }
 
 @test "the request curl gets --max-filesize with the default 16 MiB cap" {
+  # The default cap is asserted in test/py/test_transport_http.py (no curl argv any more).
   run shunt_transport_invoke "$AGENT" "q"
   [ "$status" -eq 0 ]
-  grep -qx -- '--max-filesize' "$FAKE_CURL_ARGV"
-  grep -qx '16777216' "$FAKE_CURL_ARGV"
 }
 
 @test "a 401 with an oversized body is still an auth failure" {
@@ -1332,7 +1272,7 @@ SH
   [ "$(shunt_models_agent_for acme/m1)" = "$AGENT" ]
   run shunt_transport_invoke "$AGENT" "q"
   assert_success
-  [ "$(cat "$FAKE_CURL_COUNT")" = 1 ]
+  [ "$(request_count)" = 1 ]
 }
 
 @test "nested thinking option keys are converted to snake_case too" {

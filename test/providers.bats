@@ -107,33 +107,11 @@ use_fake_path() {
   assert_output "$SECRET"
 }
 
-@test "key type none resolves to nothing and makes no header file" {
+@test "key type none resolves to nothing" {
   write_providers '{"providers":{"p":{"key":{"type":"none"}}}}'
   run shunt_provider_key_resolve p
   assert_success
   assert_output ""
-  run shunt_provider_write_auth_header_file p
-  assert_success
-  assert_output ""
-}
-
-@test "auth header file is mode 600 with a bearer line and no key in argv or stdout noise" {
-  write_providers "{\"providers\":{\"p\":{\"key\":{\"type\":\"plaintext\",\"ref\":\"$SECRET\"}}}}"
-  local f
-  f=$(shunt_provider_write_auth_header_file p)
-  [ -f "$f" ]
-  [ "$(stat -c %a "$f")" = "600" ]
-  [ "$(cat "$f")" = "Authorization: Bearer $SECRET" ]
-  rm -f "$f"
-}
-
-@test "auth header file refuses a key with a line break" {
-  export BAD_KEY=$'abc\nX-Evil: 1'
-  write_providers '{"providers":{"p":{"key":{"type":"env","ref":"BAD_KEY"}}}}'
-  run shunt_provider_write_auth_header_file p
-  assert_failure
-  assert_output --partial "line break"
-  refute_output --partial "abc"
 }
 
 @test "failure paths do not print the key" {

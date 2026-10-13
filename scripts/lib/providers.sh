@@ -151,24 +151,6 @@ shunt_provider_key_resolve() {
   _shunt_providers_py key-resolve -- "$1"
 }
 
-# shunt_provider_write_auth_header_file <provider> [<outvar>]
-# Writes `Authorization: Bearer <key>` to a 0600 temp file for curl -H @file
-# and prints its path. The caller removes it. Type none creates no file and
-# prints nothing (no Authorization header). A key with a line break is refused
-# so it cannot smuggle extra headers. Returns 1 when the key cannot be resolved
-# or is refused, 2 when the temp file cannot be created or written (an
-# environment failure, not a config one). With <outvar> the path is stored in
-# that variable instead of being printed. Call it directly then, not in $(...).
-# The file is created by Python (O_EXCL, 0600) and its path reaches the variable
-# when Python exits, so a signal in that short window can leave the file behind.
-shunt_provider_write_auth_header_file() {
-  local provider="$1" outvar="${2:-}" file rc=0
-  file=$(_shunt_providers_py auth-header-file -- "$provider") || rc=$?
-  [ "$rc" -eq 0 ] || return "$rc"
-  [ -n "$file" ] || return 0
-  if [ -n "$outvar" ]; then printf -v "$outvar" '%s' "$file"; else echo "$file"; fi
-}
-
 # _shunt_providers_write_py <subcommand> [args...]
 # Runs a providers-write subcommand with the paths this file resolved. The lock
 # timeout is passed too.

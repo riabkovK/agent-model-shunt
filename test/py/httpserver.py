@@ -13,7 +13,8 @@ Two ways to use it:
   to wait before answering, .drop (present) closes the connection without any answer,
   .chunked (present) sends the body without a Content-Length. No file means 404.
   The port is written to FILE once the server listens, and each request is
-  appended to the log as one JSON line.
+  appended to the log as one JSON line. `--sent PREFIX` also keeps the raw body of
+  request n in PREFIX.n (and of the latest one in PREFIX).
 
 The server binds 127.0.0.1 on a free port, answers on HTTP/1.1 and closes every
 connection after the answer.
@@ -199,12 +200,19 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--routes", required=True, type=Path)
     parser.add_argument("--port-file", required=True, type=Path)
     parser.add_argument("--log", required=True, type=Path)
+    parser.add_argument("--sent", type=Path, help="also keep each request body in SENT.<n> and the last in SENT")
     args = parser.parse_args(argv)
     log_lock = threading.Lock()
 
     def on_request(item: Recorded) -> None:
-        with log_lock, args.log.open("a") as handle:
-            handle.write(item.as_json() + "\n")
+        with log_lock:
+            # Numbered by the log, so a test that empties the log starts again at 1.
+            count = sum(1 for _ in args.log.open()) + 1 if args.log.exists() else 1
+            with args.log.open("a") as handle:
+                handle.write(item.as_json() + "\n")
+            if args.sent:
+                args.sent.with_name(f"{args.sent.name}.{count}").write_bytes(item.body)
+                args.sent.write_bytes(item.body)
 
     server = _Server(_FileRoutes(args.routes).resolve, on_request)
     tmp = args.port_file.with_name(args.port_file.name + ".tmp")

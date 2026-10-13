@@ -1,9 +1,10 @@
 load 'test_helper'
+load 'http_fake'
 
 # Adversarial reproductions for the http transport's chunk planning (UTF-8 safe
 # split, measured per-file overhead, SHUNT_HTTP_MAX_CHUNKS) and its total
-# deadline (SHUNT_TOTAL_TIMEOUT_SECONDS). Same fake curl and fake clock as
-# transport-http.bats. A test that reproduces a break asserts the correct
+# deadline (SHUNT_TOTAL_TIMEOUT_SECONDS). Same fake provider (http_fake.bash) and
+# fake clock as transport-http.bats. A test that reproduces a break asserts the correct
 # behaviour, so it fails until the break is fixed.
 
 bats_require_minimum_version 1.5.0
@@ -14,19 +15,16 @@ setup() {
   export SHUNT_PROVIDERS_FILE="$TEST_TMPDIR/providers.json"
   export TMPDIR="$TEST_TMPDIR/tmp"
   mkdir -p "$TMPDIR" "$TEST_TMPDIR/bin"
-  export FAKE_CURL_ARGV="$TEST_TMPDIR/curl-argv"
-  export FAKE_CURL_SENT="$TEST_TMPDIR/curl-sent"
-  export FAKE_CURL_COUNT="$TEST_TMPDIR/curl-count"
   export FAKE_CURL_BODY="$TEST_TMPDIR/curl-body"
   export FAKE_CURL_CODE=200 FAKE_CURL_EXIT=0
   export ACME_KEY="sk-test-key"
-  unset SHUNT_TOTAL_TIMEOUT_SECONDS FAKE_CLOCK FAKE_CURL_ADVANCE
-  write_fake_curl
+  unset SHUNT_TOTAL_TIMEOUT_SECONDS FAKE_CLOCK FAKE_CURL_ADVANCE FAKE_CURL_FAIL_AT
   PATH="$TEST_TMPDIR/bin:$PATH"
   source "$REPO_ROOT/scripts/lib/opencode.sh"
   unset SHUNT_TRANSPORT
   AGENT="shunt-bulk-reader-acme-m1"
-  jq -n '{version:1,providers:{acme:{transport:"http",base_url:"https://api.acme.test/v1",
+  fake_http_start
+  jq -n --arg u "$FAKE_BASE" '{version:1,providers:{acme:{transport:"http",base_url:$u,
     key:{type:"env",ref:"ACME_KEY"}}}}' >"$SHUNT_PROVIDERS_FILE"
   write_sized_registry 6000
   jq -n '{choices:[{message:{role:"assistant",content:"ok"},finish_reason:"stop"}],
@@ -34,30 +32,9 @@ setup() {
 }
 
 teardown() {
+  stop_http_server
   PATH="$ORIG_PATH"
   shunt_test_teardown
-}
-
-write_fake_curl() {
-  cat >"$TEST_TMPDIR/bin/curl" <<'SH'
-#!/bin/bash
-out="" prev=""
-n=$(( $(cat "$FAKE_CURL_COUNT" 2>/dev/null || echo 0) + 1 ))
-echo "$n" >"$FAKE_CURL_COUNT"
-printf '%s\n' "$@" >"$FAKE_CURL_ARGV.$n"
-for a in "$@"; do
-  case "$prev" in
-    -o) out="$a" ;;
-    --data-binary) cp "${a#@}" "$FAKE_CURL_SENT.$n" ;;
-  esac
-  prev="$a"
-done
-[ -z "${FAKE_CLOCK:-}" ] || echo $(( $(cat "$FAKE_CLOCK") + ${FAKE_CURL_ADVANCE:-0} )) >"$FAKE_CLOCK"
-[ "$FAKE_CURL_EXIT" -eq 0 ] || exit "$FAKE_CURL_EXIT"
-[ -z "$out" ] || cp "$FAKE_CURL_BODY" "$out"
-printf '%s' "$FAKE_CURL_CODE"
-SH
-  chmod +x "$TEST_TMPDIR/bin/curl"
 }
 
 # write_sized_registry <context_tokens> [second-model-too]
@@ -69,10 +46,6 @@ write_sized_registry() {
         [{id:"acme/m2",agent:"shunt-bulk-reader-acme-m2",enabled:true,context_tokens:$ct}] end))}' \
     >"$SHUNT_MODELS_FILE"
 }
-
-request_count() { cat "$FAKE_CURL_COUNT" 2>/dev/null || echo 0; }
-
-max_time_of() { grep -A1 -x -- '--max-time' "$FAKE_CURL_ARGV.$1" | tail -n1; }
 
 # sent_text_bytes <n>: decoded system + user bytes of request n (what the guard measures).
 sent_text_bytes() { jq -j '.messages[0].content + .messages[1].content' "$FAKE_CURL_SENT.$1" | wc -c; }
@@ -248,7 +221,7 @@ rebuild_from_plan() {
   run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$f"
   assert_success
   [ "$(request_count)" -eq 4 ]
-  rm -f "$FAKE_CURL_COUNT"
+  : >"$HTTP_LOG"
   repeat $(( 3 * room + 1 )) a >"$f"
   run --separate-stderr shunt_transport_invoke "$AGENT" "q" "$f"
   [ "$status" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
