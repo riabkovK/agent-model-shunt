@@ -1,5 +1,5 @@
 #!/bin/bash
-# Summarizes scripts/lib/opencode.sh's debug usage log (SHUNT_DEBUG_LOG_PATH,
+# Summarizes the debug usage log (SHUNT_DEBUG_LOG_PATH,
 # default ~/.cache/agent-model-shunt/usage.jsonl): every real (non-benchmark)
 # scripts/bulk-read and scripts/code-write call made while SHUNT_DEBUG_LOG was
 # enabled. Entries without a `tool` field predate code-write and are bulk-read.

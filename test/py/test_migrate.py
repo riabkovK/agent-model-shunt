@@ -525,3 +525,102 @@ def test_the_plan_escapes_control_characters(capsys):
     assert out.count("\n") == 2
     assert not any(ch in out.replace("\n", "") for ch in "\x1b\x9b\r\x07")
     assert "a\\x0aprovider x: forged\\x1b[31m" in out and "bad\\x9bthing" in out and "m\\x0d\\x07id" in out
+
+
+# ---------------------------------------------------------------- cases moved from migrate.bats
+
+def test_an_env_placeholder_key_becomes_an_env_key_with_that_ref(mig):
+    mig.write_opencode("{env:MY_ACME_TOKEN}")
+
+    code, _ = mig.run("--apply", "--yes")
+
+    provider = mig.pdoc()["providers"]["acme"]
+    assert code == 0 and (provider["transport"], provider["key"]) == ("http", {"type": "env", "ref": "MY_ACME_TOKEN"})
+
+
+def test_reasoning_effort_in_the_registry_thinking_options_is_converted(mig):
+    mig.write_models([{"id": "acme/m1", "agent": "a1", "enabled": True, "thinking": True,
+                       "thinking_options": {"reasoningEffort": "high"}}])
+    mig.write_opencode(None)
+
+    mig.run("--apply", "--yes")
+
+    assert mig.mdoc()["models"][0]["request_body"] == {"reasoning_effort": "high"}
+
+
+def test_an_auth_json_entry_that_is_not_an_api_key_does_not_count(mig, isolated_env):
+    auth = isolated_env["XDG_DATA_HOME"] / "opencode" / "auth.json"
+    auth.parent.mkdir()
+    auth.write_text(json.dumps({"acme": {"type": "oauth", "access": "x"}}))
+    mig.write_opencode(None)
+
+    mig.run("--apply", "--yes")
+
+    assert mig.pdoc()["providers"]["acme"]["key"] == {"type": "none"}
+
+
+def test_a_whitespace_only_auth_json_key_is_not_imported(mig, isolated_env):
+    auth = isolated_env["XDG_DATA_HOME"] / "opencode" / "auth.json"
+    auth.parent.mkdir()
+    auth.write_text(json.dumps({"acme": {"type": "api", "key": "   "}}))
+    mig.write_opencode(None)
+
+    mig.run("--apply", "--yes", "--key-storage", "plaintext")
+
+    assert mig.pdoc()["providers"]["acme"]["key"] == {"type": "none"}
+
+
+def test_context_detection_covers_every_model_of_a_provider(mig, capsys):
+    mig.write_models([{"id": "acme/m1", "agent": "a1", "enabled": True}, {"id": "acme/m2", "agent": "a2", "enabled": True}])
+    mig.write_opencode(None)
+    mig.server.script("/v1/models/m1", body={"context_length": 1111})
+    mig.server.script("/v1/models/m2", body={"context_length": 2222})
+
+    mig.run()
+
+    out = capsys.readouterr().out
+    assert "1111 (detected" in out and "2222 (detected" in out
+
+
+def test_a_default_env_ref_is_not_handed_out_when_a_later_env_placeholder_uses_it(mig):
+    doc = {"provider": {"a": {"options": {"baseURL": "https://a.test/v1", "apiKey": SECRET}, "models": {"m": {}}},
+                        "b": {"options": {"baseURL": "https://b.test/v1", "apiKey": "{env:SHUNT_A_KEY}"},
+                              "models": {"m": {}}}}}
+    (mig.oc / "opencode.json").write_text(json.dumps(doc))
+    mig.write_models([{"id": "a/m", "agent": "a1", "enabled": True}, {"id": "b/m", "agent": "a2", "enabled": True}])
+
+    code, _ = mig.run("--apply", "--yes", "--key-storage", "env")
+
+    providers = mig.pdoc()["providers"]
+    assert code == 0 and providers["b"]["key"]["ref"] == "SHUNT_A_KEY"
+    assert providers["a"]["key"]["ref"] != "SHUNT_A_KEY"
+
+
+def test_a_non_string_api_key_is_not_mentioned_for_a_provider_already_on_http(mig, capsys):
+    mig.write_opencode(123, base="https://api.acme.test/v1")
+    mig.providers.write_text(json.dumps({"version": 1, "providers": {"acme": {
+        "transport": "http", "base_url": "https://api.acme.test/v1", "key": {"type": "none"}}}}))
+
+    code, _ = mig.run()
+
+    out = capsys.readouterr().out
+    assert code == 0 and "already on the http transport" in out and "not imported as a key" not in out
+
+
+@pytest.mark.parametrize("bad", [123, {}])
+def test_a_non_string_api_key_note_for_a_skipped_provider_has_no_doubled_period(mig, capsys, bad):
+    doc = {"provider": {"bad name": {"options": {"baseURL": "https://api.acme.test/v1", "apiKey": bad},
+                                     "models": {"m1": {}}}}}
+    (mig.oc / "opencode.json").write_text(json.dumps(doc))
+    mig.write_models([{"id": "bad name/m1", "agent": "a1", "enabled": True}])
+
+    code, _ = mig.run()
+
+    out = capsys.readouterr().out
+    assert code == 0 and "stays on opencode. the apiKey in opencode.json is not a string" in out
+    assert ".." not in out and ". ." not in out
+
+
+def test_key_storage_matches_whole_words_only(mig):
+    code, message = mig.run("--key-storage", "env plaintext")
+    assert code == 1 and message

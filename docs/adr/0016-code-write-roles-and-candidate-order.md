@@ -57,7 +57,7 @@ would simply be absent from every registry written before it exists.
 
 - Adding `code-write` support required no new registry file, no new
   enable/disable/remove commands, and no second failover implementation:
-  `shunt_invoke_with_failover` and `scripts/lib/breaker.sh` are reused
+  `shunt_invoke_with_failover` and `scripts/py/shunt/breaker.py` are reused
   as-is, parameterized by role.
 - A user who wants asymmetric priority between reading and writing has to
   split their model list by `roles` rather than express it directly; this

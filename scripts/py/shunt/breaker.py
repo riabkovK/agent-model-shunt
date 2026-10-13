@@ -1,6 +1,6 @@
 """Circuit breaker state and config for delegate models.
 
-Port of scripts/lib/breaker.sh (state) and the writes of scripts/shunt-breaker-config.
+Replaces the former breaker.sh. scripts/shunt-breaker-config (breaker_config_cli.py) drives the config writes.
 The state file (SHUNT_BREAKER_STATE_FILE) holds {"version": 1, "models": {key: {"failures": N,
 "cooldown_until": EPOCH}}}. Reads never lock and never touch the file: a missing, corrupt
 or oddly shaped file is a closed breaker. Every read-modify-write (record, write, clear,
@@ -31,7 +31,7 @@ from .models import ShuntError
 DEFAULT_THRESHOLD = 3
 DEFAULT_COOLDOWN = 300
 DEFAULT_UNREACHABLE_COOLDOWN = 120  # a host that did not even connect is probed again sooner
-DISABLED_THRESHOLD = 999999999  # keep in sync with SHUNT_BREAKER_DISABLED_THRESHOLD in scripts/shunt-breaker-config
+DISABLED_THRESHOLD = 999999999  # also read by breaker_config_cli.show to print the disabled status
 MAX_DIGITS = 15  # keeps every number inside a 64-bit signed integer, like _shunt_breaker_uint_or
 _UINT = re.compile(r"[0-9]{1,%d}" % MAX_DIGITS)
 _LIMIT = 10**MAX_DIGITS
@@ -242,12 +242,25 @@ def _update_config(environ: Mapping[str, str], field: str, value: int, other: st
         write_json_atomic(path, new)
 
 
-# ---------------------------------------------------------------- cli
-
 def _uint_arg(text: str, what: str) -> int:
     if not _UINT.fullmatch(text):
         raise ShuntError(f"{what} must be a plain non-negative integer, got '{text}'.")
     return int(text)
+
+
+def set_threshold(environ: Mapping[str, str], text: str) -> None:
+    _update_config(environ, "threshold", _uint_arg(text, "threshold"), "cooldown_seconds", DEFAULT_COOLDOWN)
+
+
+def set_cooldown(environ: Mapping[str, str], text: str) -> None:
+    _update_config(environ, "cooldown_seconds", _uint_arg(text, "cooldown"), "threshold", DEFAULT_THRESHOLD)
+
+
+def disable(environ: Mapping[str, str]) -> None:
+    _update_config(environ, "threshold", DISABLED_THRESHOLD, "cooldown_seconds", DEFAULT_COOLDOWN)
+
+
+# ---------------------------------------------------------------- cli
 
 
 def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
@@ -269,13 +282,13 @@ def _dispatch(args: argparse.Namespace, environ: Mapping[str, str]) -> int:
     elif cmd == "clear-state":
         clear_state(environ, args.id)
     elif cmd == "config-threshold":
-        _update_config(environ, "threshold", _uint_arg(args.value, "threshold"), "cooldown_seconds", DEFAULT_COOLDOWN)
+        set_threshold(environ, args.value)
     elif cmd == "config-cooldown":
-        _update_config(environ, "cooldown_seconds", _uint_arg(args.value, "cooldown"), "threshold", DEFAULT_THRESHOLD)
+        set_cooldown(environ, args.value)
     elif cmd == "limits":
         print(*limits(environ))
     elif cmd == "config-disable":
-        _update_config(environ, "threshold", DISABLED_THRESHOLD, "cooldown_seconds", DEFAULT_COOLDOWN)
+        disable(environ)
     return 0
 
 

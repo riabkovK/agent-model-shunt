@@ -483,7 +483,7 @@ scripts/shunt-breaker-config reset                  # deletes the config file, r
   pre-validating in the skill.
 - "Turn the breaker off" maps to `disable`, not a new flag, it's an
   extreme-value preset on the same two-field schema, not a new state in
-  the JSON or in `scripts/lib/breaker.sh`'s branching logic.
+  the JSON or in `scripts/py/shunt/breaker.py`'s branching logic.
 
 ## Editing the code-write self-fix loop's retry count
 

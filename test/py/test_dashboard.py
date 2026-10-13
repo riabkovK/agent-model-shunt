@@ -115,3 +115,22 @@ def test_the_breaker_status_follows_the_config_and_open_state(cfg, tmp_path):
 def test_a_registry_without_a_bulk_read_model_is_flagged(cfg):
     cfg.models({"id": "acme/m1", "roles": ["code-write"]})
     assert "issue no-bulk-read-model -" in cfg.report()
+
+
+def test_an_empty_registry_file_is_ok_but_the_setup_stays_empty(cfg):
+    cfg.models()
+    lines = cfg.report()
+    assert "registry: ok" in lines
+    assert lines[-1] == "setup: empty"
+
+
+def test_a_provider_without_any_model_is_flagged(cfg):
+    cfg.providers(acme=HTTP)
+    lines = cfg.report(ACME_KEY="k")
+    assert "issue no-models -" in lines
+    assert lines[-1] == "setup: incomplete"
+
+
+def test_thinking_counts_as_on_only_for_boolean_true(cfg):
+    cfg.models({"id": "oc/m2", "agent": "a2", "enabled": True, "thinking": "on", "roles": ["bulk-read"]})
+    assert any(line.startswith("model oc/m2 ") and "thinking=off" in line for line in cfg.report())

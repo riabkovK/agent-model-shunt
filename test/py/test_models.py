@@ -1,6 +1,5 @@
 import json
 import os
-import re
 import sys
 import stat
 import subprocess
@@ -40,12 +39,6 @@ def reg(tmp_path):
     (r.prompts / "bulk-reader.md").write_text("BULK PROMPT\n")
     (r.prompts / "code-writer.md").write_text("WRITER PROMPT\n")
     return r
-
-
-def test_roles_match_the_bash_array():
-    text = (REPO_ROOT / "scripts" / "lib" / "models.sh").read_text()
-    bash_roles = re.search(r"^SHUNT_MODELS_ROLES=\((.*?)\)", text, re.M).group(1).split()
-    assert tuple(bash_roles) == models.ROLES
 
 
 # ---- slug
@@ -146,7 +139,7 @@ def test_validate_agent_names_accepted(reg):
     assert _reason(reg, [{"id": "p/m", "agent": "-"}]) is None  # "-" means derived
 
 
-@pytest.mark.parametrize("tokens", ["0", "-5", '"100"', "1.5", "1e12", "null", "true"])
+@pytest.mark.parametrize("tokens", ["0", "-5", '"100"', "1.5", "1e12", "1e30", "null", "true"])
 def test_validate_rejects_bad_context_tokens(reg, tokens):
     reg.file.write_text('{"models":[{"id":"p/a","agent":"a1","context_tokens":%s}]}' % tokens)
     assert models.validate(reg.file) == (
@@ -154,7 +147,7 @@ def test_validate_rejects_bad_context_tokens(reg, tokens):
         "must be a positive integer below 10^12.")
 
 
-@pytest.mark.parametrize("tokens", ["1", "128000", "5.0", "999999999999"])
+@pytest.mark.parametrize("tokens", ["1", "128000", "128000.0", "5.0", "999999999999"])
 def test_validate_accepts_good_context_tokens(reg, tokens):
     reg.file.write_text('{"models":[{"id":"p/a","agent":"a1","context_tokens":%s}]}' % tokens)
     assert models.validate(reg.file) is None
@@ -291,6 +284,16 @@ def test_materialize_writes_bulk_reader_file(reg):
     assert text.endswith("  dependency-analyzer: false\n---\n\nBULK PROMPT\n")
     assert _mode(reg.agents / "shunt-bulk-reader-p-m.md") == 0o600
     assert not (reg.agents / "shunt-code-writer-p-m.md").exists()
+
+
+def test_materialized_agent_files_end_with_the_text_of_the_real_prompts(reg):
+    real = REPO_ROOT / "prompts"
+    reg.env["SHUNT_PROMPTS_DIR"] = str(real)
+    reg.write([{"id": "acme/m1", "agent": "shunt-bulk-reader-acme-m1"}])
+    result = reg.cli("materialize", "acme/m1")
+    assert result.returncode == 0, result.stderr
+    for name, prompt in (("shunt-bulk-reader-acme-m1", "bulk-reader.md"), ("shunt-code-writer-acme-m1", "code-writer.md")):
+        assert (reg.agents / f"{name}.md").read_text().endswith((real / prompt).read_text())
 
 
 def test_materialize_writes_code_writer_with_temperature_and_thinking(reg):
@@ -483,3 +486,18 @@ def test_available_exits_0_or_1_never_2_for_odd_registries(reg, content):
     assert reg.cli("available").returncode == 1
     assert reg.cli("validate").returncode == 1
     assert "Traceback" not in reg.cli("validate").stderr
+
+
+def test_candidates_ignore_a_disabled_active_model_without_a_warning(reg):
+    reg.write([{"id": "p/first"}, {"id": "p/second", "enabled": False}], active="p/second")
+    assert _ids(reg) == ("", ["p/first"])
+
+
+def test_candidates_warn_about_an_unknown_active_model_even_when_no_model_has_the_role(reg):
+    reg.write([{"id": "p/reader", "roles": ["bulk-read"]}], active="p/missing")
+    assert _ids(reg, "code-write") == ("p/missing", [])
+
+
+def test_candidates_skip_an_active_model_lacking_the_role_without_a_warning(reg):
+    reg.write([{"id": "p/first"}, {"id": "p/reader", "roles": ["bulk-read"]}, {"id": "p/third"}], active="p/reader")
+    assert _ids(reg, "code-write") == ("", ["p/first", "p/third"])

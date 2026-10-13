@@ -14,7 +14,8 @@ import re
 import unicodedata
 from typing import Any
 
-# The SHUNT_TRY_INVOKE_* statuses of scripts/lib/transport.sh, which a test keeps in step.
+# The statuses of a transport call. The bats tests compare against these numbers (the old
+# SHUNT_TRY_INVOKE_* constants of transport.sh are gone), test_transport_http.py pins them.
 TIMEOUT, ERROR, EMPTY, AUTH, DEADLINE, OVERSIZE, CONFIG = 124, 2, 3, 4, 5, 6, 7
 UNREACHABLE = 8  # no connection within SHUNT_CONNECT_TIMEOUT (Python only, the bash twin never sees it)
 NEEDS_CHUNKING = 90  # internal: the size guard says map_reduce

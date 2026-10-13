@@ -58,8 +58,6 @@ command -v claude >/dev/null 2>&1 || { echo "fidelity-benchmark: 'claude' not fo
 command -v jq >/dev/null 2>&1 || { echo "fidelity-benchmark: 'jq' not found in PATH." >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "fidelity-benchmark: 'python3' not found in PATH (needed for aggregation)." >&2; exit 1; }
 
-# shellcheck source=../scripts/lib/opencode.sh
-source "$REPO_ROOT/scripts/lib/opencode.sh"
 # shellcheck source=preflight.sh
 source "$REPO_ROOT/evals/preflight.sh"
 evals_preflight

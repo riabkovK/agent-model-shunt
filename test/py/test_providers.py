@@ -1,13 +1,12 @@
 import json
 import os
-import re
 import stat
 import subprocess
 import sys
 
 import pytest
 
-from conftest import REPO_ROOT, SHUNT_MAIN
+from conftest import SHUNT_MAIN
 from shunt import providers
 from shunt.lockfile import file_lock
 
@@ -412,15 +411,7 @@ def test_bearer_key_strips_trailing_newlines_like_command_substitution(prov):
     assert _bearer(prov, {"K": SECRET + "\n\n"}) == SECRET
 
 
-# ---------------------------------------------------------------- bash twin constants
-
-def test_lists_match_the_bash_variables():
-    text = (REPO_ROOT / "scripts" / "lib" / "providers.sh").read_text()
-    transports = re.search(r'^SHUNT_PROVIDER_TRANSPORTS="(.*?)"', text, re.M).group(1).split()
-    key_types = re.search(r'^SHUNT_PROVIDER_KEY_TYPES="(.*?)"', text, re.M).group(1).split()
-    assert tuple(transports) == providers.TRANSPORTS
-    assert tuple(key_types) == providers.KEY_TYPES
-
+# ---------------------------------------------------------------- bash quoting
 
 @pytest.mark.parametrize("text,expected", [
     ("abc", "abc"), ("a b", "a\\ b"), ("", "''"), ("a\nb", "$'a\\nb'"), ("a;b", "a\\;b"),

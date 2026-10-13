@@ -1,4 +1,4 @@
-"""Retry count of the code-write self-fix loop (replaces lib/selffix.sh).
+"""Retry count of the code-write self-fix loop (replaced the former selffix.sh).
 
 Precedence: built-in default, then the config file's `self_fix_retries` (when present and
 valid), then the SHUNT_CODE_WRITE_SELF_FIX_RETRIES value, which stays the emergency and
@@ -14,6 +14,7 @@ import sys
 from typing import Any
 
 from .jsonio import JsonReadError, read_json, write_json_atomic
+from .models import ShuntError
 
 DEFAULT_RETRIES = 1
 _UINT = re.compile(r"[0-9]{1,15}")  # str.isdigit would accept non-ASCII digits
@@ -58,8 +59,7 @@ def set_retries(config_file: str, count: int) -> None:
     if base is None:
         base = {}
     if not isinstance(base, dict):
-        sys.stderr.write("shunt: refusing to write an invalid self-fix config.\n")
-        raise SystemExit(1)
+        raise ShuntError("refusing to write an invalid self-fix config.")
     os.makedirs(os.path.dirname(config_file) or ".", exist_ok=True)
     write_json_atomic(config_file, {**base, "self_fix_retries": count})
 
@@ -68,7 +68,11 @@ def _set(args: argparse.Namespace) -> int:
     if not _UINT.fullmatch(args.count):
         sys.stderr.write("shunt: self-fix-retries must be a non-negative integer.\n")
         return 1
-    set_retries(args.config_file, int(args.count))
+    try:
+        set_retries(args.config_file, int(args.count))
+    except (ShuntError, OSError) as exc:
+        sys.stderr.write(f"shunt: {exc}\n")
+        return 1
     return 0
 
 

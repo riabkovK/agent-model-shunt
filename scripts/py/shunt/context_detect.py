@@ -1,6 +1,6 @@
 """Context window auto-detection for models of an HTTP-transport provider.
 
-Port of scripts/lib/context-detect.sh. Only what the provider itself reports is
+Port of the former scripts/lib/context-detect.sh (removed). Only what the provider itself reports is
 used, a number is never guessed from built-in knowledge. Sources, in order:
 
 1. GET <base_url>/models/<model>

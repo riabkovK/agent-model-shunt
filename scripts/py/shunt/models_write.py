@@ -1,8 +1,8 @@
 """Writer side of the delegate model registry (models.json).
 
 Port of the jq read-modify-write code in scripts/shunt-models. Argument
-parsing, usage text, the entry checks and the user-facing success lines stay in
-bash. Each subcommand here loads the file, builds a new document (the old one is
+parsing, usage text, the entry checks and the user-facing success lines are in
+models_cli.py. Each subcommand here loads the file, builds a new document (the old one is
 never mutated) and replaces the file atomically with mode 0600, as the bash
 mktemp+mv did. Every load+save runs under the
 models lock (<file>.lock, providers lock style: SHUNT_PROVIDERS_LOCK_TIMEOUT seconds).
@@ -24,7 +24,7 @@ from .jsonio import JsonReadError, read_json, write_json_atomic
 from .lockfile import LockTimeout, file_lock
 from .models import OVERSIZE_POLICIES, ROLES, ShuntError, slug
 
-MAX_CONTEXT_DIGITS = 12  # keep in sync with SHUNT_CONTEXT_MAX_DIGITS in scripts/shunt-models
+MAX_CONTEXT_DIGITS = 12  # keep in sync with MAX_CONTEXT_DIGITS in models_cli.py
 CLEAR = "--clear"
 EMPTY_REGISTRY: dict[str, Any] = {"version": 1, "active": None, "models": []}
 

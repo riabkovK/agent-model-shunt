@@ -168,14 +168,19 @@ _QUESTIONS: dict[str, Callable[[Mapping[str, str], str], Answer]] = {
 }
 
 
+def ask(environ: Mapping[str, str], question: str, arg: str = "") -> Answer:
+    """One question in process: the output lines and the exit status. A shape jq could not walk answers no."""
+    try:
+        return _QUESTIONS[question](environ, arg)
+    except (ValueError, OSError, TypeError, AttributeError):
+        return [], NO
+
+
 def run(args: argparse.Namespace) -> int:
     arg = args.arg
     if args.question == "json-object":
         arg = sys.stdin.read()
-    try:
-        lines, code = _QUESTIONS[args.question](os.environ, arg)
-    except (ValueError, OSError, TypeError, AttributeError):
-        return NO
+    lines, code = ask(os.environ, args.question, arg)
     for line in lines:
         sys.stdout.write(line + "\n")
     return code

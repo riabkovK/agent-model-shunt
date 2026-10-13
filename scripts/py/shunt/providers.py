@@ -27,8 +27,8 @@ from typing import Any
 from . import env
 from .jsonio import JsonReadError, read_json
 
-TRANSPORTS: tuple[str, ...] = ("http", "opencode")  # keep in sync with SHUNT_PROVIDER_TRANSPORTS in providers.sh
-KEY_TYPES: tuple[str, ...] = ("keyring", "env", "plaintext", "none")  # and SHUNT_PROVIDER_KEY_TYPES
+TRANSPORTS: tuple[str, ...] = ("http", "opencode")
+KEY_TYPES: tuple[str, ...] = ("keyring", "env", "plaintext", "none")
 KEYRING_SERVICE = "agent-model-shunt"
 KWALLET_WALLET = "kdewallet"
 BACKENDS: tuple[str, ...] = ("secret-tool", "security", "kwallet-query")
@@ -225,6 +225,10 @@ def field(path: str, provider: str, name: str) -> str:
         key = entry.get("key")
         value = key.get("type" if name == "key-type" else "ref") if isinstance(key, dict) else None
     return _alt(value, default)
+
+
+def plaintext_warning(path: str) -> str:
+    return f"shunt: warning: the key is stored in plain text in {path} (mode 600). Prefer a keyring or an environment variable."
 
 
 # ---------------------------------------------------------------- keyring

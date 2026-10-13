@@ -640,22 +640,29 @@ adversarial ones, and zero unsupported claims.
 
 ## Development
 
-Running the plugin needs only `bash` and Python 3.11+. Running the tests needs more:
+Running the plugin needs only `bash` and Python 3.11+. The tests are in two layers.
+`test/py` (pytest) is the main suite: it covers the Python core and also runs the
+real launchers and hooks. The bats files in `test/` are shell-level smoke tests only
+(hook stdin/stdout JSON and exit codes, launcher argv passthrough, the `BASH_ENV`
+no-leak rule, bash 3.2 compatibility), plus the bash dev tooling in `evals/`.
 
+- `pytest` for `test/py`. Without a virtualenv:
+  `uv run --no-project --with pytest python -m pytest test/py -q`.
 - [bats-core](https://github.com/bats-core/bats-core) with `bats-support` and
   `bats-assert`, plus `jq` (the bats tests build and check JSON with it) and GNU
   `parallel` for `bats -j`.
-- `pytest` for `test/py`. Without a virtualenv:
-  `uv run --no-project --with pytest python -m pytest test/py -q`.
 - Docker, optional, for the pinned images in `test/` (`make test`,
   `make test-bash32` for the macOS system bash 3.2, `make test-py311` for the
-  oldest supported Python).
+  oldest supported Python). Every image runs both bats and pytest.
 
 ```bash
-make test          # bats + pytest in Docker, or local bats if Docker is missing
-make test-local    # bats on the host
+make test          # bats + pytest in Docker, or make test-local if Docker is missing
+make test-local    # bats on the host, then pytest (in the py311 image if the host has none)
 make test-py       # pytest on the host
 ```
+
+CI runs `make test`, `make test-bash32`, `make test-py311` and a separate `pytest`
+job on the runner's default Python.
 
 Set `PYTHONDONTWRITEBYTECODE=1` when running tests from the repository, so no
 `__pycache__` lands under `scripts/` or `hooks/`. The live evals in

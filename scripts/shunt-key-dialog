@@ -20,167 +20,18 @@
 #   5 no dialog available, prints the manual `!` fallback line
 #   6 storing the key failed
 
-set -euo pipefail
-# Never trace: xtrace would print the key to stderr.
-set +x
-unset BASH_XTRACEFD SHELLOPTS 2>/dev/null || true
+# One process: scripts/py/shunt/key_dialog.py runs the dialog and the store. This
+# launcher only starts it. The arguments go through raw.
 
-readonly EXIT_REFUSED=1 EXIT_USAGE=2 EXIT_NO_KEY=3 EXIT_TIMEOUT=4 EXIT_NO_DIALOG=5 EXIT_STORE=6
-readonly DEFAULT_DIALOG_TIMEOUT=120
-# What the AppleScript prints when the dialog gave up. A cancelled dialog is an
-# AppleScript error (-128, exit 1), so the two cases need different signals.
-readonly OSASCRIPT_GAVE_UP="__SHUNT_DIALOG_GAVE_UP__"
-
-# A BASH_ENV startup file may have turned xtrace on, which would print the key.
-set +x
-# No child (the dialog tool, shunt-models) may run a startup file with the key at hand.
+# No child (the dialog tool, shunt-models) may source a caller's startup file
+# (it could turn on xtrace and print the key).
 unset BASH_ENV ENV
 
-SCRIPT_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
-# shellcheck source=lib/providers.sh
-source "$SCRIPT_DIR/lib/providers.sh"
-MODELS_BIN="$SCRIPT_DIR/shunt-models"
-
-provider="${1:-}"
-[ -n "$provider" ] && [ $# -eq 1 ] || { echo "usage: shunt-key-dialog <provider>" >&2; exit "$EXIT_USAGE"; }
-
-shunt_provider_name_ok "$provider" \
-  || { shunt_provider_name_refuse "$provider"; exit "$EXIT_REFUSED"; }
-provider_q=$(printf '%q' "$provider")
-
-timeout_s="${SHUNT_KEY_DIALOG_TIMEOUT:-$DEFAULT_DIALOG_TIMEOUT}"
-[[ "$timeout_s" =~ ^[1-9][0-9]*$ ]] || timeout_s=$DEFAULT_DIALOG_TIMEOUT
-
-if [ ! -f "$SHUNT_PROVIDERS_FILE" ] \
-  || ! shunt_probe provider-exists -- "$provider"; then
-  echo "shunt: provider '$provider' is not in $SHUNT_PROVIDERS_FILE. Create it first with: $SHUNT_MODELS_HINT_CMD provider set" >&2
-  exit "$EXIT_REFUSED"
-fi
-
-key_type=$(shunt_provider_key_type "$provider")
-case "$key_type" in
-  env)
-    echo "shunt: provider '$provider' uses an env key. Nothing to enter: export the variable named in its key.ref in your shell." >&2
-    exit "$EXIT_REFUSED" ;;
-  none)
-    echo "shunt: provider '$provider' has key type none. There is no key to enter." >&2
-    exit "$EXIT_REFUSED" ;;
+case "${BASH_SOURCE[0]}" in
+  */*) SCRIPT_DIR="${BASH_SOURCE[0]%/*}" ;;
+  *) SCRIPT_DIR=. ;;
 esac
+# shellcheck source=lib/py.sh
+source "$SCRIPT_DIR/lib/py.sh"
 
-# _dialog_usable <tool>
-# kdialog has no timeout of its own, so it is only used where `timeout` exists.
-_dialog_usable() {
-  command -v "$1" >/dev/null 2>&1 || return 1
-  [ "$1" != kdialog ] || command -v timeout >/dev/null 2>&1
-}
-
-# pick_dialog: prints the dialog to use, or "none".
-pick_dialog() {
-  local choice="${SHUNT_KEY_DIALOG:-auto}"
-  case "$choice" in
-    zenity | kdialog | osascript)
-      _dialog_usable "$choice" && echo "$choice" || echo none
-      return ;;
-    none) echo none; return ;;
-  esac
-  # Over SSH a GUI dialog would open on the remote desktop, not where the user is.
-  if [ -n "${SSH_CONNECTION:-}" ] || [ -n "${SSH_TTY:-}" ]; then
-    echo "shunt: no key window opened because this is an SSH session. Set SHUNT_KEY_DIALOG=zenity (or kdialog, osascript) to force one." >&2
-    echo none
-    return
-  fi
-  if [ "$(uname -s)" = Darwin ]; then
-    command -v osascript >/dev/null 2>&1 && { echo osascript; return; }
-  elif [ -n "${DISPLAY:-}" ] || [ -n "${WAYLAND_DISPLAY:-}" ]; then
-    local tool
-    for tool in zenity kdialog; do
-      _dialog_usable "$tool" && { echo "$tool"; return; }
-    done
-  fi
-  echo none
-}
-
-# run_dialog <dialog>
-# Prints the typed text on stdout. Exit codes: 0 text entered, 124 timed out,
-# anything else cancelled or failed. The text is never passed as an argument.
-run_dialog() {
-  local dialog="$1" prompt="Enter the API key for provider $provider" rc=0
-  case "$dialog" in
-    zenity)
-      zenity --password --title="Model Shunt: $provider API key" --timeout="$timeout_s" 2>/dev/null || rc=$?
-      [ "$rc" -eq 5 ] && rc=124 ;;
-    kdialog)
-      timeout "$timeout_s" kdialog --title "Model Shunt: $provider" --password "$prompt" 2>/dev/null || rc=$? ;;
-    osascript)
-      local out
-      out=$(osascript \
-        -e 'on run argv' \
-        -e 'set r to display dialog (item 1 of argv) default answer "" with hidden answer with title (item 2 of argv) giving up after (item 3 of argv as integer)' \
-        -e "if gave up of r then return \"$OSASCRIPT_GAVE_UP\"" \
-        -e 'return text returned of r' \
-        -e 'end run' \
-        -- "$prompt" "Model Shunt: $provider" "$timeout_s" 2>/dev/null) || rc=$?
-      if [ "$out" = "$OSASCRIPT_GAVE_UP" ]; then rc=124; out=""; fi
-      printf '%s' "$out" ;;
-  esac
-  return "$rc"
-}
-
-dialog=$(pick_dialog)
-if [ "$dialog" = none ]; then
-  echo "shunt: no password dialog available (need zenity or kdialog with a display, or osascript on macOS)."
-  echo "Run this yourself, it reads the key from a hidden prompt:"
-  echo "! $SHUNT_MODELS_HINT_CMD key set $provider_q"
-  exit "$EXIT_NO_DIALOG"
-fi
-
-if [ "$(uname -s)" = Darwin ] && [ "$key_type" = keyring ]; then
-  echo "shunt: note: on macOS the keychain tool receives the key as a command argument, so it is briefly visible to local processes. An env key avoids that."
-fi
-
-# The key lives only in this shell variable and is handed over via the printf
-# builtin and a pipe, never as an argument and never echoed.
-rc=0
-key=$(run_dialog "$dialog") || rc=$?
-if [ "$rc" -eq 124 ]; then
-  unset key
-  echo "shunt: the dialog timed out after ${timeout_s}s. No key entered, nothing stored." >&2
-  exit "$EXIT_TIMEOUT"
-fi
-if [ "$rc" -ne 0 ] || [ -z "$key" ]; then
-  unset key
-  echo "shunt: no key entered, nothing stored." >&2
-  exit "$EXIT_NO_KEY"
-fi
-
-# Pasted keys often carry whitespace or one pair of wrapping quotes. Strip both.
-key="${key#"${key%%[![:space:]]*}"}"
-key="${key%"${key##*[![:space:]]}"}"
-case "$key" in
-  \"*\" | \'*\') [ "${#key}" -ge 2 ] && key="${key:1:${#key}-2}" ;;
-esac
-if [ -z "$key" ]; then
-  unset key
-  echo "shunt: no key entered, nothing stored." >&2
-  exit "$EXIT_NO_KEY"
-fi
-# A key never spans lines. Storing only the first line would keep a wrong key silently.
-if [[ "$key" == *$'\n'* ]]; then
-  unset key
-  echo "shunt: the pasted key contains a line break, nothing stored. Paste the key alone." >&2
-  exit "$EXIT_NO_KEY"
-fi
-
-store_rc=0
-# shunt-models never prints the key, so its stderr is safe to pass through.
-# BASH_ENV and ENV are dropped for the child: a startup file that turns on xtrace
-# would print the key as it is read.
-printf '%s\n' "$key" | env -u BASH_ENV -u ENV "$MODELS_BIN" key set "$provider" >/dev/null || store_rc=$?
-unset key
-if [ "$store_rc" -ne 0 ]; then
-  echo "shunt: storing the key for '$provider' failed. Check: $SHUNT_MODELS_HINT_CMD key status $provider_q" >&2
-  exit "$EXIT_STORE"
-fi
-
-[ "$key_type" = plaintext ] && shunt_provider_plaintext_warning
-"$MODELS_BIN" key status "$provider"
+exec "${SHUNT_PYTHON:-python3}" -I -B "$SHUNT_PY_MAIN" shunt-key-dialog -- "$@"

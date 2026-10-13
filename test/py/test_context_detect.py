@@ -284,16 +284,3 @@ def test_the_key_never_reaches_stderr_when_it_is_unusable(setup):
     environ["ACME_KEY"] = KEY + "\ud800".encode("utf-8", "surrogatepass").decode("latin-1")
     proc = run_cli(environ, "--", "acme/m1")
     assert KEY not in proc.stderr and "Traceback" not in proc.stderr
-
-
-def test_the_wrapper_needs_neither_curl_nor_jq(setup, tmp_path):
-    environ, server, _ = setup
-    server.script("/v1/models/m1", body={"context_length": 2048})
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for tool in ("python3", "dirname"):
-        (bin_dir / tool).symlink_to(subprocess.check_output(["which", tool], text=True).strip())
-    cmd = f'source "{REPO_ROOT}/scripts/lib/context-detect.sh"; shunt_models_detect_context acme/m1'
-    proc = subprocess.run(["/bin/bash", "-c", cmd], capture_output=True, text=True, check=False,
-                          env={**environ, "PATH": str(bin_dir)})
-    assert (proc.returncode, proc.stdout.strip()) == (0, "2048")
