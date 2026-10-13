@@ -280,7 +280,7 @@ def resolve_storage(ctx: Ctx, name: str, kind: str) -> str:
 def make_entry(storage: str, base: str, ref: str) -> dict[str, Any]:
     """The providers.json fields the migration sets for a provider."""
     if storage in ("skip", "ask"):
-        return {"transport": "opencode", "base_url": base, "key": {"type": "keyring"}}
+        return {"transport": "opencode", "base_url": base, "key": {"type": "keyring"}, "healthcheck": True}
     entry: dict[str, Any] = {"transport": "http", "base_url": base}
     if storage == "none":
         entry["key"] = {"type": "none"}
@@ -288,6 +288,7 @@ def make_entry(storage: str, base: str, ref: str) -> dict[str, Any]:
         entry["key"] = {"type": "env", "ref": ref}
     elif storage in ("keyring", "plaintext"):
         entry["key"] = {"type": storage}
+    entry["healthcheck"] = True
     return entry
 
 

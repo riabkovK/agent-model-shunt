@@ -239,6 +239,68 @@ reads it from a hidden prompt:
 `env` key avoids that. See
 [ADR 0019](docs/adr/0019-api-key-storage.md).
 
+### Healthcheck for local servers (HTTP transport)
+
+A server on a laptop (LM Studio, ollama, llama.cpp) may accept the TCP
+connection while the machine sleeps and still never answer. Set
+`"healthcheck": true` on such a provider in `providers.json`. Providers created
+with `provider set` or by the OpenCode migration get it on by default. A
+provider whose entry has no `healthcheck` field counts as off. Turn it on or
+off later with:
+
+```bash
+scripts/shunt-models provider set lmstudio --healthcheck off   # or: on
+```
+
+The entry then looks like this:
+
+```json
+{"version": 1, "providers": {
+  "lmstudio": {"transport": "http", "base_url": "http://192.168.1.20:1234/v1",
+               "key": {"type": "none"}, "healthcheck": true}}}
+```
+
+The check never slows a request down. A request only reads a small status cache
+(`~/.cache/agent-model-shunt/healthcheck.json`, per provider, base_url and
+model, `healthy` or `unhealthy` with the time of the check, no key in it) and
+goes on at once:
+
+- Unhealthy for less than `SHUNT_HEALTHCHECK_RETRY` seconds (default 30): the
+  call stops with `shunt: <model> healthcheck failed: ...`, counts as
+  "unreachable" and the next model is tried, with no delay.
+- Healthy, unknown, or older than its limit (`SHUNT_HEALTHCHECK_TTL` seconds,
+  default 600, for healthy; the retry time for unhealthy): the real call goes
+  on at once. An unknown or stale status also starts one detached background
+  probe (`shunt_main.py healthcheck-refresh <provider> <model>`, one child for all models at session start). An unhealthy
+  status older than the retry time is therefore tried again by the real call
+  itself, plus a probe. A model that was only reachable over a VPN is back at
+  the first call after the retry time once the VPN is up.
+- The probe reads the provider and its key itself, so a key is never in a
+  command line. One probe per model runs at a time (a lock file in the cache
+  dir), it has a time cap and its failures are silent. A good probe also
+  clears the model's circuit breaker state.
+- The real call keeps the status current: a success marks the model healthy, a
+  failed connection, a 404 or a 5xx marks it unhealthy. Other errors (auth, other 4xx, oversize, a
+  timeout on a long reply) leave it alone.
+- The session start hook starts a probe for each enabled model of a healthcheck
+  provider whose status is missing or stale. It does not wait for them.
+- For a provider with the healthcheck on, "unreachable" failures (including a
+  refused connection or an unknown host) are not counted by the circuit breaker:
+  the unhealthy status, which expires after the retry time, takes its place.
+
+The probe checks the model in two steps, both with the same
+auth header. First `GET <base_url>/models`: a connection error, a timeout or a
+5xx answer is unhealthy, and so is a readable model list that lacks the
+configured model (`model not listed`). A 4xx (some servers have no `/models`) or
+a list that cannot be read passes this step. Then a one token
+`POST <base_url>/chat/completions` for the model (`max_tokens` 1, no stream).
+Any 2xx is healthy, and so are 400 and 422 (the model route answered, for
+instance a reasoning model that rejects `max_tokens`) and 401 or 403 (the real
+call then reports the auth error). A 404, a 5xx, a timeout or no connection is
+unhealthy. The probe's tokens are not written to the usage log. The completion
+step may take `SHUNT_HEALTHCHECK_MODEL_TIMEOUT` seconds (default 30), because a
+local server may have to load the model first.
+
 ### Large files (HTTP transport)
 
 Each model has a `context_tokens` value, from `shunt-models detect-context
@@ -398,6 +460,13 @@ both, so the skill gets no fragment. Invalid fragments are always skipped withou
 | `SHUNT_BREAKER_CONFIG_FILE` | `~/.config/agent-model-shunt/breaker-config.json` | Threshold/cooldown overrides, written by `scripts/shunt-breaker-config`. |
 | `SHUNT_BREAKER_THRESHOLD` | `3` | Env override for consecutive failures before a model's breaker opens; takes precedence over the config file. |
 | `SHUNT_BREAKER_COOLDOWN_SECONDS` | `300` | Env override for how long a model stays paused once its breaker opens; takes precedence over the config file. |
+| `SHUNT_BREAKER_UNREACHABLE_COOLDOWN_SECONDS` | `120` | Like `SHUNT_BREAKER_COOLDOWN_SECONDS`, but for a model that failed as "unreachable" (no connection within `SHUNT_CONNECT_TIMEOUT`, or no route to the host). The config file field is `unreachable_cooldown_seconds`. The threshold is the same as for other failures. |
+| `SHUNT_CONNECT_TIMEOUT` | `5` | `http` transport only: seconds the TCP connect (and TLS handshake) may take, a non-negative number. `0` means only `SHUNT_TIMEOUT_SECONDS` applies. A connect that does not finish fails fast as "unreachable" (`shunt: <model> unreachable: no connection within Ns`) and the next model is tried, so a sleeping laptop no longer costs a whole request timeout. It has no effect when it is not shorter than the request timeout. A model that connects but answers slowly is still a plain timeout. |
+| `SHUNT_HEALTHCHECK_TIMEOUT` | `3` | `http` transport only, for providers with `"healthcheck": true`: seconds the pre-flight `GET <base_url>/models` may take (the completion probe has its own timeout below), a non-negative number. `0` disables the check. |
+| `SHUNT_HEALTHCHECK_MODEL_TIMEOUT` | `30` | `http` transport only, for providers with `"healthcheck": true`: seconds the one token completion probe may take, a non-negative number. `0` skips that step. |
+| `SHUNT_HEALTHCHECK_TTL` | `600` | Seconds a healthy status is trusted before a background probe refreshes it, a non-negative number. `0` starts a probe on every call. A request never waits for it. |
+| `SHUNT_HEALTHCHECK_RETRY` | `30` | Seconds an unhealthy status fails calls over at once (the "tick"). After that the model is tried again by the real call and a probe. `0` never fails over on the status. |
+| `SHUNT_HEALTHCHECK_INLINE` | unset | Tests only: `1` runs the background probe inside the calling process instead of a detached child. |
 
 ## Management skills
 
@@ -568,6 +637,30 @@ needs a reachable OpenCode provider. Run it deliberately, not in a loop.
 of the latest `evals/fidelity-benchmark.sh` run: on the current question
 set (n=1), delegation showed 100% recall on every question, including the
 adversarial ones, and zero unsupported claims.
+
+## Development
+
+Running the plugin needs only `bash` and Python 3.11+. Running the tests needs more:
+
+- [bats-core](https://github.com/bats-core/bats-core) with `bats-support` and
+  `bats-assert`, plus `jq` (the bats tests build and check JSON with it) and GNU
+  `parallel` for `bats -j`.
+- `pytest` for `test/py`. Without a virtualenv:
+  `uv run --no-project --with pytest python -m pytest test/py -q`.
+- Docker, optional, for the pinned images in `test/` (`make test`,
+  `make test-bash32` for the macOS system bash 3.2, `make test-py311` for the
+  oldest supported Python).
+
+```bash
+make test          # bats + pytest in Docker, or local bats if Docker is missing
+make test-local    # bats on the host
+make test-py       # pytest on the host
+```
+
+Set `PYTHONDONTWRITEBYTECODE=1` when running tests from the repository, so no
+`__pycache__` lands under `scripts/` or `hooks/`. The live evals in
+[Evals](#evals) also need a configured provider and, for the baseline and
+fidelity runs, the `claude` CLI.
 
 ## Scope
 

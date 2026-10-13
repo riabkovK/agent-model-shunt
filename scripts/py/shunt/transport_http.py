@@ -9,6 +9,8 @@ providers file and the key are read once per call, however many requests it take
 Status mapping (the SHUNT_TRY_INVOKE_* codes of transport.sh, see transport_reply):
   timeout                              TIMEOUT (DEADLINE when the request's time limit was cut
                                        to the time left of the total deadline)
+  no connection within SHUNT_CONNECT_TIMEOUT (5s), or no route to the host
+                                       UNREACHABLE (model failure, the breaker uses the short unreachable cooldown)
   other transport failure, 429, 5xx,
   400/404/413 and any other non-2xx    ERROR (model failure, the breaker counts it)
   401, 403                             AUTH (a key problem, the failover skips the breaker)
@@ -39,10 +41,10 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import chunking, env, httpclient, models, providers
+from . import chunking, env, healthcheck_bg, httpclient, models, providers
 from . import transport_reply as reply
 from .deadline import Deadline, DeadlineError
-from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT
+from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT, UNREACHABLE
 
 BYTES_PER_TOKEN = 3
 CONTEXT_BUDGET_PERCENT = 60
@@ -78,6 +80,7 @@ class _Setup:
     system: bytes
     context_tokens: str
     policy: str
+    healthcheck: bool = False
 
 
 # ---------------------------------------------------------------- registry
@@ -194,9 +197,13 @@ def _setup(agent: str, environ: Mapping[str, str], found: tuple[dict[str, Any], 
     except providers.ProviderError as exc:
         _fail(CONFIG, str(exc))
     base_url, assumed = _check_base_url(provider, raw_url)
+    try:
+        check_first = providers.field(env.providers_file_text(environ), provider, "healthcheck") == "true"
+    except providers.ProviderError as exc:
+        _fail(CONFIG, str(exc))
     body = _request_body(model, role, model_id)
     return _Setup(model_id, role, provider, base_url, assumed, body, _system_prompt(role, environ),
-                  _text(model.get("context_tokens")), _text(model.get("oversize_policy")))
+                  _text(model.get("context_tokens")), _text(model.get("oversize_policy")), check_first)
 
 
 # ---------------------------------------------------------------- prompt and size guard
@@ -292,11 +299,20 @@ def _models_command() -> str:
     return providers._bash_quote(str(root / "scripts" / "shunt-models"))
 
 
+def _seconds_text(seconds: float) -> str:
+    return str(int(seconds)) if seconds == int(seconds) else f"{seconds:g}"
+
+
 def _transport_failure(setup: _Setup, err: httpclient.HttpError, environ: Mapping[str, str],
                        key: str | None) -> NoReturn:
     provider = setup.provider
     if err.kind == "timeout":
         raise _Stop(TIMEOUT)
+    if err.kind == "unreachable":
+        _fail(UNREACHABLE, f"{setup.model_id} unreachable: no connection within "
+                           f"{_seconds_text(env.connect_timeout(environ))}s (or no route to the host)")
+    if setup.healthcheck and err.kind in ("connect", "dns"):  # e.g. a model behind a VPN that is down
+        _fail(UNREACHABLE, f"{setup.model_id} unreachable: {err}")
     # An auth or rate limit status says more than the size of its body.
     if err.kind == "too_large" and err.status in _STATUS_BEATS_SIZE:
         _check_status(setup, httpclient.Response(err.status, {}, b""), key)
@@ -318,6 +334,8 @@ def _check_status(setup: _Setup, response: httpclient.Response, key: str | None)
         _fail(AUTH, f"auth failed for provider {provider}: the key was rejected or is missing. Re-enter it "
                     f"through /model-config (it opens a password window), or without a desktop: "
                     f"! {_models_command()} key set {providers._bash_quote(provider)}")
+    if setup.healthcheck and (code == 404 or code >= 500):  # the model is unloaded or the server is broken
+        _fail(UNREACHABLE, f"{setup.model_id} unreachable: provider '{provider}' answered HTTP {code}")
     if code in (400, 404, 413):
         _fail(ERROR, f"provider '{provider}' answered HTTP {code}: {reply.excerpt(response.body, key)}")
     _fail(ERROR, f"provider '{provider}' answered HTTP {code}.")
@@ -344,8 +362,13 @@ def _send(setup: _Setup, prompt: bytes, environ: Mapping[str, str], key: str | N
     payload = {**setup.body, "model": setup.model_id.split("/", 1)[-1], "messages": messages}
     url = setup.base_url[:-1] if setup.base_url.endswith("/") else setup.base_url
     try:
+        connect_timeout = env.connect_timeout(environ)
+    except env.EnvError as exc:
+        _fail(CONFIG, str(exc))
+    try:
         response = httpclient.post_json(url + "/chat/completions", payload, headers=headers, timeout=timeout,
-                                        max_bytes=httpclient.max_response_bytes(environ))
+                                        max_bytes=httpclient.max_response_bytes(environ),
+                                        connect_timeout=connect_timeout)
     except httpclient.HttpError as err:
         _transport_failure(setup, err, environ, key)
     _check_status(setup, response, key)
@@ -361,6 +384,8 @@ class _Attempt:
         self.deadline = deadline
         self._key: str | None = None
         self._have_key = False
+        self._checked = False
+        self._succeeded = False
 
     def key(self) -> str | None:
         if not self._have_key:
@@ -372,6 +397,32 @@ class _Attempt:
             self._have_key = True
         return self._key
 
+    def _healthcheck(self) -> None:
+        """The status gate of a provider that asks for a healthcheck, once per attempt. It only reads
+        the status cache: a fresh unhealthy status ends the attempt as unreachable at once, anything
+        else goes on with the real call. A probe, when one is due, runs in the background."""
+        setup = self.setup
+        if self._checked or not setup.healthcheck:
+            return
+        self._checked = True
+        try:
+            if env.healthcheck_timeout(self.environ) <= 0:
+                return
+            blocked = healthcheck_bg.gate(self.environ, setup.provider, setup.base_url, self._model())
+        except env.EnvError as exc:
+            _fail(CONFIG, str(exc))
+        if blocked:
+            _fail(UNREACHABLE, f"{setup.model_id} healthcheck failed: unhealthy at the last check, "
+                               "tried again after SHUNT_HEALTHCHECK_RETRY seconds")
+
+    def _model(self) -> str:
+        return self.setup.model_id.split("/", 1)[-1]
+
+    def _note(self, healthy: bool) -> None:
+        """Record the real call's outcome as the model's status (providers with a healthcheck only)."""
+        if self.setup.healthcheck:
+            healthcheck_bg.note_call(self.environ, self.setup.provider, self.setup.base_url, self._model(), healthy)
+
     def ask(self, prompt: bytes) -> dict[str, Any]:
         """One request within the time left of the total deadline. DEADLINE when none is left, or
         when the request ran out of the time it was cut to."""
@@ -379,13 +430,20 @@ class _Attempt:
         if window is None:
             self.deadline.note(self.setup.model_id)
             raise _Stop(DEADLINE)
+        self._healthcheck()
         try:
-            return _send(self.setup, prompt, self.environ, self.key(), window.max_time)
+            result = _send(self.setup, prompt, self.environ, self.key(), window.max_time)
         except _Stop as stop:
+            if stop.status == UNREACHABLE:
+                self._note(False)
             if stop.status == TIMEOUT and window.capped:
                 self.deadline.note(self.setup.model_id)
                 raise _Stop(DEADLINE) from None
             raise
+        if not self._succeeded:
+            self._succeeded = True
+            self._note(True)
+        return result
 
 
 def _write_reply(normalized: dict[str, Any], environ: Mapping[str, str]) -> str:

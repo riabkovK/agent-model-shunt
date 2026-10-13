@@ -85,7 +85,7 @@ no_secret_anywhere_but() {
   [ "$(cat "$FAKE_STORE")" = "$SECRET" ]
   [ "$(cat "$(ls "$SHUNT_MODELS_FILE".bak-*)")" = "$before" ]
   run jq -c '.providers.acme' "$SHUNT_PROVIDERS_FILE"
-  assert_output '{"transport":"http","base_url":"https://api.acme.test/v1","key":{"type":"keyring"}}'
+  assert_output '{"transport":"http","base_url":"https://api.acme.test/v1","key":{"type":"keyring"},"healthcheck":true}'
   run jq -c '.models[0] | [.request_body, .context_tokens]' "$SHUNT_MODELS_FILE"
   assert_output '[{"reasoning_effort":"low"},65536]'
   run jq -c '.models[1] | [.request_body, .context_tokens]' "$SHUNT_MODELS_FILE"

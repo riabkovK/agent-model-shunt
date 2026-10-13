@@ -20,7 +20,9 @@ def providers_doc(ctx: Ctx, plan: Mapping[str, Any]) -> dict[str, Any]:
     table = dict(as_dict(doc.get("providers")))
     for item in plan["providers"]:
         if item["entry"] is not None:
-            table[item["name"]] = {**as_dict(table.get(item["name"])), **item["entry"]}
+            old = as_dict(table.get(item["name"]))
+            keep = {"healthcheck": old["healthcheck"]} if "healthcheck" in old else {}  # an existing choice stays
+            table[item["name"]] = {**old, **item["entry"], **keep}
     return {**doc, "providers": table}
 
 

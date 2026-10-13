@@ -15,6 +15,11 @@ from pathlib import Path
 
 APP_DIR_NAME = "agent-model-shunt"
 DEFAULT_PROVIDERS_LOCK_TIMEOUT = 10.0
+DEFAULT_CONNECT_TIMEOUT = 5.0
+DEFAULT_HEALTHCHECK_TIMEOUT = 3.0
+DEFAULT_HEALTHCHECK_TTL = 600.0
+DEFAULT_HEALTHCHECK_RETRY = 30.0
+DEFAULT_HEALTHCHECK_MODEL_TIMEOUT = 30.0
 
 
 class EnvError(ValueError):
@@ -76,6 +81,10 @@ def breaker_config_file(env: Mapping[str, str] | None = None) -> Path:
     return _override(env, "SHUNT_BREAKER_CONFIG_FILE", config_dir(env) / "breaker-config.json")
 
 
+def healthcheck_cache_file(env: Mapping[str, str] | None = None) -> Path:
+    return _override(env, "SHUNT_HEALTHCHECK_CACHE_FILE", cache_dir(env) / "healthcheck.json")
+
+
 def self_fix_config_file(env: Mapping[str, str] | None = None) -> Path:
     return _override(
         env,
@@ -117,3 +126,47 @@ def providers_lock_timeout(env: Mapping[str, str] | None = None) -> float:
     if not math.isfinite(value) or value < 0:
         raise EnvError(f"SHUNT_PROVIDERS_LOCK_TIMEOUT must be a finite non-negative number, got {raw!r}")
     return value
+
+
+def _non_negative_number(env: Mapping[str, str] | None, name: str, default: float) -> float:
+    raw = _get(env, name, "")
+    if not raw:
+        return default
+    try:
+        value = float(raw)
+    except ValueError:
+        raise EnvError(f"{name} must be a number, got {raw!r}") from None
+    if not math.isfinite(value) or value < 0:
+        raise EnvError(f"{name} must be a finite non-negative number, got {raw!r}")
+    return value
+
+
+def connect_timeout(env: Mapping[str, str] | None = None) -> float:
+    """SHUNT_CONNECT_TIMEOUT in seconds: how long a connect may take. 0 means only the overall timeout applies."""
+    return _non_negative_number(env, "SHUNT_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT)
+
+
+def healthcheck_timeout(env: Mapping[str, str] | None = None) -> float:
+    """SHUNT_HEALTHCHECK_TIMEOUT in seconds: how long the pre-flight GET may take. 0 disables the check."""
+    return _non_negative_number(env, "SHUNT_HEALTHCHECK_TIMEOUT", DEFAULT_HEALTHCHECK_TIMEOUT)
+
+
+def healthcheck_model_timeout(env: Mapping[str, str] | None = None) -> float:
+    """SHUNT_HEALTHCHECK_MODEL_TIMEOUT in seconds: how long the one token completion probe may take. 0 skips it."""
+    return _non_negative_number(env, "SHUNT_HEALTHCHECK_MODEL_TIMEOUT", DEFAULT_HEALTHCHECK_MODEL_TIMEOUT)
+
+
+def healthcheck_ttl(env: Mapping[str, str] | None = None) -> float:
+    """SHUNT_HEALTHCHECK_TTL in seconds: how long a healthy status is trusted before a background
+    probe refreshes it. 0 means every call starts a probe."""
+    return _non_negative_number(env, "SHUNT_HEALTHCHECK_TTL", DEFAULT_HEALTHCHECK_TTL)
+
+
+def healthcheck_retry(env: Mapping[str, str] | None = None) -> float:
+    """SHUNT_HEALTHCHECK_RETRY in seconds: how long an unhealthy status fails calls over at once. 0 never does."""
+    return _non_negative_number(env, "SHUNT_HEALTHCHECK_RETRY", DEFAULT_HEALTHCHECK_RETRY)
+
+
+def healthcheck_inline(env: Mapping[str, str] | None = None) -> bool:
+    """SHUNT_HEALTHCHECK_INLINE=1 runs the background probe in-process. For tests only."""
+    return (os.environ if env is None else env).get("SHUNT_HEALTHCHECK_INLINE") == "1"

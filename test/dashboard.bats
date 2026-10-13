@@ -30,7 +30,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   assert_success
   assert_line "registry: missing"
   assert_line "providers_file: missing"
-  assert_line "breaker threshold=3 default=3 cooldown_seconds=300 default=300 status=enabled"
+  assert_line "breaker threshold=3 default=3 cooldown_seconds=300 default=300 unreachable_cooldown_seconds=120 default=120 status=enabled"
   assert_line "self_fix_retries=1 default=1"
   assert_line "first_choice bulk-read none"
   assert_line "first_choice code-write none"
@@ -53,7 +53,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   write_models "$ONE_MODEL"
   ACME_KEY=secret-value-123 run "$SHUNT_MODELS_BIN" dashboard
   assert_success
-  assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=env:ACME_KEY key_present=yes"
+  assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=env:ACME_KEY key_present=yes healthcheck=off"
   assert_line "model acme/m1 enabled=yes active=yes roles=bulk-read,code-write thinking=off thinking_off=none context_tokens=128000 oversize_policy=map_reduce(default) provider_transport=http"
   assert_line "breaker_state acme/m1 bulk-read failures=0 open=false"
   assert_line "breaker_state acme/m1 code-write failures=0 open=false"
@@ -69,7 +69,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   write_models "$ONE_MODEL"
   run "$SHUNT_MODELS_BIN" dashboard
   assert_success
-  assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=plaintext key_present=yes"
+  assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=plaintext key_present=yes healthcheck=off"
   refute_output --partial "plain-secret-456"
   assert_equal "${lines[${#lines[@]}-1]}" "setup: ok"
 }
@@ -89,7 +89,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   write_models '{"version":1,"active":null,"models":[{"id":"acme/m1","agent":"a1","enabled":true,"thinking":false,"roles":["bulk-read"]}]}'
   run "$SHUNT_MODELS_BIN" dashboard
   assert_success
-  assert_line --partial "key=none key_present=yes"
+  assert_line --partial "key=none key_present=yes healthcheck=off"
   assert_line --partial "context_tokens=unset"
   assert_line "issue context-missing acme/m1"
   assert_equal "${lines[${#lines[@]}-1]}" "setup: incomplete"
@@ -166,7 +166,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   echo '{"self_fix_retries":4}' >"$SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE"
   run "$SHUNT_MODELS_BIN" dashboard
   assert_success
-  assert_line "breaker threshold=999999999 default=3 cooldown_seconds=60 default=300 status=disabled"
+  assert_line "breaker threshold=999999999 default=3 cooldown_seconds=60 default=300 unreachable_cooldown_seconds=120 default=120 status=disabled"
   assert_line "self_fix_retries=4 default=1"
 }
 

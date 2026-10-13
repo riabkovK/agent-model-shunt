@@ -21,6 +21,9 @@ transport yields the same normalized response file, so the external contract
 - `http` (`scripts/lib/transport-http.sh`): one non-streaming POST to an
   OpenAI-compatible `/chat/completions` endpoint with `curl`. Only bash, jq and
   curl are needed, consistent with [ADR 0004](0004-bash-jq-implementation.md).
+  Update: since [ADR 0022](0022-python-core-port.md) the request is sent by the
+  Python standard library (`scripts/py/shunt/httpclient.py`). Neither jq nor curl
+  is needed at run time.
 - `opencode`: the previous behavior, kept as a fallback for providers that are
   not OpenAI-compatible.
 

@@ -251,6 +251,11 @@ def available(path: str | os.PathLike[str]) -> bool:
     return Path(path).is_file() and validate(path) is None
 
 
+def enabled_ids(path: PathArg) -> list[str]:
+    """The ids of the enabled models, in registry order. RegistryUnreadable for an unreadable registry."""
+    return [m["id"] for m in _entries(_load(path)) if _enabled(m) and isinstance(m.get("id"), str)]
+
+
 # ---------------------------------------------------------------- lookups
 
 def candidates(path: PathArg, role: str) -> tuple[str, list[str]]:

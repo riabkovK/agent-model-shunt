@@ -35,3 +35,8 @@ unprefixed_script_refs() {
   done
   [ -z "$bad" ] || { echo "unprefixed script paths in:$bad"; return 1; }
 }
+
+@test "model-config SKILL.md offers the healthcheck flag" {
+  run grep -c -- '--healthcheck' "$REPO_ROOT/skills/model-config/SKILL.md"
+  assert_success
+}

@@ -220,6 +220,8 @@ def session_start(environ: Mapping[str, str]) -> str:
         return ""
     if not text:
         return ""
+    from . import healthcheck_bg
+    healthcheck_bg.warm_up(environ)  # detached probes, nothing is waited for
     import json
     doc = {"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}
     return json.dumps(doc, indent=2, ensure_ascii=False) + "\n"

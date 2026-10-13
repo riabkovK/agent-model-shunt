@@ -30,6 +30,7 @@ from .models import ShuntError
 
 DEFAULT_THRESHOLD = 3
 DEFAULT_COOLDOWN = 300
+DEFAULT_UNREACHABLE_COOLDOWN = 120  # a host that did not even connect is probed again sooner
 DISABLED_THRESHOLD = 999999999  # keep in sync with SHUNT_BREAKER_DISABLED_THRESHOLD in scripts/shunt-breaker-config
 MAX_DIGITS = 15  # keeps every number inside a 64-bit signed integer, like _shunt_breaker_uint_or
 _UINT = re.compile(r"[0-9]{1,%d}" % MAX_DIGITS)
@@ -75,6 +76,16 @@ def limits(environ: Mapping[str, str]) -> tuple[int, int]:
     cooldown = uint_or(_config_field(config, "cooldown_seconds"), DEFAULT_COOLDOWN)
     return (uint_or(environ.get("SHUNT_BREAKER_THRESHOLD", ""), threshold),
             uint_or(environ.get("SHUNT_BREAKER_COOLDOWN_SECONDS", ""), cooldown))
+
+
+def unreachable_cooldown(environ: Mapping[str, str]) -> int:
+    """Cooldown seconds after an "unreachable" failure: env, then the config file, then the default."""
+    try:
+        config = read_json(env.breaker_config_file(environ))
+    except JsonReadError:
+        config = None
+    configured = uint_or(_config_field(config, "unreachable_cooldown_seconds"), DEFAULT_UNREACHABLE_COOLDOWN)
+    return uint_or(environ.get("SHUNT_BREAKER_UNREACHABLE_COOLDOWN_SECONDS", ""), configured)
 
 
 # ---------------------------------------------------------------- state access
@@ -172,8 +183,12 @@ def write_state(environ: Mapping[str, str], model_id: str, failures: int, cooldo
     _update(environ, lambda doc: _with_entry(doc, model_id, failures, cooldown_until))
 
 
-def record_failure(environ: Mapping[str, str], model_id: str) -> None:
+def record_failure(environ: Mapping[str, str], model_id: str, unreachable: bool = False) -> None:
+    """Count a failure. Once the threshold is reached the model pauses for the cooldown, or for the
+    shorter unreachable cooldown when the failure was "no connection"."""
     threshold, cooldown = limits(environ)
+    if unreachable:
+        cooldown = unreachable_cooldown(environ)
     at = now(environ)
 
     def bump(doc: Any) -> dict[str, Any]:

@@ -29,7 +29,7 @@ from typing import Any
 from . import env, models, models_write, providers, providers_write
 from .jsonio import write_json_atomic
 from .lockfile import LockTimeout, file_lock
-from .migrate_plan import STORAGE_CHOICES, Ctx, collect_providers, initial_used_refs, plan_models, plan_provider, read_key
+from .migrate_plan import STORAGE_CHOICES, Ctx, collect_providers, make_entry, initial_used_refs, plan_models, plan_provider, read_key
 from .migrate_view import detect_doc, has_changes, models_doc, print_plan, providers_doc
 from .providers import ProviderError
 
@@ -141,7 +141,7 @@ def _store_keyring(ctx: Ctx, plan: dict[str, Any], name: str) -> None:
             sys.stderr.write(f"shunt: {exc}\n")
         sys.stderr.write(f"shunt: could not store the key of '{name}' in the keyring, leaving it pending.\n")
         pending = {**item, "storage": "skip", "state": "pending",
-                   "entry": {"transport": "opencode", "base_url": item["base_url"], "key": {"type": "keyring"}}}
+                   "entry": make_entry("skip", item["base_url"], "")}
         plan["providers"] = [pending if p["name"] == name else p for p in plan["providers"]]
 
 

@@ -34,6 +34,8 @@ Rules that hold for every type:
   handed to `curl` as `-H @file`, not into argv. A key containing a line break is
   refused so it cannot add extra headers. Redirects are never followed, so the
   header cannot be replayed to another host.
+  Update: since [ADR 0022](0022-python-core-port.md) the header is built in the
+  Python process and sent with `http.client`. There is no temp file and no curl.
 - A 401 or 403 is a key problem, not the model's fault. It is not counted
   against the circuit breaker ([ADR 0012](0012-circuit-breaker-separate-from-model-selection.md)),
   and stderr hints at fixing the key.
