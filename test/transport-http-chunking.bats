@@ -20,7 +20,7 @@ setup() {
   export ACME_KEY="sk-test-key"
   unset SHUNT_TOTAL_TIMEOUT_SECONDS FAKE_CLOCK FAKE_CURL_ADVANCE FAKE_CURL_FAIL_AT
   PATH="$TEST_TMPDIR/bin:$PATH"
-  source "$REPO_ROOT/scripts/lib/opencode.sh"
+  export SHUNT_PROMPTS_DIR="$REPO_ROOT/prompts"
   unset SHUNT_TRANSPORT
   AGENT="shunt-bulk-reader-acme-m1"
   fake_http_start
@@ -218,7 +218,7 @@ rebuild_from_plan() {
   head -c 40000000 /dev/zero | tr '\0' '\n' >"$TEST_TMPDIR/huge.txt"
   local t0=$SECONDS st=0
   SHUNT_PROMPTS_DIR="$SHUNT_PROMPTS_DIR" chunk_py "$PLAN_PY" "$AGENT" "$TEST_TMPDIR/huge.txt" "$TEST_TMPDIR/re" "$TEST_TMPDIR/plan" 2>/dev/null || st=$?
-  [ "$st" -eq "$SHUNT_TRY_INVOKE_OVERSIZE" ]
+  [ "$st" -eq 6 ]  # the oversize status of transport_reply.py
   [ $(( SECONDS - t0 )) -le 15 ]
 }
 

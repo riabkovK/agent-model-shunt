@@ -123,8 +123,8 @@ command -v jq >/dev/null 2>&1 || { echo "live-eval-benchmark: 'jq' not found in 
 command -v go >/dev/null 2>&1 || { echo "live-eval-benchmark: 'go' not found in PATH." >&2; exit 1; }
 command -v python3 >/dev/null 2>&1 || { echo "live-eval-benchmark: 'python3' not found in PATH (needed for aggregation)." >&2; exit 1; }
 
-# shellcheck source=../scripts/lib/opencode.sh
-source "$REPO_ROOT/scripts/lib/opencode.sh"
+# shellcheck source=../scripts/lib/py.sh
+source "$REPO_ROOT/scripts/lib/py.sh"
 # Self-fix retry count (default, config file, env override), resolved by scripts/py/shunt/selffix.py.
 # A dead interpreter or an answer that is not a plain count gives the default of 1.
 SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE="${SHUNT_CODE_WRITE_SELF_FIX_CONFIG_FILE:-$HOME/.config/agent-model-shunt/code-write-self-fix-config.json}"

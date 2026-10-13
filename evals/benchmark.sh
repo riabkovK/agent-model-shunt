@@ -24,8 +24,6 @@ EVALS_DIR="$(CDPATH= cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$EVALS_DIR/.." && pwd)"
 BENCHMARKS="$EVALS_DIR/benchmarks.json"
 
-# shellcheck source=../scripts/lib/opencode.sh
-source "$REPO_ROOT/scripts/lib/opencode.sh"
 # shellcheck source=preflight.sh
 source "$REPO_ROOT/evals/preflight.sh"
 evals_preflight

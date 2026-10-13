@@ -5,7 +5,6 @@ HOOK="$REPO_ROOT/hooks/session-start-orchestrator"
 
 setup() {
   shunt_test_setup
-  source "$REPO_ROOT/scripts/lib/models.sh"
   source "$REPO_ROOT/scripts/lib/py.sh"
 }
 

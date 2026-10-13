@@ -539,7 +539,7 @@ FAKE
 @test "fails clearly when every candidate's breaker is open" {
   export SHUNT_BREAKER_THRESHOLD=1
   add_models p/one
-  source "$REPO_ROOT/scripts/lib/opencode.sh"
+  source "$REPO_ROOT/scripts/lib/py.sh"
   shunt_py breaker record-failure -- p/one#code-write
   run_cw_test
   assert_failure
@@ -801,7 +801,7 @@ package src
 
 @test "a deliberate refusal is not a failure: no failover, breaker reset, notes shown, nothing written" {
   add_models p/one p/two
-  source "$REPO_ROOT/scripts/lib/opencode.sh"
+  source "$REPO_ROOT/scripts/lib/py.sh"
   shunt_py breaker record-failure -- p/one#code-write
   shunt_py breaker record-failure -- p/one#code-write
   [ "$(breaker_failures p/one)" = "2" ]

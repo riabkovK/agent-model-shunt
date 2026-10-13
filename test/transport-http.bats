@@ -16,7 +16,8 @@ setup() {
   export ACME_KEY="sk-super-secret-value-123"
   SECRET="$ACME_KEY"
   PATH="$TEST_TMPDIR/bin:$PATH"
-  source "$REPO_ROOT/scripts/lib/opencode.sh"
+  source "$REPO_ROOT/scripts/lib/py.sh"
+  export SHUNT_PROMPTS_DIR="$REPO_ROOT/prompts"
   unset SHUNT_TRANSPORT
   AGENT="shunt-bulk-reader-acme-m1"
   ok_body 'hello there' stop
@@ -75,7 +76,7 @@ write_registry_thinking() {
 
 @test "rendered agent files carry the text of the prompts files" {
   export SHUNT_AGENTS_DIR="$TEST_TMPDIR/agents"
-  shunt_models_materialize_agent acme/m1
+  shunt_py models materialize -- acme/m1
   tail -n 4 "$SHUNT_AGENTS_DIR/shunt-bulk-reader-acme-m1.md" | diff - "$REPO_ROOT/prompts/bulk-reader.md"
   tail -n 45 "$SHUNT_AGENTS_DIR/shunt-code-writer-acme-m1.md" | diff - "$REPO_ROOT/prompts/code-writer.md"
 }
@@ -136,7 +137,7 @@ except reply.Abort as stop:
 @test "guard: an unknown oversize_policy at runtime is a config failure and sends nothing" {
   # Validation rejects such a registry, so exercise the guard on resolved state.
   run guard_size 1000 bogus bulk-reader 6000
-  [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
+  [ "$status" -eq 7 ]  # the config status of transport_reply.py
   assert_output --partial "invalid oversize_policy"
   [ "$(request_count)" -eq 0 ]
 }
@@ -228,7 +229,7 @@ assert (usage.tokens_in, usage.tokens_out) == (0, 0)'
 
 @test "guard: a non-plain context_tokens (1e30) is rejected by the registry validation" {
   write_sized_registry 1e30 null
-  run shunt_models_validate
+  run shunt_py models validate
   [ "$status" -ne 0 ]
   assert_output --partial "invalid context_tokens"
 }
@@ -237,7 +238,7 @@ assert (usage.tokens_in, usage.tokens_out) == (0, 0)'
   local v
   for v in 1e+30 1.5 -3 abc 1234567890123; do
     run --separate-stderr guard_size "$v" "" bulk-reader 100
-    [ "$status" -eq "$SHUNT_TRY_INVOKE_CONFIG" ]
+    [ "$status" -eq 7 ]  # the config status of transport_reply.py
     [[ "$stderr" == *"invalid context_tokens"* ]]
     [[ "$stderr" != *"syntax error"* ]]
   done
@@ -247,7 +248,7 @@ assert (usage.tokens_in, usage.tokens_out) == (0, 0)'
 
 @test "adversary: a context_tokens of 128000.0 does not crash the opencode transport guard with an arithmetic error" {
   write_sized_registry 128000.0 null
-  run shunt_models_validate
+  run shunt_py models validate
   assert_success
   run --separate-stderr opencode_guard "$AGENT" "q"
   [[ "$stderr" != *"syntax error"* ]]

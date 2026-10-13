@@ -1,7 +1,7 @@
 # A fake provider for the http transport tests, on top of the local scripted server
 # (test/py/httpserver.py). It replaces the fake curl these tests used to put on PATH.
 # Load it after test_helper and call fake_http_start in setup (after
-# shunt_test_setup and after sourcing scripts/lib/opencode.sh), stop_http_server in
+# shunt_test_setup and after sourcing scripts/lib/py.sh), stop_http_server in
 # teardown. The old knobs keep working, they are read before every request:
 #   FAKE_CURL_BODY       file with the body of the answer
 #   FAKE_CURL_CODE       HTTP status of the answer (default 200)

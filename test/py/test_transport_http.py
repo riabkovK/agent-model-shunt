@@ -2,7 +2,6 @@
 
 import json
 import os
-import re
 import subprocess
 import sys
 
@@ -67,11 +66,9 @@ def status_of(world, capsys, **kwargs):
     return (0, path), capsys.readouterr().err
 
 
-def test_status_codes_match_transport_sh():
-    text = (REPO_ROOT / "scripts" / "lib" / "transport.sh").read_text()
-    shell = {n: int(v) for n, v in re.findall(r"^SHUNT_TRY_INVOKE_([A-Z]+)=(\d+)", text, re.M)}
-    assert shell == {"TIMEOUT": reply.TIMEOUT, "ERROR": reply.ERROR, "EMPTY": reply.EMPTY, "AUTH": reply.AUTH,
-                     "DEADLINE": 5, "OVERSIZE": reply.OVERSIZE, "CONFIG": reply.CONFIG}
+def test_status_codes_are_the_numbers_the_tests_and_docs_use():
+    assert (reply.TIMEOUT, reply.ERROR, reply.EMPTY, reply.AUTH, reply.OVERSIZE, reply.CONFIG) == (124, 2, 3, 4, 6, 7)
+    assert reply.DEADLINE == 5
 
 
 def test_success_writes_the_normalized_reply(world):
