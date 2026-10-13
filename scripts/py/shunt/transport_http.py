@@ -41,7 +41,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, NoReturn
 
-from . import chunking, env, httpclient, models, providers
+from . import chunking, env, healthcheck, httpclient, models, providers
 from . import transport_reply as reply
 from .deadline import Deadline, DeadlineError
 from .transport_reply import AUTH, CONFIG, DEADLINE, EMPTY, ERROR, NEEDS_CHUNKING, OVERSIZE, TIMEOUT, UNREACHABLE
@@ -80,6 +80,7 @@ class _Setup:
     system: bytes
     context_tokens: str
     policy: str
+    healthcheck: bool = False
 
 
 # ---------------------------------------------------------------- registry
@@ -196,9 +197,13 @@ def _setup(agent: str, environ: Mapping[str, str], found: tuple[dict[str, Any], 
     except providers.ProviderError as exc:
         _fail(CONFIG, str(exc))
     base_url, assumed = _check_base_url(provider, raw_url)
+    try:
+        check_first = providers.field(env.providers_file_text(environ), provider, "healthcheck") == "true"
+    except providers.ProviderError as exc:
+        _fail(CONFIG, str(exc))
     body = _request_body(model, role, model_id)
     return _Setup(model_id, role, provider, base_url, assumed, body, _system_prompt(role, environ),
-                  _text(model.get("context_tokens")), _text(model.get("oversize_policy")))
+                  _text(model.get("context_tokens")), _text(model.get("oversize_policy")), check_first)
 
 
 # ---------------------------------------------------------------- prompt and size guard
@@ -375,6 +380,7 @@ class _Attempt:
         self.deadline = deadline
         self._key: str | None = None
         self._have_key = False
+        self._checked = False
 
     def key(self) -> str | None:
         if not self._have_key:
@@ -386,6 +392,30 @@ class _Attempt:
             self._have_key = True
         return self._key
 
+    def _healthcheck(self, window: Any) -> bool:
+        """The pre-flight check of a provider that asks for one, once per attempt. It runs under the
+        same total deadline as the request, so the request that follows gets the time that is left."""
+        setup = self.setup
+        if self._checked or not setup.healthcheck:
+            return False
+        self._checked = True
+        try:
+            wanted = env.healthcheck_timeout(self.environ)
+            if wanted <= 0:
+                return False
+            limit = wanted if window.max_time is None else min(wanted, window.max_time)
+            key = self.key()
+            headers = {"Authorization": f"Bearer {key}"} if key else {}
+            reason = healthcheck.check(setup.provider, setup.base_url, headers, limit, self.environ)
+        except env.EnvError as exc:
+            _fail(CONFIG, str(exc))
+        if reason is None:
+            return True
+        if window.capped and limit < wanted and reason == healthcheck.NO_ANSWER:
+            self.deadline.note(setup.model_id)
+            raise _Stop(DEADLINE)
+        _fail(UNREACHABLE, f"{setup.model_id} healthcheck failed: {reason}")
+
     def ask(self, prompt: bytes) -> dict[str, Any]:
         """One request within the time left of the total deadline. DEADLINE when none is left, or
         when the request ran out of the time it was cut to."""
@@ -393,6 +423,11 @@ class _Attempt:
         if window is None:
             self.deadline.note(self.setup.model_id)
             raise _Stop(DEADLINE)
+        if self._healthcheck(window):  # the check used up some of the total deadline
+            window = self.deadline.request_time()
+            if window is None:
+                self.deadline.note(self.setup.model_id)
+                raise _Stop(DEADLINE)
         try:
             return _send(self.setup, prompt, self.environ, self.key(), window.max_time)
         except _Stop as stop:

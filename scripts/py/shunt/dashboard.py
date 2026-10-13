@@ -4,7 +4,7 @@ Port of scripts/lib/dashboard.sh. One record per line, fields separated by singl
 spaces (the tab below only parses the provider list), values without spaces:
   registry: ok|missing|invalid
   providers_file: ok|missing|invalid
-  provider <name> transport=<t> base_url=<url|-> key=<type|env:VAR> key_present=yes|no|unknown
+  provider <name> transport=<t> base_url=<url|-> key=<type|env:VAR> key_present=yes|no|unknown [healthcheck=on|off]
   provider <name> invalid
   model <id> enabled=.. active=.. roles=.. thinking=on|off thinking_off=set|none
         context_tokens=<n|unset> oversize_policy=<p>(|default) provider_transport=<t>
@@ -73,6 +73,13 @@ def key_present(environ: Mapping[str, str], name: str) -> str:
     return "yes"
 
 
+def _healthcheck_state(path: str, name: str) -> str:
+    try:
+        return "on" if providers.field(path, name, "healthcheck") == "true" else "off"
+    except providers.ProviderError:
+        return "off"
+
+
 def provider_records(environ: Mapping[str, str], state: str, issues: list[str]) -> list[str]:
     path = env.providers_file_text(environ)
     if state == "missing":
@@ -89,7 +96,8 @@ def provider_records(environ: Mapping[str, str], state: str, issues: list[str]) 
         transport, base_url, key = (rest.split(SEP) + ["", "", ""])[:3]
         # Keys are not looked up while the file is invalid: every lookup fails.
         present = key_present(environ, name) if state == "ok" else "unknown"
-        out.append(f"provider {name} transport={transport} base_url={base_url} key={key} key_present={present}")
+        check = f" healthcheck={_healthcheck_state(path, name)}" if state == "ok" else ""
+        out.append(f"provider {name} transport={transport} base_url={base_url} key={key} key_present={present}{check}")
         if transport == "http" and present == "no":
             issues.append(f"key-missing {name}")
     return out

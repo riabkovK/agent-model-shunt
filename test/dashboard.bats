@@ -53,7 +53,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   write_models "$ONE_MODEL"
   ACME_KEY=secret-value-123 run "$SHUNT_MODELS_BIN" dashboard
   assert_success
-  assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=env:ACME_KEY key_present=yes"
+  assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=env:ACME_KEY key_present=yes healthcheck=off"
   assert_line "model acme/m1 enabled=yes active=yes roles=bulk-read,code-write thinking=off thinking_off=none context_tokens=128000 oversize_policy=map_reduce(default) provider_transport=http"
   assert_line "breaker_state acme/m1 bulk-read failures=0 open=false"
   assert_line "breaker_state acme/m1 code-write failures=0 open=false"
@@ -69,7 +69,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   write_models "$ONE_MODEL"
   run "$SHUNT_MODELS_BIN" dashboard
   assert_success
-  assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=plaintext key_present=yes"
+  assert_line "provider acme transport=http base_url=https://api.acme.test/v1 key=plaintext key_present=yes healthcheck=off"
   refute_output --partial "plain-secret-456"
   assert_equal "${lines[${#lines[@]}-1]}" "setup: ok"
 }
@@ -89,7 +89,7 @@ ONE_MODEL='{"version":1,"active":"acme/m1","models":[{"id":"acme/m1","agent":"a1
   write_models '{"version":1,"active":null,"models":[{"id":"acme/m1","agent":"a1","enabled":true,"thinking":false,"roles":["bulk-read"]}]}'
   run "$SHUNT_MODELS_BIN" dashboard
   assert_success
-  assert_line --partial "key=none key_present=yes"
+  assert_line --partial "key=none key_present=yes healthcheck=off"
   assert_line --partial "context_tokens=unset"
   assert_line "issue context-missing acme/m1"
   assert_equal "${lines[${#lines[@]}-1]}" "setup: incomplete"

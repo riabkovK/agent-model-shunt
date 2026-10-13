@@ -55,7 +55,7 @@ def test_a_complete_setup_is_ok_and_never_prints_the_key(cfg):
     cfg.providers(acme=HTTP)
     cfg.models({"id": "acme/m1", "context_tokens": 128000, "thinking": True}, active="acme/m1")
     lines = cfg.report(ACME_KEY=KEY)
-    assert "provider acme transport=http base_url=https://api.acme.test/v1 key=env:ACME_KEY key_present=yes" in lines
+    assert "provider acme transport=http base_url=https://api.acme.test/v1 key=env:ACME_KEY key_present=yes healthcheck=off" in lines
     assert ("model acme/m1 enabled=yes active=yes roles=bulk-read,code-write thinking=on thinking_off=none "
             "context_tokens=128000 oversize_policy=map_reduce(default) provider_transport=http") in lines
     assert "breaker_state acme/m1 code-write failures=0 open=false" in lines

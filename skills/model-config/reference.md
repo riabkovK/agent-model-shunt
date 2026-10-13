@@ -34,7 +34,7 @@ Line format (one record per line, space separated, never a key value):
 - `registry: ok|missing|invalid`. `missing` is legacy single-agent mode.
   `invalid` means a hand-edit broke `models.json`; `status` prints the reason.
 - `providers_file: ok|missing|invalid`.
-- `provider <name> transport=<t> base_url=<url|-> key=<type|env:VAR> key_present=yes|no|unknown`.
+- `provider <name> transport=<t> base_url=<url|-> key=<type|env:VAR> key_present=yes|no|unknown healthcheck=on|off`.
   `key_present` only says whether a key resolves. It is `yes` for key type
   `none`, and `unknown` while `providers.json` is invalid.
 - `provider <name> invalid`: that entry is broken. `provider list` names why.

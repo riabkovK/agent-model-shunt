@@ -239,6 +239,28 @@ reads it from a hidden prompt:
 `env` key avoids that. See
 [ADR 0019](docs/adr/0019-api-key-storage.md).
 
+### Healthcheck for local servers (HTTP transport)
+
+A server on a laptop (LM Studio, ollama, llama.cpp) may accept the TCP
+connection while the machine sleeps and still never answer. Set
+`"healthcheck": true` on such a provider in `providers.json` (default `false`,
+edit the file by hand, there is no flag):
+
+```json
+{"version": 1, "providers": {
+  "lmstudio": {"transport": "http", "base_url": "http://192.168.1.20:1234/v1",
+               "key": {"type": "none"}, "healthcheck": true}}}
+```
+
+Before the chat request shunt then sends `GET <base_url>/models` with the same
+auth header. Any HTTP answer below 500 counts as healthy, even a 404. A
+connection error, a timeout or a 5xx answer stops the call with
+`shunt: <model> healthcheck failed: <reason>`, counts as "unreachable" (short
+breaker cooldown) and the next model is tried. A healthy answer is remembered
+per provider and base_url for `SHUNT_HEALTHCHECK_TTL` seconds in
+`~/.cache/agent-model-shunt/healthcheck.json` (no key in it). The check time
+counts toward the total deadline.
+
 ### Large files (HTTP transport)
 
 Each model has a `context_tokens` value, from `shunt-models detect-context
@@ -400,6 +422,8 @@ both, so the skill gets no fragment. Invalid fragments are always skipped withou
 | `SHUNT_BREAKER_COOLDOWN_SECONDS` | `300` | Env override for how long a model stays paused once its breaker opens; takes precedence over the config file. |
 | `SHUNT_BREAKER_UNREACHABLE_COOLDOWN_SECONDS` | `120` | Like `SHUNT_BREAKER_COOLDOWN_SECONDS`, but for a model that failed as "unreachable" (no connection within `SHUNT_CONNECT_TIMEOUT`, or no route to the host). The config file field is `unreachable_cooldown_seconds`. The threshold is the same as for other failures. |
 | `SHUNT_CONNECT_TIMEOUT` | `5` | `http` transport only: seconds the TCP connect (and TLS handshake) may take, a non-negative number. `0` means only `SHUNT_TIMEOUT_SECONDS` applies. A connect that does not finish fails fast as "unreachable" (`shunt: <model> unreachable: no connection within Ns`) and the next model is tried, so a sleeping laptop no longer costs a whole request timeout. It has no effect when it is not shorter than the request timeout. A model that connects but answers slowly is still a plain timeout. |
+| `SHUNT_HEALTHCHECK_TIMEOUT` | `3` | `http` transport only, for providers with `"healthcheck": true`: seconds the pre-flight `GET <base_url>/models` may take, a non-negative number. `0` disables the check. |
+| `SHUNT_HEALTHCHECK_TTL` | `60` | Seconds a healthy healthcheck answer is remembered, a non-negative number. `0` means no cache, so every call asks. Failures are never cached. |
 
 ## Management skills
 

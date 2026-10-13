@@ -44,7 +44,7 @@ _ENV_REF_STRICT_RE = re.compile(r"[A-Za-z_][A-Za-z0-9_]*")  # bash [[ =~ ]] anch
 _URL_FORBIDDEN = frozenset(" \t\n\v\f\r\x7f") | frozenset(chr(c) for c in range(32))
 _BASH_Q_SAFE = frozenset("ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789_-.~=:+@%/#")
 
-FIELD_DEFAULTS = {"transport": "opencode", "base-url": "", "key-type": "none", "key-ref": ""}
+FIELD_DEFAULTS = {"transport": "opencode", "base-url": "", "key-type": "none", "key-ref": "", "healthcheck": "false"}
 
 
 class ProviderError(Exception):
@@ -103,6 +103,8 @@ def entry_problem(name: str, value: Any) -> str | None:
         return f"{label}: base_url is not a string"
     if _URL_CRED_RE.search(base_url):
         return f"{label}: base_url has credentials (user:password@) in it"
+    if value.get("healthcheck") is not None and not isinstance(value.get("healthcheck"), bool):
+        return f"{label}: healthcheck is not a boolean (true or false)"
     key = _alt(value.get("key"), {})
     if not isinstance(key, dict):
         return f'{label}: key is not an object (expected {{"type":"...","ref":"..."}})'
@@ -217,6 +219,8 @@ def field(path: str, provider: str, name: str) -> str:
         value = entry.get("transport")
     elif name == "base-url":
         value = entry.get("base_url")
+    elif name == "healthcheck":
+        return "true" if entry.get("healthcheck") is True else default
     else:
         key = entry.get("key")
         value = key.get("type" if name == "key-type" else "ref") if isinstance(key, dict) else None
