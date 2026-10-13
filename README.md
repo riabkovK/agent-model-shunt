@@ -603,6 +603,30 @@ of the latest `evals/fidelity-benchmark.sh` run: on the current question
 set (n=1), delegation showed 100% recall on every question, including the
 adversarial ones, and zero unsupported claims.
 
+## Development
+
+Running the plugin needs only `bash` and Python 3.11+. Running the tests needs more:
+
+- [bats-core](https://github.com/bats-core/bats-core) with `bats-support` and
+  `bats-assert`, plus `jq` (the bats tests build and check JSON with it) and GNU
+  `parallel` for `bats -j`.
+- `pytest` for `test/py`. Without a virtualenv:
+  `uv run --no-project --with pytest python -m pytest test/py -q`.
+- Docker, optional, for the pinned images in `test/` (`make test`,
+  `make test-bash32` for the macOS system bash 3.2, `make test-py311` for the
+  oldest supported Python).
+
+```bash
+make test          # bats + pytest in Docker, or local bats if Docker is missing
+make test-local    # bats on the host
+make test-py       # pytest on the host
+```
+
+Set `PYTHONDONTWRITEBYTECODE=1` when running tests from the repository, so no
+`__pycache__` lands under `scripts/` or `hooks/`. The live evals in
+[Evals](#evals) also need a configured provider and, for the baseline and
+fidelity runs, the `claude` CLI.
+
 ## Scope
 
 Calls go through a transport layer with two transports, chosen per provider:
