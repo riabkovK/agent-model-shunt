@@ -70,7 +70,9 @@ command -v python3 >/dev/null 2>&1 || { echo "baseline-benchmark: 'python3' not 
 
 # shellcheck source=../scripts/lib/opencode.sh
 source "$REPO_ROOT/scripts/lib/opencode.sh"
-shunt_preflight
+# shellcheck source=preflight.sh
+source "$REPO_ROOT/evals/preflight.sh"
+evals_preflight
 
 mkdir -p "$RESULTS_DIR"
 : > "$RESULTS_JSONL"

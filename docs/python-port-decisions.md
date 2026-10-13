@@ -237,3 +237,10 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 - 2026-10-13. Review 10-12 deferred: `failover.run_role` does not unlink the reply when the accept callback raises OSError (LOW, it is a temp dir).
 - 2026-10-13. Review 10-12 deferred: `--allow-outside` does not deny `/etc/shadow` and similar. It is an explicit opt-in flag, pending a user decision.
 - 2026-10-13. Review 10-12 deferred: bulk-read stdout is not stripped of control characters. The consumer is Claude, not a terminal, pending a user decision.
+
+## Evals repair
+
+- 2026-10-13. `evals/benchmark.sh`, `baseline-benchmark.sh`, `fidelity-benchmark.sh` and `live-eval-benchmark.sh` called `shunt_preflight`, which the Python port removed from `scripts/lib`. It was the only missing shell function used by the evals. The other calls go to the launchers `scripts/bulk-read` and `scripts/code-write`, which exist.
+- The four scripts now source `evals/preflight.sh` and call `evals_preflight`. It checks `SHUNT_OPENCODE_BIN` (default `opencode`), `jq` and `python3`, with the old message wording. The `timeout` check is gone because the Python core enforces timeouts itself. `live-eval-benchmark.sh` calls it only when the `shunt` kind is selected, as before.
+- Output formats of the scripts and result files are unchanged, so `evals/aggregate-*.py` need no change.
+- `test/py/test_evals_functions.py` statically fails when any `evals/*.sh` calls a `shunt_*` function that is not defined in `scripts/lib/*.sh` (or in the script itself).

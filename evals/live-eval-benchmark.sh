@@ -127,7 +127,7 @@ command -v python3 >/dev/null 2>&1 || { echo "live-eval-benchmark: 'python3' not
 source "$REPO_ROOT/scripts/lib/opencode.sh"
 # shellcheck source=../scripts/lib/selffix.sh
 source "$REPO_ROOT/scripts/lib/selffix.sh"
-case " $LIVE_EVAL_KINDS " in *" shunt "*) shunt_preflight ;; esac
+case " $LIVE_EVAL_KINDS " in *" shunt "*) source "$REPO_ROOT/evals/preflight.sh"; evals_preflight ;; esac
 
 mkdir -p "$RESULTS_DIR" "$GOTEST_DIR/runs"
 : > "$RESULTS_JSONL"

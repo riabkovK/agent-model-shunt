@@ -26,7 +26,9 @@ BENCHMARKS="$EVALS_DIR/benchmarks.json"
 
 # shellcheck source=../scripts/lib/opencode.sh
 source "$REPO_ROOT/scripts/lib/opencode.sh"
-shunt_preflight
+# shellcheck source=preflight.sh
+source "$REPO_ROOT/evals/preflight.sh"
+evals_preflight
 
 token_estimate() {
   echo $(( (${#1} + 3) / 4 ))
