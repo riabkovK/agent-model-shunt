@@ -115,9 +115,14 @@ def _enabled(model: Mapping[str, Any]) -> bool:
 
 # ---------------------------------------------------------------- validation
 
+_UNICODE_LINE_BREAKS = frozenset("\u0085\u2028\u2029")
+
+
 def has_control_char(text: str) -> bool:
-    """True when text holds U+0000-U+001F or U+007F, which would break out of YAML frontmatter."""
-    return any(ord(c) < 0x20 or ord(c) == 0x7F for c in text)
+    """True when text holds U+0000-U+001F, U+007F or a Unicode line break (U+0085, U+2028, U+2029).
+
+    Any of them would break out of YAML frontmatter."""
+    return any(ord(c) < 0x20 or ord(c) == 0x7F or c in _UNICODE_LINE_BREAKS for c in text)
 
 
 def _frontmatter_strings(model: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -192,6 +197,8 @@ def _agent_name_error(models: list[dict[str, Any]]) -> str | None:
         if not AGENT_NAME_RE.fullmatch(agent):
             return (f'model "{mid}" has an invalid agent name "{agent}": '
                     "use lowercase letters, digits and dashes.")
+        if agent == writer:
+            return f'model "{mid}" has the agent name "{agent}", which is its own code-writer agent file.'
         for name in (agent, writer):
             if not name:
                 continue

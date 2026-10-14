@@ -145,6 +145,11 @@ def note_call(environ: Mapping[str, str], provider: str, base_url: str, model: s
 def note_connect_failure(environ: Mapping[str, str], provider: str, base_url: str, model: str) -> None:
     """The real call could not connect: leave the status as it is and let a probe decide (it retries
     the connect). Never waits and never raises."""
+    try:
+        if env.healthcheck_timeout(environ) <= 0:
+            return  # the healthcheck is off
+    except Exception:  # noqa: BLE001  an invalid value is reported by the gate
+        return
     spawn(environ, provider, base_url, model)
 
 
@@ -156,11 +161,17 @@ def clear_breaker(environ: Mapping[str, str], model_id: str) -> None:
 
 
 def owns_unreachable(environ: Mapping[str, str], model_id: str) -> bool:
-    """True when the healthcheck of this model's provider is on. Its unhealthy status, which expires
-    after SHUNT_HEALTHCHECK_RETRY, then replaces the breaker pause for an unreachable failure."""
+    """True when the healthcheck of this model's provider is on and its cache folder is trusted. Its
+    unhealthy status, which expires after SHUNT_HEALTHCHECK_RETRY, then replaces the breaker pause for
+    an unreachable failure. An untrusted folder gets no probe and no status, so the breaker keeps it."""
     try:
         if env.healthcheck_timeout(environ) <= 0:
             return False
+        cache = env.healthcheck_cache_file(environ)
+        if not healthcheck.folder_would_be_trusted(cache.parent):
+            return False
+        if cache.is_symlink() or (cache.exists() and not cache.is_file()):
+            return False  # _store never writes such a path, so no status would ever replace the pause
         return providers.field(env.providers_file_text(environ), model_id.split("/", 1)[0], "healthcheck") == "true"
     except Exception:  # noqa: BLE001  unreadable config: keep the breaker
         return False

@@ -22,7 +22,7 @@ from typing import Any
 from . import env
 from .jsonio import JsonReadError, read_json, write_json_atomic
 from .lockfile import LockTimeout, file_lock
-from .models import OVERSIZE_POLICIES, ROLES, ShuntError, slug
+from .models import OVERSIZE_POLICIES, ROLES, ShuntError, has_control_char, slug
 
 MAX_CONTEXT_DIGITS = 12  # keep in sync with MAX_CONTEXT_DIGITS in models_cli.py
 CLEAR = "--clear"
@@ -114,9 +114,13 @@ def parse_roles(arg: str) -> list[str]:
 
 def add(path: str, model_id: str, roles_csv: str) -> str:
     """Append a model with the given roles (all roles when empty). Returns its agent name."""
+    if has_control_char(model_id):  # its agent file would be refused after the entry is saved
+        raise ShuntError(f"model id {json.dumps(model_id)} contains a control character.")
     roles = parse_roles(roles_csv) if roles_csv else list(ROLES)
     doc = _load(path, create=True)
-    if any(isinstance(m, dict) and m.get("id") == model_id for m in doc["models"]):
+    if not all(isinstance(m, dict) for m in doc["models"]):  # materialize would fail after the save
+        raise ShuntError(f"{path} has an entry that is not an object, nothing was changed.")
+    if any(m.get("id") == model_id for m in doc["models"]):
         raise ShuntError(f"model '{model_id}' is already in the registry.")
     agent = slug(model_id)
     entry = {"id": model_id, "agent": agent, "enabled": True, "thinking": False,

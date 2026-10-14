@@ -355,3 +355,34 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 
 - 2026-10-13. A real call that cannot connect no longer marks the model unhealthy. `transport_http` raises `_ConnectFailed` (a subclass of the abort, still status UNREACHABLE) for `unreachable`, and for `connect` and `dns` on a healthcheck provider. `Attempt.ask` then calls `healthcheck_bg.note_connect_failure`, which runs `spawn` even when the cached status is fresh. The per key lock prevents duplicate probes. The call itself fails over as before. A 404 or 5xx on the model route still goes to `note_call(healthy=False)`.
 - 2026-10-13. The probe retries a request that made no connection (`unreachable`, `connect`, `dns`) `PROBE_CONNECT_RETRIES = 2` more times, at once, in each step. A timeout after a connection, an HTTP status, a missing model or a bad completion are not retried. `time_cap` now counts `2 * (1 + PROBE_CONNECT_RETRIES)` connect timeouts instead of 2, so the child cap and the stale lock rule (twice the cap) fit three attempts in both steps.
+
+## Evals: no opencode check, models recorded in result rows
+
+- 2026-10-14. `evals/preflight.sh` no longer requires the `opencode` binary. HTTP providers do not need it, and `scripts/bulk-read` and `scripts/code-write` already fail with the same message when a provider on the opencode transport has no binary.
+- 2026-10-14. The baseline, fidelity and live-eval scripts add `claude_model` and `delegate_model` to every result row at the end of the run, in one jq pass, instead of in each of the many row writers.
+- 2026-10-14. `delegate_model` is the registry's first choice for the role (bulk-read, or code-write for live-eval) read from `scripts/shunt-models status` before the first call. Failover can answer from a later model, so the field names the model the run was aimed at, not the one that answered each call. An empty first choice is stored as null.
+- 2026-10-14. `delegate_model` drops the provider prefix (`prov/Spark/x` becomes `Spark/x`). A provider name is often a private host alias, and the results files are committed.
+- 2026-10-14. `evals/benchmark.sh` is left as is: it calls no Claude model and writes no result rows.
+
+## Adversary review of PRs 16 to 20
+
+- 2026-10-14. `models_write.add` refuses a model id with a control character before it saves the entry. Before, `materialize_agent` refused the agent file only after the save, and the broken entry switched the registry to the legacy single agent.
+- 2026-10-14. `owns_unreachable` is False when the healthcheck cache folder is untrusted (`trusted_folder`). Such a folder gets no probe and no status, so the breaker keeps the pause for an unreachable model instead of nothing pausing it.
+- 2026-10-14. `evals/baseline-benchmark.sh` refuses an unknown `BASELINE_KINDS` word before it truncates the results file, and joins the kinds with single spaces, so a tab or newline between kinds still matches.
+- 2026-10-14. `evals_stamp_rows` removes its temp file and warns when a line is not JSON. The callers go on to aggregation (`|| true`): unstamped rows are still worth a summary.
+- 2026-10-14. `evals_stamp_rows` takes the kinds that call the delegate. Other rows (`no-resume`, `resume`, live-eval `direct`) get `delegate_model: null`. Rows without a `kind` (fidelity) always get it, since each of them asks the delegate.
+
+## Adversary review, round 2
+
+- 2026-10-14. `has_control_char` also refuses the Unicode line breaks U+0085, U+2028 and U+2029. They end a line in YAML, so an id holding one could still inject a frontmatter key.
+- 2026-10-14. `owns_unreachable` is False when the cache file is a symlink or exists and is not a regular file. `_store` never writes such a path, so no unhealthy status would ever appear and nothing would pause an unreachable model.
+- 2026-10-14. `note_connect_failure` starts no probe when `SHUNT_HEALTHCHECK_TIMEOUT=0` turns the healthcheck off, like `gate`, `warm_up` and `owns_unreachable`. Before, the probe ran with a timeout of 0, which means no limit.
+- 2026-10-14. `owns_unreachable` no longer creates the healthcheck cache folder. It uses `folder_would_be_trusted`, which counts a missing folder as fine (the probe makes it 0700) and applies the same owner and mode rules to an existing one.
+- 2026-10-14. `models_write.add` refuses a registry with a non-object entry before it saves. Before, `materialize_agent` failed on that entry after the save, so the command reported an unreadable registry but had already added the model. `roles` is left as is: it must stay able to repair a registry that is invalid only because of a bad `roles` value.
+- 2026-10-14. Validation refuses an `agent` name equal to the model's own code-writer agent name. The duplicate check skipped the same model, so the writer render overwrote the bulk agent file. Another model's writer name was already refused.
+- 2026-10-14. `evals_stamp_rows` is now a one-line wrapper around `evals/stamp-rows.py` (stdlib Python, not jq). A row that is not a JSON object, or a file that is not UTF-8, fails with the file left as it was. `kind` counts as a delegate kind only when it is a string equal to one of them. The script writes through a temp file in the folder of the real path (`os.path.realpath`) and `os.replace`, so a symlinked results file keeps its link, and any file name works. Python parses integers exactly and keeps key order, so big ids and row layout survive.
+- 2026-10-14. Left as is: a CRLF status line would leave `\r` in the `evals_first_choice` output. `shunt-models status` prints LF only, so it is unreachable today.
+- 2026-10-14. Left as is: `BASELINE_KINDS='*'` is glob expanded in the validation loop, so the error names a file instead of `*`. It is cosmetic, and a file named after a kind would be needed to get past the check.
+- 2026-10-14. Left as is: a healthy probe or real call clears the whole breaker state of the model, including the `#code-write` keys. A model that fails only on real requests gets its pause reset every TTL. Accepted: the healthcheck scope is reachability only.
+- 2026-10-14. Left as is: a healthcheck child killed by SIGKILL leaves its lock until it goes stale. Unreachable failures are neither probed nor breaker paused meanwhile. Accepted: rare and self-healing.
+- 2026-10-14. The invalid UTF-8 and symlink probes of `evals_stamp_rows` were not left as is: the Python version fails on invalid UTF-8 with the file intact and keeps a symlink.

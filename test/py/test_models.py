@@ -546,3 +546,12 @@ def test_thinking_for_is_role_aware(reg):
     assert models.thinking_for(reg.file, "p/m", "code-write") == ["true"]
     assert reg.cli("thinking-for", "p/m", "code-write").stdout == "true\n"
     assert reg.cli("thinking-for", "p/m").stdout == "false\n"
+
+
+# ---- adversarial round 2
+
+def test_agent_named_like_its_own_code_writer_file_is_refused(reg):
+    # The writer render would overwrite the bulk agent file, so validate refuses the name.
+    reg.write([{"id": "p/m", "agent": "shunt-code-writer-p-m"}])
+    reason = models.validate(reg.file)
+    assert reason is not None and "shunt-code-writer-p-m" in reason
