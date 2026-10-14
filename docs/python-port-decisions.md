@@ -371,3 +371,7 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 - 2026-10-14. `evals/baseline-benchmark.sh` refuses an unknown `BASELINE_KINDS` word before it truncates the results file, and joins the kinds with single spaces, so a tab or newline between kinds still matches.
 - 2026-10-14. `evals_stamp_rows` removes its temp file and warns when a line is not JSON. The callers go on to aggregation (`|| true`): unstamped rows are still worth a summary.
 - 2026-10-14. `evals_stamp_rows` takes the kinds that call the delegate. Other rows (`no-resume`, `resume`, live-eval `direct`) get `delegate_model: null`. Rows without a `kind` (fidelity) always get it, since each of them asks the delegate.
+
+## Adversary review, round 2
+
+- 2026-10-14. `has_control_char` also refuses the Unicode line breaks U+0085, U+2028 and U+2029. They end a line in YAML, so an id holding one could still inject a frontmatter key.

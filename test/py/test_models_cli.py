@@ -1006,3 +1006,31 @@ def test_add_of_an_odd_id_either_succeeds_with_an_agent_file_or_leaves_no_entry(
     else:
         assert (cli.agents / f"{entries[0]['agent']}.md").is_file()
 
+
+
+# ---------------------------------------------------------------- adversarial probes
+
+@pytest.mark.parametrize("sep", [" ", " ", "\u0085", "\x7f", "\x1b", "\r"])
+def test_add_refuses_a_line_break_or_control_char_in_the_id(cli, sep):
+    cli.opencode("p")
+    err = cli.fail("add", f"p/a{sep}b")
+    assert "control character" in err
+    assert not cli.models.exists() or cli.doc()["models"] == []
+    assert not cli.agents.exists() or not list(cli.agents.iterdir())
+
+
+def test_add_with_a_unicode_line_separator_does_not_reach_the_agent_file(cli):
+    cli.opencode("p")
+    code = cli.run("add", "p/a name: evil")
+    for agent in (cli.agents.iterdir() if cli.agents.exists() else []):
+        assert " " not in agent.read_text()
+    assert code != 0
+
+
+@pytest.mark.parametrize("model_id", ["p/-x", "p/a b", "p/a/b", "p/ä", "p/" + "x" * 5000])
+def test_adv_add_accepts_odd_but_printable_ids_and_writes_matching_agent_files(cli, model_id):
+    cli.opencode("p")
+    code = cli.run("add", model_id)
+    if code == 0:
+        assert cli.entry()["id"] == model_id
+        assert (cli.agents / f"{cli.entry()['agent']}.md").is_file()
