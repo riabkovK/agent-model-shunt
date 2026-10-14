@@ -114,6 +114,8 @@ def _groups(entries: Sequence[Any], key: Any) -> list[list[Any]]:
 
 def _sums(rows: Sequence[Any], with_bytes: bool = False) -> dict[str, Any]:
     out = {
+        "delegate_input_tokens": _add([_field(r, "delegate_input_tokens") for r in rows]),
+        "delegate_output_tokens": _add([_field(r, "delegate_output_tokens") for r in rows]),
         "delegate_cost_usd": _add([_field(r, "delegate_cost_usd") for r in rows]),
         "avoided_tokens_estimate": _add([_field(r, "avoided_tokens_estimate") for r in rows]),
         "avoided_output_tokens_estimate": _add([_alt(_field(r, "avoided_output_tokens_estimate"), 0) for r in rows]),

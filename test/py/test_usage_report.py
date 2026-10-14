@@ -57,6 +57,17 @@ def test_groups_by_tool_and_model_and_sums_in_order(tmp_path, capsys):
     assert err.count("\nshunt: ") == 3 and err.startswith("\nshunt: avoided_tokens_estimate")
 
 
+def test_tool_and_model_groups_sum_delegate_tokens(tmp_path, capsys):
+    rows = [entry("p/one", "bulk-read"), entry("p/one", "bulk-read", delegate_input_tokens=30),
+            entry("p/two", "code-write", delegate_output_tokens=7)]
+    _, out, _ = report(write_log(tmp_path / "u.jsonl", rows), capsys)
+    data = json.loads(out)
+    assert [(t["tool"], t["delegate_input_tokens"], t["delegate_output_tokens"]) for t in data["by_tool"]] == [
+        ("bulk-read", 40, 10), ("code-write", 10, 7)]
+    assert [(m["model"], m["delegate_input_tokens"], m["delegate_output_tokens"]) for m in data["by_model"]] == [
+        ("p/one", 40, 10), ("p/two", 10, 7)]
+
+
 def test_a_legacy_agent_name_is_not_reported_as_a_model(tmp_path, capsys):
     rows = [entry("bulk-reader"), entry("bulk-reader", model="p/legacy", tool="bulk-read")]
     _, out, _ = report(write_log(tmp_path / "u.jsonl", rows), capsys)
