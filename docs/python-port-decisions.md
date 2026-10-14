@@ -368,3 +368,4 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 
 - 2026-10-14. `models_write.add` refuses a model id with a control character before it saves the entry. Before, `materialize_agent` refused the agent file only after the save, and the broken entry switched the registry to the legacy single agent.
 - 2026-10-14. `owns_unreachable` is False when the healthcheck cache folder is untrusted (`trusted_folder`). Such a folder gets no probe and no status, so the breaker keeps the pause for an unreachable model instead of nothing pausing it.
+- 2026-10-14. `evals/baseline-benchmark.sh` refuses an unknown `BASELINE_KINDS` word before it truncates the results file, and joins the kinds with single spaces, so a tab or newline between kinds still matches.

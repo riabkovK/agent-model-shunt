@@ -88,3 +88,12 @@ def test_stamp_rows_keeps_an_empty_file_empty(tmp_path):
     result = _run(tmp_path, f'evals_stamp_rows "{rows}" haiku x')
     assert result.returncode == 0, result.stderr
     assert rows.read_text() == ""
+
+
+@pytest.mark.parametrize("kinds", ["shunt-lve", "shunt nope"])
+def test_baseline_refuses_an_unknown_kind(tmp_path, kinds):
+    script = ROOT / "evals" / "baseline-benchmark.sh"
+    env = dict(os.environ, BASELINE_KINDS=kinds, SHUNT_BASELINE_MODEL="haiku")
+    result = subprocess.run([shutil.which("bash"), str(script)], capture_output=True, text=True, env=env, timeout=30)
+    assert result.returncode == 1
+    assert "unknown kind" in result.stderr

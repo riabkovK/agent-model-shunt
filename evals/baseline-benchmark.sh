@@ -67,6 +67,16 @@ esac
 SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-300}"
 SHUNT_LIVE_TIMEOUT="${SHUNT_LIVE_TIMEOUT:-600}"
 BASELINE_KINDS="${BASELINE_KINDS:-no-resume resume shunt shunt-live}"
+# A typo would match no kind, and the results file is truncated before the loop.
+[ -n "${BASELINE_KINDS//[[:space:]]/}" ] || { echo "baseline-benchmark: BASELINE_KINDS is empty." >&2; exit 1; }
+for kind in $BASELINE_KINDS; do
+  case "$kind" in
+    no-resume|resume|shunt|shunt-live) ;;
+    *) echo "baseline-benchmark: unknown kind '$kind' in BASELINE_KINDS (known: no-resume resume shunt shunt-live)." >&2; exit 1 ;;
+  esac
+done
+# One space between kinds: the loop below matches " $BASELINE_KINDS " against " kind ".
+BASELINE_KINDS=$(echo $BASELINE_KINDS)
 ITERATIONS="${ITERATIONS:-3}"
 
 command -v claude >/dev/null 2>&1 || { echo "baseline-benchmark: 'claude' not found in PATH." >&2; exit 1; }
