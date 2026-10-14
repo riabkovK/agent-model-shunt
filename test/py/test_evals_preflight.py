@@ -124,3 +124,111 @@ def test_baseline_refuses_an_unknown_kind(tmp_path, kinds):
     result = subprocess.run([shutil.which("bash"), str(script)], capture_output=True, text=True, env=env, timeout=30)
     assert result.returncode == 1
     assert "unknown kind" in result.stderr
+
+
+# ---------------------------------------------------------------- adversarial probes
+
+def test_stamp_rows_big_integer_survives_unchanged(tmp_path):
+    rows = tmp_path / "r.jsonl"
+    rows.write_text('{"id":12345678901234567890123}\n')
+    _run(tmp_path, f'evals_stamp_rows "{rows}" haiku x')
+    assert '"id":12345678901234567890123' in rows.read_text()
+
+
+@pytest.mark.parametrize("row", ["[1,2]", "5", '"s"'])
+def test_stamp_rows_non_object_row_leaves_file_intact(tmp_path, row):
+    rows = tmp_path / "r.jsonl"
+    original = '{"a":1}\n' + row + "\n"
+    rows.write_text(original)
+    result = _run(tmp_path, f'evals_stamp_rows "{rows}" haiku x')
+    assert result.returncode != 0
+    assert rows.read_text() == original
+    assert not list(tmp_path.glob("r.jsonl.tmp.*"))
+
+
+def test_stamp_rows_null_row_is_not_turned_into_an_object(tmp_path):
+    rows = tmp_path / "r.jsonl"
+    rows.write_text('null\n')
+    _run(tmp_path, f'evals_stamp_rows "{rows}" haiku x')
+    assert rows.read_text().strip() == "null"
+
+
+def test_stamp_rows_file_with_a_leading_dash_name(tmp_path):
+    rows = tmp_path / "-r.jsonl"
+    rows.write_text('{"a":1}\n')
+    result = _run(tmp_path, f'cd "{tmp_path}"; evals_stamp_rows -r.jsonl haiku x')
+    assert result.returncode == 0, result.stderr
+    assert json.loads(rows.read_text())["claude_model"] == "haiku"
+
+
+def test_stamp_rows_name_with_spaces_and_newline(tmp_path):
+    rows = tmp_path / "a b\nc.jsonl"
+    rows.write_text('{"a":1}\n')
+    result = _run(tmp_path, 'evals_stamp_rows "$ROWS" haiku x'.replace("$ROWS", str(rows).replace("\n", "$'\\n'")) if False else
+                  f'evals_stamp_rows "{tmp_path}/a b"$\'\\n\'"c.jsonl" haiku x')
+    assert result.returncode == 0, result.stderr
+    assert json.loads(rows.read_text())["claude_model"] == "haiku"
+
+
+def test_stamp_rows_kind_that_is_not_a_string(tmp_path):
+    rows = tmp_path / "r.jsonl"
+    rows.write_text('{"kind":5}\n{"kind":["shunt"]}\n{"kind":""}\n')
+    result = _run(tmp_path, f'evals_stamp_rows "{rows}" sonnet D "shunt"')
+    assert result.returncode == 0, result.stderr
+    delegates = [json.loads(line)["delegate_model"] for line in rows.read_text().splitlines()]
+    assert delegates == [None, None, None]
+
+
+def test_stamp_rows_invalid_utf8_leaves_file_intact(tmp_path):
+    rows = tmp_path / "r.jsonl"
+    rows.write_bytes(b'{"a":"\xff\xfe"}\n')
+    result = _run(tmp_path, f'evals_stamp_rows "{rows}" haiku x')
+    assert result.returncode != 0
+    assert rows.read_bytes() == b'{"a":"\xff\xfe"}\n'
+    assert not list(tmp_path.glob("r.jsonl.tmp.*"))
+
+
+def test_stamp_rows_crlf_lines(tmp_path):
+    rows = tmp_path / "r.jsonl"
+    rows.write_bytes(b'{"a":1}\r\n{"a":2}\r\n')
+    result = _run(tmp_path, f'evals_stamp_rows "{rows}" haiku x')
+    assert result.returncode == 0, result.stderr
+    assert len(rows.read_text().splitlines()) == 2
+
+
+def test_stamp_rows_through_a_symlinked_results_file_keeps_the_link(tmp_path):
+    real = tmp_path / "real.jsonl"
+    real.write_text('{"a":1}\n')
+    link = tmp_path / "link.jsonl"
+    link.symlink_to(real)
+    _run(tmp_path, f'evals_stamp_rows "{link}" haiku x')
+    assert link.is_symlink()
+    assert "claude_model" in real.read_text()
+
+
+
+@pytest.mark.parametrize("model_id", ["p/a/b", "p/-x", "p/a b", "p/a&b\\1", "p/[x]*.+"])
+def test_first_choice_keeps_everything_after_the_provider(tmp_path, model_id):
+    result = _run(tmp_path, "evals_first_choice bulk-read", f"shunt: first choice: {model_id}")
+    assert result.stdout == model_id.split("/", 1)[1] + "\n"
+
+
+def test_first_choice_ignores_a_line_that_only_looks_like_one(tmp_path):
+    status = "shunt: code-write first choice: p/cw\nshunt: first choice: p/br"
+    assert _run(tmp_path, "evals_first_choice bulk-read", status).stdout == "br\n"
+    assert _run(tmp_path, "evals_first_choice code-write", status).stdout == "cw\n"
+
+
+def test_first_choice_for_an_id_without_a_provider_prefix_is_not_leaked_whole(tmp_path):
+    result = _run(tmp_path, "evals_first_choice bulk-read", "shunt: first choice: bare")
+    assert result.stdout in ("", "bare\n")  # documents behaviour; see report
+
+
+
+@pytest.mark.parametrize("kinds", ["   ", "\t\n", "-n", "shunt\nbogus", "shunt,resume"])
+def test_baseline_refuses_blank_or_odd_kinds(tmp_path, kinds):
+    script = ROOT / "evals" / "baseline-benchmark.sh"
+    env = dict(os.environ, BASELINE_KINDS=kinds, SHUNT_BASELINE_MODEL="haiku")
+    result = subprocess.run([shutil.which("bash"), str(script)], capture_output=True, text=True, env=env, timeout=30)
+    assert result.returncode == 1, (result.stdout, result.stderr)
+    assert "BASELINE_KINDS" in result.stderr or "unknown kind" in result.stderr

@@ -29,21 +29,8 @@ evals_first_choice() {
 # The optional fourth argument lists the kinds that call the delegate: a row
 # whose `kind` is not among them gets delegate_model null. Rows without a
 # `kind` (fidelity: every row asks the delegate) always get it. A line that
-# is not JSON leaves the file as it was, with a warning and status 1.
+# is not a JSON object leaves the file as it was, with a warning and status 1.
+# The work is done by stamp-rows.py.
 evals_stamp_rows() {
-  local file=$1 claude_model=$2 delegate_model=$3 delegate_kinds=${4:-} tmp
-  tmp="$file.tmp.$$"
-  if jq -c --arg c "$claude_model" --arg d "$delegate_model" --arg k "$delegate_kinds" '
-      ($k | split(" ") | map(select(. != ""))) as $kinds
-      | . + {claude_model: $c,
-             delegate_model: (if $d == "" then null
-                              elif (.kind == null) or ($kinds | length == 0) or (.kind as $x | $kinds | index($x)) then $d
-                              else null end)}' \
-      "$file" >"$tmp"; then
-    mv "$tmp" "$file"
-  else
-    rm -f "$tmp"
-    echo "evals: could not add the model fields to $file (a line is not JSON); its rows stay as they were." >&2
-    return 1
-  fi
+  python3 "$(dirname "${BASH_SOURCE[0]}")/stamp-rows.py" "$@"
 }
