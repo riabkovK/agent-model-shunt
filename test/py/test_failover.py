@@ -356,3 +356,45 @@ def test_the_key_never_reaches_stderr_when_a_model_fails_over(fo, capsys):
     fo.cli_agent()
     assert fo.run(files=[]).model_id == "cli/m3"
     assert KEY not in capsys.readouterr().err
+
+
+# ---- adversarial round 2
+
+def _hc_environ(tmp_path, cache):
+    providers = tmp_path / "providers.json"
+    providers.write_text(json.dumps({"version": 1, "providers": {"acme": {
+        "transport": "http", "base-url": "http://127.0.0.1:9/v1", "healthcheck": True}}}))
+    return {"SHUNT_PROVIDERS_FILE": str(providers), "SHUNT_HEALTHCHECK_CACHE_FILE": str(cache)}
+
+
+@pytest.mark.parametrize("kind", ["symlink", "directory"])
+def test_unreachable_is_not_breaker_paused_when_the_cache_file_cannot_store_a_status(tmp_path, kind):
+    # A cache path that is a symlink or a directory is never written, so no unhealthy status ever
+    # appears. The breaker pause must stay, or every call to a dead host pays the connect timeout again.
+    from shunt import healthcheck, healthcheck_bg
+    cache = tmp_path / "healthcheck.json"
+    if kind == "symlink":
+        cache.symlink_to(tmp_path / "elsewhere.json")
+    else:
+        cache.mkdir()
+    environ = _hc_environ(tmp_path, cache)
+    healthcheck.remember(cache, "acme", "http://127.0.0.1:9/v1", "m", 1000, False)
+    stored = healthcheck.lookup(cache, "acme", "http://127.0.0.1:9/v1", "m", 1001)
+    assert stored is None
+    assert healthcheck_bg.owns_unreachable(environ, "acme/m") is False
+
+
+def test_connect_failure_starts_no_probe_when_the_healthcheck_is_disabled_by_a_zero_timeout(tmp_path, http_server):
+    # SHUNT_HEALTHCHECK_TIMEOUT=0 turns the healthcheck off (gate and warm_up honour it). The connect
+    # failure path (note_connect_failure -> spawn) does not, and a probe timeout of 0 means "no limit".
+    from shunt import healthcheck_bg
+    http_server.script("/v1/models", body={"data": [{"id": "m"}]})
+    http_server.script("/v1/chat/completions", body=OK)
+    providers = tmp_path / "providers.json"
+    providers.write_text(json.dumps({"version": 1, "providers": {"acme": {
+        "transport": "http", "base_url": http_server.url + "/v1", "key": {"type": "none"}, "healthcheck": True}}}))
+    environ = {"SHUNT_PROVIDERS_FILE": str(providers), "SHUNT_HEALTHCHECK_TIMEOUT": "0",
+               "SHUNT_HEALTHCHECK_INLINE": "1", "SHUNT_HEALTHCHECK_CACHE_FILE": str(tmp_path / "hc" / "c.json"),
+               "SHUNT_BREAKER_STATE_FILE": str(tmp_path / "b.json")}
+    healthcheck_bg.note_connect_failure(environ, "acme", http_server.url + "/v1", "m")
+    assert http_server.requests == [], "a probe ran although the healthcheck is disabled"

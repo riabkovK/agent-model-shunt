@@ -375,3 +375,4 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 ## Adversary review, round 2
 
 - 2026-10-14. `has_control_char` also refuses the Unicode line breaks U+0085, U+2028 and U+2029. They end a line in YAML, so an id holding one could still inject a frontmatter key.
+- 2026-10-14. `owns_unreachable` is False when the cache file is a symlink or exists and is not a regular file. `_store` never writes such a path, so no unhealthy status would ever appear and nothing would pause an unreachable model.

@@ -162,8 +162,11 @@ def owns_unreachable(environ: Mapping[str, str], model_id: str) -> bool:
     try:
         if env.healthcheck_timeout(environ) <= 0:
             return False
-        if not healthcheck.trusted_folder(env.healthcheck_cache_file(environ).parent):
+        cache = env.healthcheck_cache_file(environ)
+        if not healthcheck.trusted_folder(cache.parent):
             return False
+        if cache.is_symlink() or (cache.exists() and not cache.is_file()):
+            return False  # _store never writes such a path, so no status would ever replace the pause
         return providers.field(env.providers_file_text(environ), model_id.split("/", 1)[0], "healthcheck") == "true"
     except Exception:  # noqa: BLE001  unreadable config: keep the breaker
         return False
