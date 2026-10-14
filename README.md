@@ -540,6 +540,11 @@ only paid once, matching how a real interactive session amortizes it).
 Then it runs the same scenario through `scripts/bulk-read` (`shunt`), and
 once more as a real `claude -p` session that delegates to `scripts/bulk-read`
 through Bash (`shunt-live`), and writes all four as JSON rows to `evals/results/baseline-benchmark.jsonl`.
+Every row also carries `claude_model` (the `SHUNT_BASELINE_MODEL` alias) and
+`delegate_model` (the registry's bulk-read first choice when the run started,
+without its provider prefix), so a results file says what it measured. The
+fidelity and live-eval results get the same two fields (live-eval takes the
+code-write first choice).
 `evals/aggregate-baseline-results.py` (run automatically at the end) turns
 those rows into `evals/results/baseline-benchmark-summary.json` and a
 printed comparison table: real wall-clock time and real token/cost usage
@@ -594,7 +599,7 @@ repo to view it rendered).
 
 | Variable | Default | Purpose |
 |---|---|---|
-| `SHUNT_BASELINE_MODEL` | `sonnet` | Model alias passed to `claude -p --model` for the baseline side of `evals/baseline-benchmark.sh`. |
+| `SHUNT_BASELINE_MODEL` | `haiku` (`sonnet` at most) | Model alias passed to `claude -p --model` for the baseline side of `evals/baseline-benchmark.sh`. |
 | `SHUNT_BASELINE_TIMEOUT` | `300` | Timeout (seconds) for each baseline `claude -p` call. |
 | `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 3` (no-resume + resume + shunt-live). |
 | `BASELINE_KINDS` | all four | Space-separated subset of `no-resume resume shunt shunt-live` to run. `no-resume` and `resume` do not touch the delegate, so comparing a second delegate model needs only `shunt shunt-live`. |

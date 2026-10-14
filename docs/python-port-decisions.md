@@ -355,3 +355,11 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 
 - 2026-10-13. A real call that cannot connect no longer marks the model unhealthy. `transport_http` raises `_ConnectFailed` (a subclass of the abort, still status UNREACHABLE) for `unreachable`, and for `connect` and `dns` on a healthcheck provider. `Attempt.ask` then calls `healthcheck_bg.note_connect_failure`, which runs `spawn` even when the cached status is fresh. The per key lock prevents duplicate probes. The call itself fails over as before. A 404 or 5xx on the model route still goes to `note_call(healthy=False)`.
 - 2026-10-13. The probe retries a request that made no connection (`unreachable`, `connect`, `dns`) `PROBE_CONNECT_RETRIES = 2` more times, at once, in each step. A timeout after a connection, an HTTP status, a missing model or a bad completion are not retried. `time_cap` now counts `2 * (1 + PROBE_CONNECT_RETRIES)` connect timeouts instead of 2, so the child cap and the stale lock rule (twice the cap) fit three attempts in both steps.
+
+## Evals: no opencode check, models recorded in result rows
+
+- 2026-10-14. `evals/preflight.sh` no longer requires the `opencode` binary. HTTP providers do not need it, and `scripts/bulk-read` and `scripts/code-write` already fail with the same message when a provider on the opencode transport has no binary.
+- 2026-10-14. The baseline, fidelity and live-eval scripts add `claude_model` and `delegate_model` to every result row at the end of the run, in one jq pass, instead of in each of the many row writers.
+- 2026-10-14. `delegate_model` is the registry's first choice for the role (bulk-read, or code-write for live-eval) read from `scripts/shunt-models status` before the first call. Failover can answer from a later model, so the field names the model the run was aimed at, not the one that answered each call. An empty first choice is stored as null.
+- 2026-10-14. `delegate_model` drops the provider prefix (`prov/Spark/x` becomes `Spark/x`). A provider name is often a private host alias, and the results files are committed.
+- 2026-10-14. `evals/benchmark.sh` is left as is: it calls no Claude model and writes no result rows.

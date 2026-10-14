@@ -61,6 +61,7 @@ command -v python3 >/dev/null 2>&1 || { echo "fidelity-benchmark: 'python3' not 
 # shellcheck source=preflight.sh
 source "$REPO_ROOT/evals/preflight.sh"
 evals_preflight
+DELEGATE_MODEL=$(evals_first_choice bulk-read)
 
 mkdir -p "$RESULTS_DIR"
 : > "$RESULTS_JSONL"
@@ -213,4 +214,5 @@ printf "Total real Claude API cost for this run: \$%s\n" "$total_cost_usd" >&2
 [ "$any_failed" -eq 1 ] && echo "One or more calls failed; see *_failed:true rows in $RESULTS_JSONL." >&2
 
 echo ""
+evals_stamp_rows "$RESULTS_JSONL" "$SHUNT_BASELINE_MODEL" "$DELEGATE_MODEL"
 python3 "$EVALS_DIR/aggregate-fidelity-results.py" "$RESULTS_JSONL" "$SUMMARY_JSON"
