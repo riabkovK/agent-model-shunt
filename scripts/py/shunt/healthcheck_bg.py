@@ -156,10 +156,13 @@ def clear_breaker(environ: Mapping[str, str], model_id: str) -> None:
 
 
 def owns_unreachable(environ: Mapping[str, str], model_id: str) -> bool:
-    """True when the healthcheck of this model's provider is on. Its unhealthy status, which expires
-    after SHUNT_HEALTHCHECK_RETRY, then replaces the breaker pause for an unreachable failure."""
+    """True when the healthcheck of this model's provider is on and its cache folder is trusted. Its
+    unhealthy status, which expires after SHUNT_HEALTHCHECK_RETRY, then replaces the breaker pause for
+    an unreachable failure. An untrusted folder gets no probe and no status, so the breaker keeps it."""
     try:
         if env.healthcheck_timeout(environ) <= 0:
+            return False
+        if not healthcheck.trusted_folder(env.healthcheck_cache_file(environ).parent):
             return False
         return providers.field(env.providers_file_text(environ), model_id.split("/", 1)[0], "healthcheck") == "true"
     except Exception:  # noqa: BLE001  unreadable config: keep the breaker

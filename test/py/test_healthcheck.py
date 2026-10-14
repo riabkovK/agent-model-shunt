@@ -759,3 +759,25 @@ def test_the_field_reads_back_and_the_dashboard_shows_it(tmp_path):
     assert providers.field(str(path), "b", "healthcheck") == "false"
     assert dashboard._healthcheck_state(str(path), "a") == "on"
     assert dashboard._healthcheck_state(str(path), "b") == "off"
+
+
+# ---------------------------------------------------------------- adversarial review
+
+def test_connect_failure_with_an_untrusted_cache_folder_still_pauses_the_model(hc):
+    point_acme_at_closed_port(hc)
+    hc.environ["SHUNT_HEALTHCHECK_INLINE"] = "1"
+    hc.environ["SHUNT_BREAKER_THRESHOLD"] = "1"
+    folder = cache_file().parent
+    folder.mkdir(parents=True, exist_ok=True)
+    folder.chmod(0o770)  # group writable: trusted_folder refuses it, so no probe and no status
+    assert failover_status(hc)[0] == reply.UNREACHABLE
+    assert not cache_file().exists()
+    with pytest.raises(failover.Fatal):
+        hc.run()
+    assert "acme/m1" in hc.breaker()  # neither a status nor a breaker pause: every call pays the connect
+
+
+def test_the_refresh_command_takes_a_model_id_that_starts_with_a_dash(hc):
+    done = subprocess.run([sys.executable, "-I", "-B", hooks_main_path(), "healthcheck-refresh", "--", "acme", "-x"],
+                          env=hc.environ, capture_output=True, timeout=60, check=False)
+    assert done.returncode == 0 and done.stderr == b""

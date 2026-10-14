@@ -367,3 +367,4 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 ## Adversary review of PRs 16 to 20
 
 - 2026-10-14. `models_write.add` refuses a model id with a control character before it saves the entry. Before, `materialize_agent` refused the agent file only after the save, and the broken entry switched the registry to the legacy single agent.
+- 2026-10-14. `owns_unreachable` is False when the healthcheck cache folder is untrusted (`trusted_folder`). Such a folder gets no probe and no status, so the breaker keeps the pause for an unreachable model instead of nothing pausing it.
