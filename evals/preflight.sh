@@ -26,10 +26,17 @@ evals_first_choice() {
 
 # Adds claude_model and delegate_model to every row of a results file, so the
 # file alone says what it measured. An empty delegate model is stored as null.
+# A line that is not JSON leaves the file as it was, with a warning and status 1.
 evals_stamp_rows() {
   local file=$1 claude_model=$2 delegate_model=$3 tmp
   tmp="$file.tmp.$$"
-  jq -c --arg c "$claude_model" --arg d "$delegate_model" \
-    '. + {claude_model: $c, delegate_model: (if $d == "" then null else $d end)}' \
-    "$file" >"$tmp" && mv "$tmp" "$file"
+  if jq -c --arg c "$claude_model" --arg d "$delegate_model" \
+      '. + {claude_model: $c, delegate_model: (if $d == "" then null else $d end)}' \
+      "$file" >"$tmp"; then
+    mv "$tmp" "$file"
+  else
+    rm -f "$tmp"
+    echo "evals: could not add the model fields to $file (a line is not JSON); its rows stay as they were." >&2
+    return 1
+  fi
 }

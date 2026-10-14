@@ -90,6 +90,24 @@ def test_stamp_rows_keeps_an_empty_file_empty(tmp_path):
     assert rows.read_text() == ""
 
 
+@pytest.mark.parametrize("tail", ['{"a":2', "not json at all"])
+def test_stamp_rows_with_an_unparsable_line_leaves_the_file_intact_and_no_temp_file(tmp_path, tail):
+    rows = tmp_path / "r.jsonl"
+    original = '{"a":1}\n' + tail
+    rows.write_text(original)
+    result = _run(tmp_path, f'evals_stamp_rows "{rows}" haiku x')
+    assert result.returncode != 0
+    assert rows.read_text() == original
+    assert not list(tmp_path.glob("r.jsonl.tmp.*"))
+
+
+def test_stamp_rows_warns_when_a_line_is_not_json(tmp_path):
+    rows = tmp_path / "r.jsonl"
+    rows.write_text('{"a":1}\n{"a":2')
+    result = _run(tmp_path, f'evals_stamp_rows "{rows}" haiku x')
+    assert "could not add the model fields" in result.stderr
+
+
 @pytest.mark.parametrize("kinds", ["shunt-lve", "shunt nope"])
 def test_baseline_refuses_an_unknown_kind(tmp_path, kinds):
     script = ROOT / "evals" / "baseline-benchmark.sh"

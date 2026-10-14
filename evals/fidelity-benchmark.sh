@@ -214,5 +214,5 @@ printf "Total real Claude API cost for this run: \$%s\n" "$total_cost_usd" >&2
 [ "$any_failed" -eq 1 ] && echo "One or more calls failed; see *_failed:true rows in $RESULTS_JSONL." >&2
 
 echo ""
-evals_stamp_rows "$RESULTS_JSONL" "$SHUNT_BASELINE_MODEL" "$DELEGATE_MODEL"
+evals_stamp_rows "$RESULTS_JSONL" "$SHUNT_BASELINE_MODEL" "$DELEGATE_MODEL" || true
 python3 "$EVALS_DIR/aggregate-fidelity-results.py" "$RESULTS_JSONL" "$SUMMARY_JSON"
