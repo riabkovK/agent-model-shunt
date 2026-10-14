@@ -145,6 +145,11 @@ def note_call(environ: Mapping[str, str], provider: str, base_url: str, model: s
 def note_connect_failure(environ: Mapping[str, str], provider: str, base_url: str, model: str) -> None:
     """The real call could not connect: leave the status as it is and let a probe decide (it retries
     the connect). Never waits and never raises."""
+    try:
+        if env.healthcheck_timeout(environ) <= 0:
+            return  # the healthcheck is off
+    except Exception:  # noqa: BLE001  an invalid value is reported by the gate
+        return
     spawn(environ, provider, base_url, model)
 
 
