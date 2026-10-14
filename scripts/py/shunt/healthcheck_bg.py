@@ -168,7 +168,7 @@ def owns_unreachable(environ: Mapping[str, str], model_id: str) -> bool:
         if env.healthcheck_timeout(environ) <= 0:
             return False
         cache = env.healthcheck_cache_file(environ)
-        if not healthcheck.trusted_folder(cache.parent):
+        if not healthcheck.folder_would_be_trusted(cache.parent):
             return False
         if cache.is_symlink() or (cache.exists() and not cache.is_file()):
             return False  # _store never writes such a path, so no status would ever replace the pause

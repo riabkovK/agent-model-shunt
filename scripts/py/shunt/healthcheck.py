@@ -108,6 +108,17 @@ def verdict(found: tuple[str, int] | None, ttl: float, retry: float) -> tuple[bo
 def trusted_folder(folder: Path) -> bool:
     """Make the folder if needed. False when others can write to it or it is not ours."""
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
+    return _owned_and_private(folder)
+
+
+def folder_would_be_trusted(folder: Path) -> bool:
+    """trusted_folder without making the folder: a missing one counts as fine (the probe makes it 0700)."""
+    if not os.path.lexists(folder):
+        return True
+    return stat.S_ISDIR(os.stat(folder).st_mode) and _owned_and_private(folder)
+
+
+def _owned_and_private(folder: Path) -> bool:
     info = os.stat(folder)
     return info.st_uid == os.getuid() and not info.st_mode & (stat.S_IWGRP | stat.S_IWOTH)
 

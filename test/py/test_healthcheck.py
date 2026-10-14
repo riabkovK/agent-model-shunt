@@ -781,3 +781,50 @@ def test_the_refresh_command_takes_a_model_id_that_starts_with_a_dash(hc):
     done = subprocess.run([sys.executable, "-I", "-B", hooks_main_path(), "healthcheck-refresh", "--", "acme", "-x"],
                           env=hc.environ, capture_output=True, timeout=60, check=False)
     assert done.returncode == 0 and done.stderr == b""
+
+
+# ---------------------------------------------------------------- adversarial probes
+
+def _unreachable_with_breaker(hc):
+    doc = json.loads((hc.path / "providers.json").read_text())
+    doc["providers"]["acme"]["base_url"] = closed_port_url()
+    (hc.path / "providers.json").write_text(json.dumps(doc))
+    hc.environ["SHUNT_BREAKER_THRESHOLD"] = "1"
+    with pytest.raises(failover.Fatal):
+        hc.run()
+
+
+def test_group_writable_cache_folder_keeps_the_breaker_pause(hc):
+    cache_file().parent.mkdir(parents=True, exist_ok=True)
+    cache_file().parent.chmod(0o770)
+    _unreachable_with_breaker(hc)
+    assert hc.breaker()["acme/m1"]["cooldown_until"] > 1000
+
+
+def test_cache_folder_that_is_a_file_keeps_the_breaker_pause(hc):
+    folder = cache_file().parent
+    if folder.exists():
+        pytest.skip("folder exists")
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    folder.write_text("not a folder")
+    _unreachable_with_breaker(hc)
+    assert hc.breaker()["acme/m1"]["cooldown_until"] > 1000
+
+
+def test_dangling_symlink_cache_folder_keeps_the_breaker_pause(hc, tmp_path):
+    folder = cache_file().parent
+    folder.parent.mkdir(parents=True, exist_ok=True)
+    if folder.exists() or folder.is_symlink():
+        pytest.skip("folder exists")
+    folder.symlink_to(tmp_path / "nowhere" / "deeper")
+    _unreachable_with_breaker(hc)
+    assert hc.breaker()["acme/m1"]["cooldown_until"] > 1000
+
+
+def test_owns_unreachable_creates_no_cache_folder_as_a_side_effect(hc):
+    import shutil
+    folder = cache_file().parent
+    if folder.exists():
+        shutil.rmtree(folder)
+    healthcheck_bg.owns_unreachable(hc.environ, "acme/m1")
+    assert not folder.exists()
