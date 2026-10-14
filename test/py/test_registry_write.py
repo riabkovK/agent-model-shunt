@@ -425,3 +425,39 @@ def test_garbage_lock_timeout_is_reported(reg):
     result = pset(reg, "p", "", "https://b.test", SHUNT_PROVIDERS_LOCK_TIMEOUT="soon")
 
     assert result.returncode == 1 and "SHUNT_PROVIDERS_LOCK_TIMEOUT" in result.stderr
+
+
+# ---- adversarial round 2
+
+def test_add_with_an_undecodable_byte_in_the_id_leaves_no_agent_file_or_registry(reg, tmp_path):
+    # argv bytes that are not UTF-8 reach Python as lone surrogates. The registry writer cannot encode
+    # them, so nothing may be left behind (no registry, no agent file, no temp file).
+    agents = tmp_path / "agents"
+    opencode = tmp_path / "oc"
+    opencode.mkdir()
+    (opencode / "opencode.json").write_text(json.dumps({"provider": {"p": {"models": {}}}}))
+    prompts = os.path.join(os.path.dirname(str(SHUNT_MAIN)), "..", "..", "prompts")
+    env = reg.env(SHUNT_AGENTS_DIR=str(agents), SHUNT_OPENCODE_CONFIG_HOME=str(opencode),
+                  SHUNT_PROMPTS_DIR=prompts, SHUNT_BREAKER_STATE_FILE=str(tmp_path / "b.json"))
+    done = subprocess.run([sys.executable, "-I", "-B", str(SHUNT_MAIN), "shunt-models", "--", "add", b"p/m\xff"],
+                          capture_output=True, check=False, env=env)
+    assert b"Traceback" not in done.stderr, done.stderr
+    leftovers = sorted(p.name for p in agents.glob("*")) if agents.exists() else []
+    assert not reg.models.exists() and leftovers == [], (done.returncode, done.stderr, leftovers)
+
+
+def test_add_that_fails_with_an_unreadable_registry_must_not_leave_the_new_entry_behind(reg, tmp_path):
+    # A registry with a non-object entry makes materialize fail (exit 2) AFTER models_write.add saved
+    # the new entry. The error says the registry is unreadable yet the file was rewritten.
+    reg.seed([1, "x", None])
+    before = reg.models.read_text()
+    opencode = tmp_path / "oc"
+    opencode.mkdir()
+    (opencode / "opencode.json").write_text(json.dumps({"provider": {"p": {"models": {}}}}))
+    prompts = os.path.join(os.path.dirname(str(SHUNT_MAIN)), "..", "..", "prompts")
+    env = reg.env(SHUNT_AGENTS_DIR=str(tmp_path / "agents"), SHUNT_OPENCODE_CONFIG_HOME=str(opencode),
+                  SHUNT_PROMPTS_DIR=prompts, SHUNT_BREAKER_STATE_FILE=str(tmp_path / "b.json"))
+    done = subprocess.run([sys.executable, "-I", "-B", str(SHUNT_MAIN), "shunt-models", "--", "add", "p/new"],
+                          capture_output=True, text=True, check=False, env=env)
+    assert done.returncode != 0
+    assert reg.models.read_text() == before, "registry was rewritten although the command failed"

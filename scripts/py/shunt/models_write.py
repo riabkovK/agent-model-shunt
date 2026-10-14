@@ -118,7 +118,9 @@ def add(path: str, model_id: str, roles_csv: str) -> str:
         raise ShuntError(f"model id {json.dumps(model_id)} contains a control character.")
     roles = parse_roles(roles_csv) if roles_csv else list(ROLES)
     doc = _load(path, create=True)
-    if any(isinstance(m, dict) and m.get("id") == model_id for m in doc["models"]):
+    if not all(isinstance(m, dict) for m in doc["models"]):  # materialize would fail after the save
+        raise ShuntError(f"{path} has an entry that is not an object, nothing was changed.")
+    if any(m.get("id") == model_id for m in doc["models"]):
         raise ShuntError(f"model '{model_id}' is already in the registry.")
     agent = slug(model_id)
     entry = {"id": model_id, "agent": agent, "enabled": True, "thinking": False,
