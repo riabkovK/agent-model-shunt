@@ -26,12 +26,19 @@ evals_first_choice() {
 
 # Adds claude_model and delegate_model to every row of a results file, so the
 # file alone says what it measured. An empty delegate model is stored as null.
-# A line that is not JSON leaves the file as it was, with a warning and status 1.
+# The optional fourth argument lists the kinds that call the delegate: a row
+# whose `kind` is not among them gets delegate_model null. Rows without a
+# `kind` (fidelity: every row asks the delegate) always get it. A line that
+# is not JSON leaves the file as it was, with a warning and status 1.
 evals_stamp_rows() {
-  local file=$1 claude_model=$2 delegate_model=$3 tmp
+  local file=$1 claude_model=$2 delegate_model=$3 delegate_kinds=${4:-} tmp
   tmp="$file.tmp.$$"
-  if jq -c --arg c "$claude_model" --arg d "$delegate_model" \
-      '. + {claude_model: $c, delegate_model: (if $d == "" then null else $d end)}' \
+  if jq -c --arg c "$claude_model" --arg d "$delegate_model" --arg k "$delegate_kinds" '
+      ($k | split(" ") | map(select(. != ""))) as $kinds
+      | . + {claude_model: $c,
+             delegate_model: (if $d == "" then null
+                              elif (.kind == null) or ($kinds | length == 0) or (.kind as $x | $kinds | index($x)) then $d
+                              else null end)}' \
       "$file" >"$tmp"; then
     mv "$tmp" "$file"
   else

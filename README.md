@@ -542,9 +542,10 @@ once more as a real `claude -p` session that delegates to `scripts/bulk-read`
 through Bash (`shunt-live`), and writes all four as JSON rows to `evals/results/baseline-benchmark.jsonl`.
 Every row also carries `claude_model` (the `SHUNT_BASELINE_MODEL` alias) and
 `delegate_model` (the registry's bulk-read first choice when the run started,
-without its provider prefix), so a results file says what it measured. The
-fidelity and live-eval results get the same two fields (live-eval takes the
-code-write first choice).
+without its provider prefix, and null on rows that never call the delegate,
+such as `no-resume` and `resume`), so a results file says what it measured.
+The fidelity and live-eval results get the same two fields (live-eval takes
+the code-write first choice).
 `evals/aggregate-baseline-results.py` (run automatically at the end) turns
 those rows into `evals/results/baseline-benchmark-summary.json` and a
 printed comparison table: real wall-clock time and real token/cost usage

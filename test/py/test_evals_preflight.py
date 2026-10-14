@@ -101,6 +101,15 @@ def test_stamp_rows_with_an_unparsable_line_leaves_the_file_intact_and_no_temp_f
     assert not list(tmp_path.glob("r.jsonl.tmp.*"))
 
 
+def test_stamp_rows_gives_a_delegate_only_to_the_delegate_kinds(tmp_path):
+    rows = tmp_path / "r.jsonl"
+    rows.write_text('{"kind":"no-resume"}\n{"kind":"shunt"}\n{"kind":"shunt-live"}\n{"name":"q1"}\n')
+    result = _run(tmp_path, f'evals_stamp_rows "{rows}" sonnet Spark/m "shunt shunt-live"')
+    assert result.returncode == 0, result.stderr
+    delegates = [json.loads(line)["delegate_model"] for line in rows.read_text().splitlines()]
+    assert delegates == [None, "Spark/m", "Spark/m", "Spark/m"]
+
+
 def test_stamp_rows_warns_when_a_line_is_not_json(tmp_path):
     rows = tmp_path / "r.jsonl"
     rows.write_text('{"a":1}\n{"a":2')
