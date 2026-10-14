@@ -987,3 +987,22 @@ def test_thinking_role_refusals_change_nothing(cli, args, message):
     before = cli.models.read_text()
     assert cli.fail("thinking", *args) == message
     assert cli.models.read_text() == before
+
+
+def test_add_of_an_id_with_a_control_character_leaves_the_registry_untouched(cli):
+    cli.opencode("p")
+    code = cli.run("add", "p/a\nb")
+    assert code != 0
+    assert not cli.models.exists() or cli.doc()["models"] == []
+
+
+@pytest.mark.parametrize("model_id", ["p/a b", "p/é", "p/a\tb", "p/a\x7fb"])
+def test_add_of_an_odd_id_either_succeeds_with_an_agent_file_or_leaves_no_entry(cli, model_id):
+    cli.opencode("p")
+    code = cli.run("add", model_id)
+    entries = cli.doc()["models"] if cli.models.exists() else []
+    if code != 0:
+        assert entries == []
+    else:
+        assert (cli.agents / f"{entries[0]['agent']}.md").is_file()
+

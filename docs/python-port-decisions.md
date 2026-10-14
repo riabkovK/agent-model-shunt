@@ -363,3 +363,7 @@ they can be reviewed after the fact. Newest at the bottom of each section.
 - 2026-10-14. `delegate_model` is the registry's first choice for the role (bulk-read, or code-write for live-eval) read from `scripts/shunt-models status` before the first call. Failover can answer from a later model, so the field names the model the run was aimed at, not the one that answered each call. An empty first choice is stored as null.
 - 2026-10-14. `delegate_model` drops the provider prefix (`prov/Spark/x` becomes `Spark/x`). A provider name is often a private host alias, and the results files are committed.
 - 2026-10-14. `evals/benchmark.sh` is left as is: it calls no Claude model and writes no result rows.
+
+## Adversary review of PRs 16 to 20
+
+- 2026-10-14. `models_write.add` refuses a model id with a control character before it saves the entry. Before, `materialize_agent` refused the agent file only after the save, and the broken entry switched the registry to the legacy single agent.
