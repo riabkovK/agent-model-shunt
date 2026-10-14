@@ -197,6 +197,8 @@ def _agent_name_error(models: list[dict[str, Any]]) -> str | None:
         if not AGENT_NAME_RE.fullmatch(agent):
             return (f'model "{mid}" has an invalid agent name "{agent}": '
                     "use lowercase letters, digits and dashes.")
+        if agent == writer:
+            return f'model "{mid}" has the agent name "{agent}", which is its own code-writer agent file.'
         for name in (agent, writer):
             if not name:
                 continue
