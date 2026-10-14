@@ -500,8 +500,8 @@ delegate model.
 evals/run.sh                # hook routing decisions, no network needed
 evals/transport-evals.sh    # one live scripts/bulk-read call, needs OpenCode + a provider
 evals/benchmark.sh          # token-savings + latency of the delegated OpenCode call, in isolation
-evals/baseline-benchmark.sh # shunt vs Claude reading the files directly, needs OpenCode + a provider + `claude` CLI
-evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? Needs OpenCode + a provider + `claude` CLI
+evals/baseline-benchmark.sh # shunt vs Claude reading the files directly, needs a provider + `claude` CLI
+evals/fidelity-benchmark.sh # does delegating lose information or hallucinate? Needs a provider + `claude` CLI
 ```
 
 `evals/benchmark.sh` measures, per scenario in `evals/benchmarks.json`:
@@ -537,12 +537,13 @@ iteration, it sends the question plus the raw file content to a real
 (`no-resume`) and once chained into the same session as the prior scenario
 (`resume`, so the one-time cost of priming this project's system prompt is
 only paid once, matching how a real interactive session amortizes it).
-Then it runs the same scenario through `scripts/bulk-read` (`shunt`) and
-writes all three as JSON rows to `evals/results/baseline-benchmark.jsonl`.
+Then it runs the same scenario through `scripts/bulk-read` (`shunt`), and
+once more as a real `claude -p` session that delegates to `scripts/bulk-read`
+through Bash (`shunt-live`), and writes all four as JSON rows to `evals/results/baseline-benchmark.jsonl`.
 `evals/aggregate-baseline-results.py` (run automatically at the end) turns
 those rows into `evals/results/baseline-benchmark-summary.json` and a
 printed comparison table: real wall-clock time and real token/cost usage
-for all three variants, not estimates. This script spends real money on
+for every variant (only `shunt` estimates its context tokens). This script spends real money on
 your Claude account (it prints the total cost at the end) and its
 `ITERATIONS` calls have no built-in retry, so pick a count you're willing
 to pay for and run it deliberately, not in a loop.
@@ -578,30 +579,25 @@ proxy to "what would this actually cost me in a live session."
 
 **[`docs/shunt-ledger.html`](docs/shunt-ledger.html)** is the full write-up
 of the latest `evals/baseline-benchmark.sh` run: per-scenario token, cost,
-and time comparisons for `no-resume` / `resume` / `shunt`. It's a static
+and time comparisons for `no-resume` / `resume` / `shunt` / `shunt-live`. It's a static
 file checked into this repo; open it directly in a browser (GitHub's own
 file viewer renders `.html` as source, not as a page, so save/clone the
 repo to view it rendered).
 
 > **On speed:** the timing numbers in that ledger (and in
-> `docs/fidelity-ledger.html`) depend heavily on which OpenCode provider and
+> `docs/fidelity-ledger.html`) depend heavily on which provider and
 > model you point `scripts/bulk-read` at. Different providers/models can be
 > dramatically faster or slower for the same call. These numbers are one
 > personal observation from one provider/model at one point in time, not a
 > guarantee; re-run the benchmarks against your own setup before drawing
 > conclusions about your own flow.
 
-> The fixtures moved to real `labstack/echo` source (see above); the
-> ledger and the results file it's built from need a fresh
-> `evals/baseline-benchmark.sh` run against them before the numbers are
-> trustworthy again. That run spends real money on your Claude account,
-> so it isn't run automatically as part of an edit.
-
 | Variable | Default | Purpose |
 |---|---|---|
 | `SHUNT_BASELINE_MODEL` | `sonnet` | Model alias passed to `claude -p --model` for the baseline side of `evals/baseline-benchmark.sh`. |
 | `SHUNT_BASELINE_TIMEOUT` | `300` | Timeout (seconds) for each baseline `claude -p` call. |
-| `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 2` (no-resume + resume). |
+| `ITERATIONS` | `3` | Repeats per scenario/variant in `evals/baseline-benchmark.sh`. Total `claude -p` calls = `ITERATIONS * 3 scenarios * 3` (no-resume + resume + shunt-live). |
+| `BASELINE_KINDS` | all four | Space-separated subset of `no-resume resume shunt shunt-live` to run. `no-resume` and `resume` do not touch the delegate, so comparing a second delegate model needs only `shunt shunt-live`. |
 
 ### Fidelity: does delegating lose information or hallucinate?
 
@@ -635,12 +631,14 @@ Results go to `evals/results/fidelity-benchmark.jsonl`;
 a per-question table of direct vs. delegate recall, which ground-truth
 items each path dropped, and any unsupported claims. Like
 `baseline-benchmark.sh`, this spends real money on your Claude account and
-needs a reachable OpenCode provider. Run it deliberately, not in a loop.
+needs a reachable provider. Run it deliberately, not in a loop.
 
 **[`docs/fidelity-ledger.html`](docs/fidelity-ledger.html)** is the write-up
-of the latest `evals/fidelity-benchmark.sh` run: on the current question
-set (n=1), delegation showed 100% recall on every question, including the
-adversarial ones, and zero unsupported claims.
+of the latest `evals/fidelity-benchmark.sh` run (n=3): reading directly kept
+100% recall on every question, and there were zero unsupported claims. The
+delegate dropped one list item once (`AddRouteError` in
+`cross-file-exported-types`), and Claude's final answer did not recover it,
+so delegation occasionally loses an item from a long list.
 
 ## Development
 

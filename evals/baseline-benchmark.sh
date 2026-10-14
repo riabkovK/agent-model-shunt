@@ -1,12 +1,12 @@
 #!/bin/bash
-# End-to-end usefulness benchmark: shunt (scripts/bulk-read, via OpenCode)
+# End-to-end usefulness benchmark: shunt (scripts/bulk-read)
 # versus the baseline of Claude reading the same files directly.
 #
-# evals/benchmark.sh already measures the *delegated* OpenCode round trip in
+# evals/benchmark.sh already measures the *delegated* round trip in
 # isolation. This script instead measures what actually matters for
 # deciding whether shunt is worth it: the real cost paid on the Claude side
 # (context tokens and $) and the real wall-clock time, against the same
-# question over the same fixture files, in three variants:
+# question over the same fixture files, in four variants:
 #
 #   no-resume  Each scenario is sent as a brand-new `claude -p` session (no
 #              prior turns). Represents the cost of Claude reading a file
@@ -45,6 +45,10 @@
 #                            retry if a later iteration fails.
 #   SHUNT_BASELINE_MODEL     Model alias for `claude -p --model` (default: haiku, sonnet at most).
 #   SHUNT_BASELINE_TIMEOUT   Timeout in seconds per claude -p call (default: 300).
+#   BASELINE_KINDS          Space-separated subset of "no-resume resume shunt shunt-live"
+#                            to run (default: all four). no-resume and resume do not
+#                            touch the delegate, so a second delegate model needs only
+#                            "shunt shunt-live".
 
 set -uo pipefail
 
@@ -62,6 +66,7 @@ case "$SHUNT_BASELINE_MODEL" in
 esac
 SHUNT_BASELINE_TIMEOUT="${SHUNT_BASELINE_TIMEOUT:-300}"
 SHUNT_LIVE_TIMEOUT="${SHUNT_LIVE_TIMEOUT:-600}"
+BASELINE_KINDS="${BASELINE_KINDS:-no-resume resume shunt shunt-live}"
 ITERATIONS="${ITERATIONS:-3}"
 
 command -v claude >/dev/null 2>&1 || { echo "baseline-benchmark: 'claude' not found in PATH." >&2; exit 1; }
@@ -254,16 +259,20 @@ for ((it = 1; it <= ITERATIONS; it++)); do
     done < <(jq -r ".benchmarks[$i].paths[]" "$BENCHMARKS")
     prompt=$(scenario_prompt "$i")
 
-    run_baseline_call "$it" "$name" "no-resume" "$prompt" ""
+    case " $BASELINE_KINDS " in *" no-resume "*) run_baseline_call "$it" "$name" "no-resume" "$prompt" "" ;; esac
 
-    run_baseline_call "$it" "$name" "resume" "$prompt" "$resume_session_id"
-    if [ -n "$LAST_SESSION_ID" ]; then
-      resume_session_id="$LAST_SESSION_ID"
-    fi
+    case " $BASELINE_KINDS " in
+      *" resume "*)
+        run_baseline_call "$it" "$name" "resume" "$prompt" "$resume_session_id"
+        if [ -n "$LAST_SESSION_ID" ]; then
+          resume_session_id="$LAST_SESSION_ID"
+        fi
+        ;;
+    esac
 
-    run_shunt_call "$it" "$name" "$question" "${paths[@]}"
+    case " $BASELINE_KINDS " in *" shunt "*) run_shunt_call "$it" "$name" "$question" "${paths[@]}" ;; esac
 
-    run_shunt_live_call "$it" "$name" "$question" "${paths[@]}"
+    case " $BASELINE_KINDS " in *" shunt-live "*) run_shunt_live_call "$it" "$name" "$question" "${paths[@]}" ;; esac
   done
 done
 
